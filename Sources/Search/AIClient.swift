@@ -59,8 +59,11 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
 
-    /// Where a provider's requests may go: its own host, over https, or
-    /// this Mac over plain http for the apps that run on it.
+    /// Where a provider's requests may go: the address named for it in
+    /// Settings where there is one, its own otherwise, and nowhere else — the
+    /// same scheme, host and port. A named address may be http as well as
+    /// https: it was named by hand, and a gateway of one's own may be on this
+    /// Mac (see AIProvider.takesAnotherAddress).
     static func allowed(_ url: URL, for provider: AIProvider) -> Bool {
         guard let scheme = url.scheme?.lowercased(), let host = url.host()?.lowercased(),
               url.user == nil, url.password == nil
@@ -69,11 +72,20 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         if provider.isLocal || (Store.testing && AIProvider.mock != nil) {
             return (scheme == "http" || scheme == "https") && loopback && host == provider.host
         }
-        return scheme == "https" && host == provider.host
+        guard scheme == provider.base.scheme?.lowercased(),
+              host == provider.base.host()?.lowercased(),
+              Self.port(url) == Self.port(provider.base)
+        else { return false }
+        return scheme == "https" || provider.named != nil
     }
 
-    /// A key is sent only by these, and only to the provider's own host.
-    /// A redirect — to the same host or not — is refused rather than
+    /// The port a URL asks for, the scheme's own where it names none.
+    private static func port(_ url: URL) -> Int? {
+        url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)
+    }
+
+    /// A key is sent only by these, and only to the host named for the
+    /// provider. A redirect — to the same host or not — is refused rather than
     /// followed with the key still on the request.
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
@@ -85,11 +97,14 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     /// The answer to `messages`, a piece at a time. `system` says what the
     /// model is for and how to treat the page (see AIPage.system).
     func stream(_ provider: AIProvider, model: String, system: String, messages: [AIMessage],
-                key: String?) -> AsyncThrowingStream<String, Error> {
+                key: String?, patience: TimeInterval? = nil) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let request = try Self.request(provider, model: model, system: system, messages: messages, key: key)
+                    var request = try Self.request(provider, model: model, system: system, messages: messages, key: key)
+                    // A test says how long it will wait; everything else takes
+                    // the client's own patience (the session's configuration).
+                    if let patience { request.timeoutInterval = patience }
                     let (bytes, response) = try await session.bytes(for: request, delegate: self)
                     guard let http = response as? HTTPURLResponse else { throw AIError.unreadable }
                     guard (200..<300).contains(http.statusCode) else {

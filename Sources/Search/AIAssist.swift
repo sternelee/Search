@@ -413,15 +413,27 @@ struct AISettings: View {
     @State private var models: [String] = []
     @State private var looking = false
     @ObservedObject private var engine = AIEngine.shared
+    /// The Test row's one message: on its way, and what came of it.
+    @State private var testing = false
+    @State private var testResult: String?
+    @State private var testTrouble: String?
+    @State private var testTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Card {
-                Line("Use AI on pages", "Summarize a page, or ask about it, from the View menu. Nothing is sent until you ask") {
-                    Switch(on: $prefs.ai)
+                Line("The bot on pages", "Summon it over a page with ⌥⌘B: it reads the page, talks about it, and works it for you — every change waits for your Allow. Nothing is sent until you ask") {
+                    Switch(on: $prefs.bot)
                 }
             }
-            if prefs.ai {
+            if AI.shipped {
+                Card {
+                    Line("Use AI on pages", "Summarize a page, or ask about it, from the View menu. Nothing is sent until you ask") {
+                        Switch(on: $prefs.ai)
+                    }
+                }
+            }
+            if prefs.bot || prefs.ai {
                 Card {
                     Line("Where it runs", place) {
                         if drawn {
@@ -441,12 +453,29 @@ struct AISettings: View {
                     }
                     if let provider = prefs.aiProvider {
                         Rule()
-                        if provider == .thisMac { onThisMac } else if provider.isLocal { localModel(provider) } else { key(provider); Rule(); cloudModel(provider) }
+                        if provider == .thisMac {
+                            onThisMac
+                            // Nothing to ask until the model is here.
+                            if engine.state == .ready { Rule(); test(provider) }
+                        } else if provider.isLocal {
+                            localModel(provider)
+                            Rule()
+                            test(provider)
+                        } else {
+                            address(provider)
+                            Rule()
+                            key(provider)
+                            Rule()
+                            cloudModel(provider)
+                            Rule()
+                            test(provider)
+                        }
                     }
                 }
                 .onChange(of: prefs.aiProvider) { _, _ in
                     // A key typed for one provider is never saved for another.
                     pasted = ""
+                    forgetTest()
                     refresh()
                 }
                 .onAppear(perform: refresh)
@@ -500,19 +529,52 @@ struct AISettings: View {
             : "Your key, kept in this Mac's keychain, sent only to \(provider.host). Never from a private tab"
     }
 
+    /// Where requests go, for the two providers that take an address of their
+    /// own: a gateway, a relay, an account under another name. Empty is the
+    /// provider's own address, and a key is kept for the host named here and
+    /// sent nowhere else (see AIKeys.account).
+    @ViewBuilder
+    private func address(_ provider: AIProvider) -> some View {
+        if provider.takesAnotherAddress {
+            Line("Base URL", "Leave empty for \(provider.own.host() ?? ""). A key is kept for the host named here and sent nowhere else") {
+                if drawn {
+                    Stand(prefs.aiBase(for: provider).isEmpty ? (provider.own.host() ?? "") : prefs.aiBase(for: provider), width: 170)
+                } else {
+                    TextField("", text: Binding(get: { prefs.aiBase(for: provider) },
+                                                set: { prefs.setAIBase($0, for: provider) }),
+                              prompt: Text(provider.own.host() ?? "").foregroundStyle(Palette.faint))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .frame(width: 170)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        // The key line below is about the host, so it says a
+                        // key is wanted as soon as an address is named.
+                        .onChange(of: prefs.aiBase(for: provider)) { _, _ in
+                            // A test of the address that was there says nothing
+                            // about this one.
+                            forgetTest()
+                            refresh()
+                        }
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func key(_ provider: AIProvider) -> some View {
         if let hint {
-            Line("Key", "\(hint), in this Mac's keychain") {
+            // A copy built without the signed profile keeps what's pasted
+            // for the run and no longer: said plainly, when that's the case.
+            Line("Key", "\(hint)\(AIKeys.available ? ", in this Mac's keychain" : ", kept while this copy is open, nowhere on disk")") {
                 Pill("Forget") {
                     AIKeys.forget(provider)
                     refresh()
                 }
             }
-        } else if !AIKeys.available {
-            Line("Key", "This copy of Search can't keep keys safely — it isn't the signed release. An app on this Mac still works") { EmptyView() }
         } else {
-            Line("Key", provider == .openRouter ? "Paste one, or sign in and OpenRouter makes one for you" : "Paste your API key") {
+            Line("Key", keyPrompt(provider)) {
                 HStack(spacing: 6) {
                     SecureField("", text: $pasted, prompt: Text("Key").foregroundStyle(Palette.faint))
                         .textFieldStyle(.plain)
@@ -530,6 +592,9 @@ struct AISettings: View {
                         }
                     }
                 }
+                // The field and its buttons keep their size, and the words
+                // above wrap instead: squeezed, a pill's label stands on end.
+                .fixedSize()
             }
         }
     }
@@ -550,6 +615,56 @@ struct AISettings: View {
                 .background(Palette.wash, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
         }
+    }
+
+    /// One short message to the provider, sent and shown: whether the address,
+    /// the key and the model work together. Said plainly, because a bot that
+    /// answers nothing is the thing this is for.
+    @ViewBuilder
+    private func test(_ provider: AIProvider) -> some View {
+        Line("Test", testing ? "Asking \(provider.host)…" : "Send one short message to \(provider.host), and read what comes back") {
+            if drawn {
+                Stand("Test")
+            } else {
+                Pill(testing ? "Testing…" : "Test") { ask(provider) }
+            }
+        }
+        if let said = testResult {
+            Line("It answered", said) { EmptyView() }
+        }
+        if let trouble = testTrouble {
+            Line("It didn't answer", trouble) { EmptyView() }
+        }
+    }
+
+    /// The Test row's one message, sent: the answer, or why there wasn't one.
+    private func ask(_ provider: AIProvider) {
+        forgetTest()
+        testing = true
+        let model = prefs.aiModel(for: provider)
+        let key = provider.isLocal ? nil : AIKeys.key(for: provider)
+        testTask = Task { @MainActor in
+            var said: String?
+            var why: String?
+            do { said = try await AITest.answer(provider, model: model, key: key) }
+            catch { why = error.localizedDescription }
+            // Another provider, another address, another test: this answer is
+            // about something that is no longer on the page.
+            guard !Task.isCancelled else { return }
+            testing = false
+            if let why { testTrouble = why }
+            else if let said { testResult = said.isEmpty ? "It answered with nothing at all." : said }
+        }
+    }
+
+    /// Let go of the last test: it was about another provider or another
+    /// address, and its answer would be read as this one's.
+    private func forgetTest() {
+        testTask?.cancel()
+        testTask = nil
+        testing = false
+        testResult = nil
+        testTrouble = nil
     }
 
     /// A menu or a field, as a picture shows it.
@@ -594,11 +709,20 @@ struct AISettings: View {
         let key = pasted
         pasted = ""
         switch AIKeys.save(key, for: provider) {
-        case .kept: browser.announce("Key kept in the keychain")
+        case .kept: browser.announce(AIKeys.available ? "Key kept in the keychain" : "Key kept while this copy is open")
         case .unavailable: browser.announce("This copy of Search can't keep keys")
         case .failed: browser.announce("The key wasn't kept")
         }
         refresh()
+    }
+
+    /// What the key line says under a paste field: how long a pasted key
+    /// lasts, which depends on whether this copy can put one in the
+    /// keychain at all (see AIKeys.available).
+    private func keyPrompt(_ provider: AIProvider) -> String {
+        let open = AIKeys.available ? "Paste your API key"
+            : "Paste your API key — kept while this copy is open, nowhere on disk"
+        return provider == .openRouter ? "Paste one, or sign in and OpenRouter makes one for you" : open
     }
 
     /// Looked at when the page is: a local app is asked for its models only

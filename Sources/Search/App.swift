@@ -117,6 +117,10 @@ struct SearchApp: App {
                     .shortcut("view.reader")
                 Button("Float Video") { browser.toggleFloat() }
                     .shortcut("view.float")
+                Divider()
+                Button("Bot on This Page…") { browser.openBot() }
+                    .shortcut("view.bot")
+                    .disabled(browser.active?.isBlank ?? true)
                 // The AI add-on's, only once it is on (Settings › AI).
                 if browser.prefs.ai {
                     Divider()
@@ -441,6 +445,15 @@ struct ContentView: View {
                     }
                 }
                 .animation(Motion.settle, value: browser.assisting?.id)
+                .overlay(alignment: .topTrailing) {
+                    if let bot = browser.botting, bot.tab == tab.id {
+                        BotPanel(browser: browser, bot: bot)
+                            .padding(.top, browser.finding ? 64 : 14)
+                            .padding(.trailing, 14)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+                .animation(Motion.settle, value: browser.botting?.id)
                 .overlay(alignment: .topLeading) {
                     if let asked = browser.suggesting, asked.tab == tab.id {
                         AccountList(browser: browser, asked: asked)
@@ -1150,6 +1163,10 @@ struct ContentView: View {
             }
             if browser.assisting != nil {
                 browser.closeAssistant()
+                return true
+            }
+            if browser.botting != nil {
+                browser.closeBot()
                 return true
             }
             if browser.veiling {

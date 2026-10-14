@@ -67,9 +67,24 @@
                                        each timed until the window has caught up; go: then Return, timed
                                        until the page is loading
     ./bench visible ID                 switched off: it made a window (off screen), and no verb makes one for now
-    ./bench ai mock URL | key PROVIDER KEY | ask PROVIDER MODEL TEXT | read ID | check TEXT | signin | engine [PATH MODELS] | use PROVIDER [MODEL] | summarize ID | question ID TEXT | agree | state | picture DIR
+    ./bench ai mock URL | key PROVIDER KEY | ask PROVIDER MODEL TEXT | test PROVIDER [MODEL] | read ID | check TEXT | signin | engine [PATH MODELS] | use PROVIDER [MODEL] | summarize ID | question ID TEXT | agree | state | picture DIR
                                        test run: the AI add-on's requests, against a stand-in on this Mac;
                                        what of a page would go to the model, and an answer checked against it
+    ./bench agent pages | open URL [AS] | label ID AS
+                                       the bench's tabs as an agent sees them — a labelled page apiece
+                                       (p1, p2 …), opened or named
+    ./bench agent snapshot ID [full]  what a page holds, one thing a line — button "Sign in" @12 —
+                                       what can be seen, or the whole of it
+    ./bench agent act ID VERB TARGET [TEXT]
+                                       click @12 · fill @3 me@here.com · press @3 Enter · select @7 October ·
+                                       check · hover · clear — a TARGET is a number from the snapshot, text=Words
+                                       on the thing, css=…, xpath=… or loc=role:button[name='Sign in']
+    ./bench agent read ID TARGET      the words at a target, its value, where a link goes
+    ./bench agent wait ID [SECONDS] | target T | text T | url U
+                                       until the page has loaded, or a target is there, or words appear, or an address
+    ./bench agent run [ID] [--provider P] [--model M] [--steps N] TASK
+                                       a task in words, carried out by a model one act at a time, each act
+                                       answered with the next snapshot — the AI add-on's provider, or one named
     ./bench answer once|always|no     test run: the card of a page asking for the camera, microphone or location
     ./bench accounts [ROW]             test run: the list under the sign-in box the caret is in (passkeys,
                                        then passwords); ROW: a click on that row, from 0
@@ -492,7 +507,7 @@ def main(argv):
             elif word == "words": request["words"] = True
             else: sys.exit("usage: bench find TEXT [next N] [back N] [case] [words]")
     elif verb == "ai":
-        usage = "usage: bench ai mock URL | key PROVIDER KEY | ask PROVIDER MODEL TEXT | read ID | check TEXT | signin | engine [PATH MODELS] | use PROVIDER [MODEL] | summarize ID | question ID TEXT | agree | state | picture DIR"
+        usage = "usage: bench ai mock URL | key PROVIDER KEY | ask PROVIDER MODEL TEXT | test PROVIDER [MODEL] | read ID | check TEXT | signin | engine [PATH MODELS] | use PROVIDER [MODEL] | summarize ID | question ID TEXT | agree | state | picture DIR"
         if not args: sys.exit(usage)
         request["action"] = args[0]
         if args[0] == "mock" and len(args) == 2: request["url"] = args[1]
@@ -510,6 +525,45 @@ def main(argv):
         elif args[0] in ("agree", "state") and len(args) == 1: pass
         elif args[0] == "picture" and len(args) == 2: request["path"] = args[1]
         elif args[0] == "check" and len(args) == 2: request["text"] = args[1]
+        else: sys.exit(usage)
+    elif verb == "agent":
+        usage = ("usage: bench agent pages | open URL [AS] | label ID AS | snapshot ID [full] | "
+                 "act ID VERB TARGET [TEXT] | read ID TARGET | "
+                 "wait ID [SECONDS | target T | text T | url U] | run [ID] [--provider P] [--model M] [--steps N] TASK")
+        if not args: sys.exit(usage)
+        request["action"] = args[0]
+        if args[0] == "pages" and len(args) == 1: pass
+        elif args[0] == "open" and 2 <= len(args) <= 3:
+            request["url"] = args[1]
+            if len(args) == 3: request["as"] = args[2]
+        elif args[0] == "label" and len(args) == 3:
+            request["id"], request["as"] = args[1], args[2]
+        elif args[0] == "snapshot" and len(args) in (2, 3):
+            request["id"] = args[1]
+            if len(args) == 3:
+                if args[2] != "full": sys.exit(usage)
+                request["full"] = True
+        elif args[0] == "act" and 4 <= len(args) <= 5:
+            request["id"], request["verb"], request["target"] = args[1], args[2], args[3]
+            if len(args) == 5: request["text"] = args[4]
+        elif args[0] == "read" and len(args) == 3:
+            request["id"], request["target"] = args[1], args[2]
+        elif args[0] == "wait" and 2 <= len(args) <= 4:
+            request["id"] = args[1]
+            if len(args) == 2: pass
+            elif len(args) == 3 and args[2].replace(".", "", 1).isdigit(): request["seconds"] = float(args[2])
+            elif len(args) == 4 and args[2] in ("target", "text", "url"): request[args[2]] = args[3]
+            else: sys.exit(usage)
+        elif args[0] == "run" and len(args) >= 2:
+            rest = args[1:]
+            if rest and not rest[0].startswith("-"): request["id"] = rest.pop(0)
+            while rest and rest[0].startswith("-"):
+                flag = rest.pop(0)
+                if flag in ("--provider", "--model") and rest: request[flag[2:]] = rest.pop(0)
+                elif flag == "--steps" and rest: request["steps"] = int(rest.pop(0))
+                else: sys.exit(usage)
+            if not rest: sys.exit(usage)
+            request["task"] = " ".join(rest)
         else: sys.exit(usage)
     elif verb == "answer":
         if args not in (["once"], ["always"], ["no"]): sys.exit("usage: bench answer once|always|no")
@@ -540,6 +594,20 @@ def main(argv):
     elif verb in ("eval", "ext-popup"):
         value = answer.get("value")
         print(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2))
+    elif verb == "agent":
+        action = request.get("action")
+        if action == "pages":
+            for page in answer.get("pages", []):
+                state = " …" if page.get("loading") else ""
+                print(f"{page.get('label') or '—':>4}  {page['id']}  {clean(page.get('title')) or '—'}  {clean(page.get('url'))}{state}")
+        elif action == "snapshot":
+            print(answer.get("snapshot", ""))
+        elif action == "run":
+            if answer.get("note"): print("note: " + str(answer["note"]), file=sys.stderr)
+            print(answer.get("answer") or "")
+            if answer.get("url"): print(clean(answer["url"]), file=sys.stderr)
+        else:
+            print(json.dumps(answer, ensure_ascii=False, indent=2))
     elif verb == "tabs":
         for tab in answer.get("tabs", []):
             mark = "⚗" if tab.get("bench") else ("●" if tab.get("active") else " ")

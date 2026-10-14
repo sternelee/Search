@@ -96,7 +96,7 @@ A build you make yourself won't be notarized or carry Office Commun's Developer 
 - Hidden elements are a per-site list of selectors injected as a stylesheet at document start, so nothing is ever seen appearing and vanishing.
 - Every colour is a light/dark pair in `Design.swift`, resolved by the window's appearance; nothing else in the code knows which mode it is in.
 - Extensions run on `WKWebExtension` (macOS 15.4+). `Crx.swift` fetches an extension from the Chrome Web Store's public update address and checks the CRX3 signature against the extension's id before anything is unpacked. `Extensions.swift` is the browser's side of WebKit's contract — tabs, the window, permissions, popups. `ExtensionShims.swift` adds, at install, a small script to the extension's worker, pages and content scripts: it defines the Chrome APIs WebKit lacks — `userScripts`, `privacy`, `browsingData`, `sessions`, the old FileSystem API and more — as calls answered natively by Search, and mends the places where WebKit behaves differently from Chrome: replies from pages that don't answer, listeners added after a worker starts, workers WebKit loses track of, members and constants it leaves out. Extension pages are served from `chrome-extension://<id>/`, the address they have in Chrome, so servers and sites recognise them. `./bench ext-*` drives all of it from the shell against a test run. `ExtensionNative.swift` speaks Chrome's native messaging to hosts registered in Chrome's `NativeMessagingHosts` folders.
-- `Sources/Search/` is one file per concern: `Vault.swift` is the keychain, `Shield.swift` the ad blocker, `Curtain.swift` the hidden elements, `Session.swift` what comes back at launch, `Updater.swift` the update, `Bench.swift` the test socket, and so on. There's no framework of its own to learn first.
+- `Sources/Search/` is one file per concern: `Vault.swift` is the keychain, `Shield.swift` the ad blocker, `Curtain.swift` the hidden elements, `Session.swift` what comes back at launch, `Updater.swift` the update, `Bench.swift` the test socket, `Agent.swift` the agent's hands over it, `Bot.swift` the bot over the page, and so on. There's no framework of its own to learn first.
 
 ### Testing it without closing it
 
@@ -115,6 +115,36 @@ Turn on **Settings › General › Let a script drive Search** and the running a
 Bench tabs are never selected for you, never enter the session or the history, and go when the script says so. It is how this browser is tested while somebody is using it.
 
 `python3 Tests/split_view.py`, after `./build.sh`, checks Split View through the app's own model in a hidden test run with its own settings and files, all removed afterwards. It never makes or shows a window; what can only be seen (dragging onto a page's edge, the divider under the pointer, the motion) is checked by hand on a release candidate.
+
+### An agent at the wheel
+
+The same socket, under the same consent switch, speaks an agent's view of the browser — `Agent.swift`, one file, no service of ours behind it. A model, or a shell script, opens pages of its own, names them, and works them:
+
+```
+./bench agent open https://example.com signin   # a page of the agent's, named
+./bench agent pages                             # its pages, by name
+./bench agent snapshot signin                   # the page in words, a number a thing
+./bench agent act signin fill "@3" "me@here.com"  # …by that number, by role and name, or by words
+./bench agent act signin click "text=Sign in"
+./bench agent read signin "@3"                  # the words at a thing, its value, where a link goes
+./bench agent wait signin target "#done"
+```
+
+A snapshot is the page as a model reads it — `button "Sign in" @12`, `textbox "Email" @3`, states such as `[checked]` in brackets — one line a thing, hidden things not listed, numbers good until the next snapshot. A target is a number from the list (`@3`), words on the thing (`text=Sign in`), a role and a name (`loc=role:button[name='Sign in']`), or a plain selector. Filling types the way pages listen for (React hears it); Enter submits the form the field is in; a `<label>` stands for its field. Agent pages are bench pages: never selected for you, out of the session and the history, gone when the script says so.
+
+`./bench agent run` hands a task in words to a model and lets it work: one act a line (`ACT fill @3 me@here.com`), the page back after each, until it answers in words (`ANSWER …`) — twelve steps by default, forty at most. The provider is whichever the AI add-on speaks, a local one included; the add-on is still held back from release, and tests point it at a stand-in. Nothing leaves the Mac but the model's own request, when one is asked for.
+
+`python3 Tests/agent_automation.py` checks both sides of it — the hands against a form of the test's own, and the carrier against a stand-in model that plays the model's part — the same hidden way every suite here runs.
+
+### A bot over the page
+
+The agent's socket works a page at arm's length; the bot is the same hands over the page you're on. ⌥⌘B summons it (`Bot.swift`): a small panel where you say what you want done — "sign this up with my usual email" — and the model reads the page, says what it's about to do, and does it, act by act, with the same numbers and words a snapshot gives. Every click and every filled field waits for your Allow; reads are free; Auto on the panel stops the asking until you turn it off again.
+
+When it has something better than words — a form checked over, a choice to pick — it draws a card in the panel, native controls drawn from [A2UI](https://bbc6bae9.github.io/a2ui-swift/) messages: `{"ui":[…]}`, a list of `createSurface` / `updateComponents` and the rest, rendered by the one dependency the app carries (`a2ui-swift`). A card is a picture with controls, never code from a model; a button you tap goes back as an event, with what the card holds.
+
+The bot is off until asked for (Settings › AI, "The bot on pages"), and independent of the AI add-on's holdback — it ships. It speaks the same providers, a local one included, under the same first-use notice before anything leaves the Mac, and a private tab takes only what runs on this Mac. One conversation while the panel is open, then nothing kept.
+
+`python3 Tests/bot_panel.py` checks it the same hidden way — a task carried act by act against a form of the test's own, each act held for allowing and once refused, Auto on, a card drawn and tapped, and the notice a provider off this Mac is asked first.
 
 ### Contributing
 

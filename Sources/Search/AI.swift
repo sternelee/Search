@@ -46,10 +46,17 @@ enum AIProvider: String, CaseIterable, Identifiable {
     /// Runs on this Mac: nothing leaves it, and no key is needed.
     var isLocal: Bool { self == .thisMac || self == .ollama || self == .lmStudio }
 
-    /// The one address requests go to. A key is kept for this host and is
-    /// never sent to any other (see AIClient.request).
+    /// The address requests go to: the provider's own, unless another one
+    /// was named for it in Settings (see named). A key is kept for this host
+    /// and is never sent to any other (see AIClient.request).
     var base: URL {
         if Store.testing, let mock = AIProvider.mock { return mock.appendingPathComponent(rawValue + "/") }
+        return named ?? own
+    }
+
+    /// The provider's own address, which is where requests go until another
+    /// one is named for it.
+    var own: URL {
         switch self {
         // Never asked over the network: the engine is a program of its own.
         case .thisMac: return URL(string: "http://127.0.0.1:1/")!
@@ -60,6 +67,38 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .ollama: return URL(string: "http://127.0.0.1:11434/v1/")!
         case .lmStudio: return URL(string: "http://127.0.0.1:1234/v1/")!
         }
+    }
+
+    /// Takes an address of its own: a gateway, a relay, an account under
+    /// another name. The rest are at one address, and stay there.
+    var takesAnotherAddress: Bool { self == .openAI || self == .anthropic }
+
+    /// Another address for it, where one was named in Settings and what was
+    /// typed is an address. Half an address on the way to a whole one is not
+    /// one, and the provider's own is used until it is.
+    var named: URL? {
+        guard takesAnotherAddress,
+              let named = Store.settings.dictionary(forKey: AIProvider.addressesKey) as? [String: String]
+        else { return nil }
+        return AIProvider.address(named[rawValue] ?? "")
+    }
+
+    /// Where an address named for a provider is kept (see Preferences.setAIBase).
+    static let addressesKey = "ai.base"
+
+    /// What was typed, read as an address — nil while it is not one. https and
+    /// http both: an address named by hand is the person's own choice, and a
+    /// gateway of their own may well be on this Mac (see AIClient.allowed).
+    /// A name and password in it are refused, so no key is ever in an address.
+    static func address(_ typed: String) -> URL? {
+        let typed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty,
+              let url = URL(string: typed),
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = url.host(), !host.isEmpty,
+              url.user == nil, url.password == nil
+        else { return nil }
+        return url
     }
 
     var host: String { self == .thisMac ? "this Mac" : base.host() ?? "" }
@@ -101,8 +140,9 @@ enum AIProvider: String, CaseIterable, Identifiable {
 /// This Mac only, readable while it is unlocked, never synced, and each kept
 /// for its provider's host (account "provider@host"). A copy of Search built
 /// without that profile — from source, or for testing — has no access group,
-/// and keeps no key at all rather than one somewhere weaker. Test runs keep
-/// theirs in memory, for the run.
+/// and keeps no key anywhere on disk at all rather than one somewhere weaker:
+/// what's pasted into it is kept in memory for the run, and let go when it
+/// quits. Test runs keep theirs the same way.
 ///
 /// A key is read the moment a request needs it and let go with the request:
 /// never in the settings file, a published value, a log line or an error.
@@ -111,7 +151,8 @@ enum AIKeys {
     enum Saved { case kept, unavailable, failed }
 
     private static let service = "com.officecommun.search.ai"
-    /// A test run's, by account, gone when it quits.
+    /// Keys held for no longer than this run of this copy: a test's, or a
+    /// pasted one where the keychain can't be reached (see `available`).
     private static var rehearsal: [String: String] = [:]
 
     private static func account(_ provider: AIProvider) -> String { "\(provider.rawValue)@\(provider.host)" }
@@ -123,18 +164,23 @@ enum AIKeys {
          kSecAttrAccount as String: account(provider)]
     }
 
-    /// Whether a key can be kept at all by this copy of Search.
+    /// Whether a key can be kept past this run of this copy of Search. A
+    /// read of the keychain can't tell — a key that isn't there reads as
+    /// "not found" whether or not this copy may put one in — so the
+    /// entitlement itself is asked for: only a copy signed as Search, with
+    /// its provisioning profile, carries an access group to keep keys under.
     static var available: Bool {
         if Store.testing { return true }
-        var asked = query(.anthropic)
-        asked[kSecReturnAttributes as String] = true
-        return SecItemCopyMatching(asked as CFDictionary, nil) != errSecMissingEntitlement
+        guard let task = SecTaskCreateFromSelf(nil),
+              let groups = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil) as? [String]
+        else { return false }
+        return !groups.isEmpty
     }
 
     static func save(_ key: String, for provider: AIProvider) -> Saved {
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, !provider.isLocal else { return .failed }
-        if Store.testing {
+        if Store.testing || !available {
             rehearsal[account(provider)] = key
             return .kept
         }
@@ -155,7 +201,7 @@ enum AIKeys {
 
     /// The key, for the request about to go out. Nil when there is none.
     static func key(for provider: AIProvider) -> String? {
-        if Store.testing { return rehearsal[account(provider)] }
+        if Store.testing || !available { return rehearsal[account(provider)] }
         var asked = query(provider)
         asked[kSecReturnData as String] = true
         asked[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -166,7 +212,7 @@ enum AIKeys {
 
     /// "••••1a2b" for one that is kept, without reading the key itself.
     static func hint(for provider: AIProvider) -> String? {
-        if Store.testing { return rehearsal[account(provider)].map { "••••" + $0.suffix(4) } }
+        if Store.testing || !available { return rehearsal[account(provider)].map { "••••" + $0.suffix(4) } }
         var asked = query(provider)
         asked[kSecReturnAttributes as String] = true
         var found: CFTypeRef?
@@ -177,7 +223,7 @@ enum AIKeys {
     }
 
     static func forget(_ provider: AIProvider) {
-        if Store.testing { rehearsal[account(provider)] = nil; return }
+        rehearsal[account(provider)] = nil
         SecItemDelete(query(provider) as CFDictionary)
     }
 

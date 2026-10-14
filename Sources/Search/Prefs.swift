@@ -320,6 +320,11 @@ final class Preferences: ObservableObject {
             store.set(ai, forKey: "ai")
         }
     }
+    /// The bot (see Bot): one key over a page, a talk and a pair of
+    /// hands. Off unless asked for.
+    @Published var bot: Bool {
+        didSet { store.set(bot, forKey: "bot") }
+    }
     /// Where its answers come from. None until you choose.
     @Published var aiProvider: AIProvider? {
         didSet { store.set(aiProvider?.rawValue, forKey: "ai.provider") }
@@ -327,6 +332,24 @@ final class Preferences: ObservableObject {
     /// The model asked for at each provider, where it isn't the default.
     @Published private(set) var aiModels: [String: String] {
         didSet { store.set(aiModels, forKey: "ai.models") }
+    }
+    /// Another address for a provider, where one was named: a gateway of your
+    /// own, a relay, an account under another name. Only the two providers that
+    /// take one (see AIProvider.takesAnotherAddress).
+    @Published private(set) var aiBases: [String: String] {
+        didSet { store.set(aiBases, forKey: AIProvider.addressesKey) }
+    }
+
+    /// What was named, as typed — the provider's own address until what was
+    /// typed is an address at all (see AIProvider.named).
+    func aiBase(for provider: AIProvider) -> String { aiBases[provider.rawValue] ?? "" }
+
+    /// Half an address is kept as it is typed rather than thrown away, so the
+    /// field can be edited; nothing is sent to it until it is whole.
+    func setAIBase(_ address: String, for provider: AIProvider) {
+        let named = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard named.count <= 200 else { return }
+        if named.isEmpty { aiBases.removeValue(forKey: provider.rawValue) } else { aiBases[provider.rawValue] = named }
     }
 
     func aiModel(for provider: AIProvider) -> String {
@@ -432,8 +455,10 @@ final class Preferences: ObservableObject {
         listsPins = store.bool(forKey: "pins.list")
         splitView = store.bool(forKey: "splitView")
         ai = AI.shipped && store.bool(forKey: "ai")
+        bot = store.bool(forKey: "bot")
         aiProvider = store.string(forKey: "ai.provider").flatMap(AIProvider.init(rawValue:))
         aiModels = store.dictionary(forKey: "ai.models") as? [String: String] ?? [:]
+        aiBases = store.dictionary(forKey: AIProvider.addressesKey) as? [String: String] ?? [:]
         commandBar = store.bool(forKey: "commandbar")
         let history = store.bool(forKey: "swipe.history")
         holdsHistory = history

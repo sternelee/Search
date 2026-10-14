@@ -339,12 +339,13 @@ final class Browser: NSObject, ObservableObject {
     @Published var finding = false
     /// The AI panel's conversation about the page, while it is open.
     @Published var assisting: Assistant?
-    /// The Settings page it opens on next.
+    /// The bot's talk about the page, while it is open (see Bot).
+    @Published var botting: Bot?
+    /// The Settings page it opens on next. The AI page is the bot's as
+    /// well as the add-on's, and the bot ships with the app, so the page is
+    /// always there to open.
     var settingsPage: SettingsPanel.Page {
-        get {
-            let page = SettingsPanel.Page(rawValue: Store.settings.string(forKey: "settings.page") ?? "") ?? .general
-            return page == .ai && !AI.shipped ? .general : page
-        }
+        get { SettingsPanel.Page(rawValue: Store.settings.string(forKey: "settings.page") ?? "") ?? .general }
         set { Store.settings.set(newValue.rawValue, forKey: "settings.page") }
     }
     // The same words written back (the field does, as it appears) aren't
@@ -2620,8 +2621,9 @@ final class Browser: NSObject, ObservableObject {
         // Back on a tab with the caret still in a box, the list may come again.
         looked = nil
         guard tab.id != activeID else { return }
-        // The AI panel is about the page it was opened on.
+        // The AI panel and the bot are about the page they were opened on.
         if assisting != nil { closeAssistant() }
+        if botting != nil { closeBot() }
         // Coming back to the tab whose video is out brings it home first, so
         // it is never lifted and landed in the same breath.
         if floating == tab.id { land() }
