@@ -402,7 +402,13 @@ final class Browser: NSObject, ObservableObject {
     }
 
     func openFind() {
-        guard active?.isBlank == false else { return }
+        // A terminal finds in its own scrollback (see TerminalFind); a page
+        // in what it shows.
+        if let console = active?.console {
+            console.openFind()
+            return
+        }
+        guard active?.hasPage == true else { return }
         finding = true
         findFocus += 1
     }
@@ -420,6 +426,11 @@ final class Browser: NSObject, ObservableObject {
     }
 
     func look(forward: Bool) {
+        // A terminal steps its own search (see TerminalFind).
+        if let console = active?.console {
+            console.stepFind(forward: forward)
+            return
+        }
         guard let tab = active else {
             missed = false
             findResult = nil
@@ -2231,7 +2242,20 @@ final class Browser: NSObject, ObservableObject {
         var active = 0
         var indices: [Tab.ID: Int] = [:]
         for tab in tabs {
-            guard kept(tab), let url = tab.pending ?? tab.address else { continue }
+            guard kept(tab) else { continue }
+            // A shell is kept with the tabs, wherever it was: what comes
+            // back is a new shell, and where it stood is all that can be
+            // brought back with it.
+            if tab.isTerminal {
+                if tab.id == id { active = entries.count }
+                indices[tab.id] = entries.count
+                entries.append(Session.Entry(
+                    url: tab.address?.absoluteString ?? "", title: tab.title, groupID: tab.groupID,
+                    terminal: true
+                ))
+                continue
+            }
+            guard let url = tab.pending ?? tab.address else { continue }
             if tab.id == id { active = entries.count }
             indices[tab.id] = entries.count
             entries.append(Session.Entry(
@@ -2265,9 +2289,13 @@ final class Browser: NSObject, ObservableObject {
     /// bench's, and only with a web address. A sleeping view is blank, so
     /// `pending` must win or its page will disappear from the next session.
     private func kept(_ tab: Tab) -> Bool {
+        // A shell is kept wherever it stands: the same rule as a page's,
+        // without the page's address — a shell never had one that could
+        // bring it back.
+        if tab.isTerminal { return !tab.shy && !tab.bench && tab.held == nil }
         // A tab holding an extension's sign-in answer (Tab.hold) carries its
         // code in the address: that is never written down.
-        !tab.shy && !tab.bench && tab.held == nil && (tab.pending ?? tab.address)?.scheme?.hasPrefix("http") == true
+        return !tab.shy && !tab.bench && tab.held == nil && (tab.pending ?? tab.address)?.scheme?.hasPrefix("http") == true
     }
 
     /// Another space's row. Its groups are the ones in its own file, the
@@ -2580,6 +2608,21 @@ final class Browser: NSObject, ObservableObject {
         focusRequest += 1
         rememberSession()
         if #available(macOS 15.4, *) { Extensions.shared.offerNewTabPage(into: tab) }
+    }
+
+    /// A shell in a tab of its own: ⌥⌘T, or "term" in the address field
+    /// (Settings › General › Address bar commands). The shell is your login
+    /// shell (see Terminal); a private terminal is a thing a browser has to
+    /// think harder about, and isn't here yet.
+    func newTerminal() {
+        let tab = Tab(configuration: Web.configuration(space: spaceID), terminal: true)
+        adopt(tab)
+        leaving()
+        activeID = tab.id
+        summoning = false
+        typed = ""
+        editing = false
+        rememberSession()
     }
 
     /// A blank tab given an extension's new tab page: the page needs a view
@@ -3498,8 +3541,8 @@ final class Browser: NSObject, ObservableObject {
 
     /// ⌘D. The same page, beside itself.
     func duplicate() {
-        guard let url = active?.address else { return }
-        open(url, foreground: true, from: active)
+        guard let tab = active, tab.hasPage, let url = tab.address else { return }
+        open(url, foreground: true, from: tab)
     }
 
     /// ⌘⇧V, when nothing is being typed. What is in the clipboard, if it is a
@@ -3518,7 +3561,7 @@ final class Browser: NSObject, ObservableObject {
 
     /// ⌘P. The system's own sheet, which is also where "save as PDF" lives.
     func printPage() {
-        guard let tab = active, !tab.isBlank, let window = NSApp.keyWindow else { return }
+        guard let tab = active, tab.hasPage, let window = NSApp.keyWindow else { return }
         Browser.printing(tab.web).runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
     }
 
@@ -3557,6 +3600,18 @@ final class Browser: NSObject, ObservableObject {
         var row: [Tab] = []
         var bySavedIndex: [Int: Tab] = [:]
         for (savedIndex, entry) in saved.tabs.enumerated() {
+            // A shell comes back as a shell — a new one, in the same place in
+            // the row, with the name it was given.
+            if entry.terminal == true {
+                let tab = Tab(configuration: Web.configuration(space: space), terminal: true)
+                prepare(tab)
+                tab.restore(title: entry.title, name: entry.name)
+                tab.groupID = entry.pin == nil && groups.contains(where: { $0.id == entry.groupID })
+                    ? entry.groupID : nil
+                row.append(tab)
+                bySavedIndex[savedIndex] = tab
+                continue
+            }
             // An empty page is never written; the first builds of Split View
             // on main wrote one for an empty half.
             guard let url = URL(string: entry.url), entry.url != "about:blank" else { continue }
@@ -3679,7 +3734,7 @@ final class Browser: NSObject, ObservableObject {
     private func lift(_ tab: Tab?, quietly: Bool, otherwise: Tab? = nil) {
         // A tab just put down with ⌘W has no page to lift a video out of, and
         // asking it would only build an empty view to ask.
-        guard let tab, !tab.isBlank, !tab.asleep, !floater.showing else {
+        guard let tab, !tab.isBlank, !tab.asleep, !tab.isTerminal, !floater.showing else {
             if let otherwise { lift(otherwise, quietly: quietly) }
             return
         }
@@ -3758,6 +3813,22 @@ final class Browser: NSObject, ObservableObject {
             announce("Hidden — ⌘Z puts it back")
         }
         tab.onPickEnd = { [weak self] _ in self?.veiling = false }
+        // A shell that says something of itself is heard here (see Terminal,
+        // TerminalShell): OSC 9 / OSC 777 from a tab nobody is looking at is
+        // a Mac notification — the shell in front is simply speaking. A
+        // bell in the back is a quiet nod, not a shout.
+        tab.onNotice = { [weak self, weak tab] notice in
+            guard let self, let tab else { return }
+            guard tab !== self.active || self.window?.isKeyWindow != true else { return }
+            switch notice {
+            case .note(let title, let body):
+                guard Shared.prefs.siteNotifications else { return }
+                SiteNotifications.shared.post(tab: tab.id.uuidString, title: title, body: body)
+            case .bell:
+                NSApp.requestUserAttention(.criticalRequest)
+            default: break
+            }
+        }
         tab.onImageMenu = { [weak self] tab, url in self?.showImageMenu(for: tab, at: url) }
         tab.searchName = { [weak self] in self.map { $0.prefs.engine.name(custom: $0.prefs.customEngine) } }
         tab.onSearch = { [weak self] tab, text in
@@ -4123,7 +4194,7 @@ final class Browser: NSObject, ObservableObject {
 
     /// ⌘⇧R. The article, and nothing that was arranged around it.
     func toggleReader() {
-        guard let tab = active else { return }
+        guard let tab = active, tab.hasPage else { return }
         tab.toggleReader { [weak self] worked in
             guard !worked else { return }
             self?.announce("Nothing to read on this page")

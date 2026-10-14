@@ -19,6 +19,10 @@ enum Session {
         var pinID: UUID? = nil
         /// A pin kept as a row (see Tab.listed). Nil for a square.
         var listed: Bool? = nil
+        /// A shell in place of a page. Nil on every page's tab, and on every
+        /// entry a version before terminals wrote. What comes back is a new
+        /// shell, not the process that was there when it was written.
+        var terminal: Bool? = nil
     }
 
     struct Shape: Codable {
@@ -97,7 +101,7 @@ enum Session {
 // key it isn't asked for. In extensions, so the memberwise initialisers stay.
 
 extension Session.Entry {
-    private enum Keys: String, CodingKey { case url, title, pin, name, home, groupID, pinID, listed }
+    private enum Keys: String, CodingKey { case url, title, pin, name, home, groupID, pinID, listed, terminal }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -109,6 +113,7 @@ extension Session.Entry {
         groupID = try? c.decodeIfPresent(UUID.self, forKey: .groupID)
         pinID = try? c.decodeIfPresent(UUID.self, forKey: .pinID)
         listed = try? c.decodeIfPresent(Bool.self, forKey: .listed)
+        terminal = try? c.decodeIfPresent(Bool.self, forKey: .terminal)
     }
 }
 

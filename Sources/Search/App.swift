@@ -50,6 +50,8 @@ struct SearchApp: App {
                     .shortcut("file.newWindow")
                 Button("New Tab") { browser.newTab() }
                     .shortcut("file.newTab")
+                Button("New Terminal") { browser.newTerminal() }
+                    .shortcut("file.newTerminal")
                 Button("New Private Tab") { browser.newShyTab() }
                     .shortcut("file.newPrivateTab")
                 Button(browser.reopenTitle) { browser.reopen() }
@@ -71,19 +73,19 @@ struct SearchApp: App {
             CommandGroup(replacing: .printItem) {
                 Button("Share…") { browser.share() }
                     .shortcut("file.share")
-                    .disabled(browser.active?.isBlank ?? true)
+                    .disabled(browser.active?.hasPage != true)
                 Button("Print…") { browser.printPage() }
                     .shortcut("file.print")
-                    .disabled(browser.active?.isBlank ?? true)
+                    .disabled(browser.active?.hasPage != true)
             }
             CommandGroup(after: .pasteboard) {
                 Divider()
                 Button("Find on Page…") { browser.openFind() }
                     .shortcut("edit.find")
-                    .disabled(browser.active?.isBlank ?? true)
+                    .disabled(browser.active?.searchable != true)
                 Button("Find Next") { browser.look(forward: true) }
                     .shortcut("edit.findNext")
-                    .disabled(!browser.finding)
+                    .disabled(!(browser.finding || browser.active?.isTerminal == true))
                 Button("Find Previous") { browser.look(forward: false) }
                     .shortcut("edit.findPrevious")
                     .disabled(!browser.finding)
@@ -122,10 +124,10 @@ struct SearchApp: App {
                     Divider()
                     Button("Summarize Page") { browser.summarizePage() }
                         .shortcut("view.summarize")
-                        .disabled(browser.active?.isBlank ?? true)
+                        .disabled(browser.active?.hasPage != true)
                     Button("Ask About This Page…") { browser.askAboutPage() }
                         .shortcut("view.ask")
-                        .disabled(browser.active?.isBlank ?? true)
+                        .disabled(browser.active?.hasPage != true)
                 }
                 Divider()
                 Button("Hide Elements…") { browser.toggleHiding() }
@@ -209,7 +211,7 @@ struct SearchApp: App {
                     .disabled(browser.active == nil)
                 Button("Duplicate Tab") { browser.duplicate() }
                     .shortcut("tabs.duplicate")
-                    .disabled(browser.active?.isBlank ?? true)
+                    .disabled(browser.active?.hasPage != true)
                 Button("Copy Address") { browser.copyAddress() }
                     .shortcut("tabs.copyAddress")
                     .disabled(browser.active?.isBlank ?? true)

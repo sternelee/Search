@@ -13,6 +13,7 @@ import Foundation
 enum AddressCommand: CaseIterable, Equatable {
     case settings
     case newTab
+    case newTerminal
     case newPrivateTab
     case newSpace
     case bookmarks
@@ -26,6 +27,7 @@ enum AddressCommand: CaseIterable, Equatable {
         switch self {
         case .settings: return ["settings", "preferences"]
         case .newTab: return ["new tab"]
+        case .newTerminal: return ["new terminal", "term", "terminal"]
         case .newPrivateTab: return ["new private tab", "private tab"]
         case .newSpace: return ["new space"]
         case .bookmarks: return ["bookmarks"]
@@ -50,6 +52,7 @@ enum AddressCommand: CaseIterable, Equatable {
         switch self {
         case .settings: browser.tuning = true
         case .newTab: browser.newTab()
+        case .newTerminal: browser.newTerminal()
         case .newPrivateTab: browser.newShyTab()
         case .newSpace: browser.makingSpace = true
         case .bookmarks: browser.bookmarking = true
