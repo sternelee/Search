@@ -47,12 +47,20 @@ final class Assistant: ObservableObject, Identifiable {
     private var messages: [AIMessage] = []
     private var waiting: AIPage.Ask?
     private var task: Task<Void, Never>?
+    /// Tool calls and skills asked for in this conversation, bounded (see
+    /// `follow`).
+    private var steps = 0
 
     init(tab: Tab, provider: AIProvider, model: String, summary: Bool) {
         self.tab = tab.id
         self.provider = provider
         self.model = model
         self.summary = summary
+        // The read-only tools the person keeps are offered to this panel
+        // (see AIDescribed.forAsking): their servers connected in the
+        // background while the page is being read, so the tools are there
+        // to list by the time a question is asked.
+        MCPHub.shared.wake()
         Task { @MainActor [weak self, weak tab] in
             guard let self, let tab else { return }
             self.read = await AIPage.read(tab)
@@ -108,11 +116,23 @@ final class Assistant: ObservableObject, Identifiable {
             messages.append(AIMessage(role: .user, text: messages.isEmpty ? AIPage.opening(read, ask, fence: fence) : question))
             turns.append(Turn(question: question))
         }
+        steps = 0
+        answer()
+    }
+
+    /// The turn is asked of the model — the first time, and again when a
+    /// tool's or a skill's material has come back (see `follow`). Tools and
+    /// skills of the person's ride along when there are any, only the ones
+    /// that say they read (see AIDescribed.forAsking).
+    private func answer() {
+        guard let read else { return }
+        if !turns.isEmpty { turns[turns.count - 1].answer = "" }
+        let system = AIPage.system(fence: fence) + AIDescribed.forAsking()
         // The key, read now and let go with the request.
         let key = provider.isLocal ? nil : AIKeys.key(for: provider)
         let stream = provider == .thisMac
-            ? AIEngine.shared.stream(system: AIPage.system(fence: fence), messages: messages)
-            : AIClient.shared.stream(provider, model: model, system: AIPage.system(fence: fence), messages: messages, key: key)
+            ? AIEngine.shared.stream(system: system, messages: messages)
+            : AIClient.shared.stream(provider, model: model, system: system, messages: messages, key: key)
         task = Task { @MainActor [weak self] in
             do {
                 for try await piece in stream {
@@ -122,6 +142,11 @@ final class Assistant: ObservableObject, Identifiable {
                     // talked into writing on and on is stopped.
                     if self.turns[self.turns.count - 1].answer.count > Assistant.longest { break }
                 }
+                // A reply that is one call is followed, not finished (see
+                // `follow`); anything else ends the turn.
+                if let self, !self.turns.isEmpty,
+                   let call = AIDescribed.call(in: self.turns[self.turns.count - 1].answer),
+                   self.follow(call) { return }
                 self?.finish(nil)
             } catch {
                 self?.finish(error.localizedDescription)
@@ -129,7 +154,53 @@ final class Assistant: ObservableObject, Identifiable {
         }
     }
 
+    /// A reply given over to one tool call or one skill is followed, not
+    /// shown: the call is made — only tools that say they read are offered,
+    /// so this panel never touches anything — and what comes back goes in
+    /// as the next material, the same turn answered again. Bounded, so a
+    /// model that calls on and on is stopped and its last words stand.
+    private func follow(_ call: (tool: (name: String, arguments: [String: Any])?, skill: String?)) -> Bool {
+        guard steps < Assistant.steps, !turns.isEmpty else { return false }
+        steps += 1
+        // What the model said stays part of the conversation; the person
+        // sees a word on what's happening instead.
+        messages.append(AIMessage(role: .assistant, text: turns[turns.count - 1].answer))
+        turns[turns.count - 1].answer = call.tool != nil ? "Looking something up…" : "Reading one of your skills…"
+        task = Task { @MainActor [weak self] in
+            guard let self, !self.turns.isEmpty else { return }
+            var material: String
+            if let tool = call.tool {
+                do {
+                    let said = try await MCPHub.shared.call(tool.name, arguments: tool.arguments)
+                    var words = said.text.isEmpty ? "nothing" : said.text
+                    if words.count > Assistant.pageful { words = String(words.prefix(Assistant.pageful)) + "…" }
+                    material = "The tool \(tool.name) \(said.failed ? "said it failed" : "said"):\n\(words)"
+                } catch {
+                    material = "The tool \(tool.name) didn't work: \(error.localizedDescription). Answer without it."
+                }
+            } else if let skill = call.skill {
+                if let id = Skills.listed().first(where: { $0.name == skill })?.id,
+                   let body = Skills.body(id) {
+                    var words = body
+                    if words.count > Assistant.pageful { words = String(words.prefix(Assistant.pageful)) + "…" }
+                    material = "The skill \(skill), the person's own words:\n\n\(words)"
+                } else {
+                    material = "There's no skill called \(skill) — answer without it."
+                }
+            } else { return }
+            self.messages.append(AIMessage(role: .user, text: material))
+            self.answer()
+        }
+        return true
+    }
+
     static let longest = 16_000
+    /// What a tool or a skill may say into the conversation, capped like a
+    /// page (see AIPage).
+    static let pageful = 8_000
+    /// Tool calls and skills asked for in one conversation, before the
+    /// model is made to answer in words.
+    static let steps = 6
 
     private func finish(_ failed: String?) {
         guard !turns.isEmpty, let read else { return }
@@ -408,6 +479,9 @@ struct AISettings: View {
     @ObservedObject var prefs: Preferences
     /// Drawn off screen, for a picture: menus and fields stood in for.
     var drawn = false
+    /// The side stayed on, kept between visits (the words on top, see
+    /// Tabs): the AI itself, the tools of the wider world, the skills.
+    @State private var side: Side = Side(rawValue: Store.settings.string(forKey: "ai.page") ?? "") ?? .ai
     @State private var pasted = ""
     @State private var hint: String?
     @State private var models: [String] = []
@@ -419,7 +493,33 @@ struct AISettings: View {
     @State private var testTrouble: String?
     @State private var testTask: Task<Void, Never>?
 
+    /// The sides of Settings › AI.
+    enum Side: String {
+        case ai, mcp, skills
+    }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Tabs(picked: Binding(get: { side.rawValue },
+                                set: { side = Side(rawValue: $0) ?? .ai }),
+                 (id: "ai", title: "AI"), (id: "mcp", title: "MCP"), (id: "skills", title: "Skills"))
+            switch side {
+            case .ai:
+                theAI
+            case .mcp:
+                MCPServersView(drawn: drawn)
+            case .skills:
+                SkillsShelf(drawn: drawn)
+            }
+        }
+        // The side stayed on, kept between visits.
+        .onChange(of: side) { _, fresh in
+            Store.settings.set(fresh.rawValue, forKey: "ai.page")
+        }
+    }
+
+    /// The AI side: the bot, the add-on, where it runs, and the keys.
+    private var theAI: some View {
         VStack(alignment: .leading, spacing: 18) {
             Card {
                 Line("The bot on pages", "Summon it over a page with ⌥⌘B: it reads the page, talks about it, and works it for you — every change waits for your Allow. Nothing is sent until you ask") {
@@ -668,7 +768,7 @@ struct AISettings: View {
     }
 
     /// A menu or a field, as a picture shows it.
-    private struct Stand: View {
+    struct Stand: View {
         let text: String
         var menu = false
         var width: CGFloat?
@@ -737,5 +837,215 @@ struct AISettings: View {
             models = await AIClient.shared.localModels(provider)
             looking = false
         }
+    }
+}
+
+/// The MCP side of Settings › AI: the person's own servers, switched on
+/// apiece and taken out by hand, one added by hand too — a program run on
+/// this Mac or an address elsewhere (see MCP). Nothing is contacted until
+/// a server is switched on, and none runs behind the person's back.
+private struct MCPServersView: View {
+    var drawn = false
+    @ObservedObject private var hub = MCPHub.shared
+    @State private var name = ""
+    /// A program run on this Mac, or an address elsewhere.
+    @State private var program = true
+    @State private var command = ""
+    @State private var arguments = ""
+    @State private var address = ""
+    /// Headers to give with every request over HTTP, as they're typed in.
+    @State private var headerRows: [HeaderField] = []
+    @State private var trouble: String?
+
+    /// One header of an address, as it's typed in: its name, and what it says.
+    private struct HeaderField: Identifiable {
+        let id = UUID()
+        var name = ""
+        var worth = ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                if hub.servers.isEmpty {
+                    Nothing("No servers yet — the bot has no tools beyond the page. Add one below")
+                } else {
+                    ForEach(Array(hub.servers.enumerated()), id: \.element.id) { index, server in
+                        if index > 0 { Rule() }
+                        Line(server.config.name, "\(whereItIs(server.config)) · \(server.state.words)") {
+                            HStack(spacing: 8) {
+                                if drawn {
+                                    AISettings.Stand(hub.enabled(server.config.name) ? "On" : "Off")
+                                } else {
+                                    Switch(on: Binding(get: { hub.enabled(server.config.name) },
+                                                       set: { hub.setEnabled(server.config.name, $0) }))
+                                }
+                                Quick("Remove") { hub.remove(server.config.name) }
+                            }
+                        }
+                    }
+                }
+            }
+            Card {
+                Line("Add a server", "Its tools are offered to the bot, and the ones that say they read to the questions about a page") {
+                    EmptyView()
+                }
+                Rule()
+                Line("Name", "Its tools are met by it: Name · tool") {
+                    field($name, prompt: "weather", width: 130)
+                }
+                Rule()
+                Line("Kind", nil) {
+                    if drawn {
+                        AISettings.Stand(program ? "Program" : "Address", menu: true)
+                    } else {
+                        Picker("", selection: $program) {
+                            Text("Program").tag(true)
+                            Text("Address").tag(false)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .fixedSize()
+                    }
+                }
+                if program {
+                    Rule()
+                    Line("Program", "Run on this Mac, spoken to over its pipes") {
+                        field($command, prompt: "/opt/homebrew/bin/weather", width: 170)
+                    }
+                    Rule()
+                    Line("Arguments", "One after another, apart") {
+                        field($arguments, prompt: "--unit celsius", width: 170)
+                    }
+                } else {
+                    Rule()
+                    Line("Address", "Over HTTP, answered one request at a time") {
+                        field($address, prompt: "https://example.com/mcp", width: 170)
+                    }
+                    Rule()
+                    Line("Headers", "Given with every request — a token to say who's asking, or whatever else the server wants to hear") {
+                        Quick("+ Header") { headerRows.append(HeaderField()) }
+                    }
+                    ForEach($headerRows) { $header in
+                        Rule()
+                        Line("Header", "Its name, and what it says") {
+                            HStack(spacing: 6) {
+                                field($header.name, prompt: "Authorization", width: 105)
+                                field($header.worth, prompt: "Bearer …", width: 125)
+                                Quick("Remove") { headerRows.removeAll { $0.id == header.id } }
+                            }
+                            // The fields and the Remove keep their size, and the
+                            // words above wrap instead: squeezed, a pill's label
+                            // stands on end.
+                            .fixedSize()
+                        }
+                    }
+                }
+                if let trouble {
+                    Rule()
+                    Line("It wasn't added", trouble) { EmptyView() }
+                }
+                Rule()
+                Line("", nil) {
+                    Pill("Add Server", filled: true) { add() }
+                }
+            }
+        }
+    }
+
+    /// A program on this Mac, or an address elsewhere — with the headers
+    /// it was given, if an address with some.
+    private func whereItIs(_ config: MCPServer.Config) -> String {
+        if let command = config.command?.trimmingCharacters(in: .whitespaces), !command.isEmpty {
+            let rest = (config.args ?? []).joined(separator: " ")
+            return "on this Mac: \(command)\(rest.isEmpty ? "" : " \(rest)")"
+        }
+        let headers = config.headers?.count ?? 0
+        return (config.url ?? "") + (headers > 0 ? " · \(headers) header\(headers == 1 ? "" : "s")" : "")
+    }
+
+    /// The field of a line, as the plate draws them.
+    @ViewBuilder
+    private func field(_ text: Binding<String>, prompt: String, width: CGFloat) -> some View {
+        if drawn {
+            AISettings.Stand(prompt, width: width)
+        } else {
+            TextField("", text: text, prompt: Text(prompt).foregroundStyle(Palette.faint))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .frame(width: width)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .onSubmit { add() }
+        }
+    }
+
+    private func add() {
+        var config = MCPServer.Config(name: name)
+        if program {
+            config.command = command
+            config.args = arguments.split(whereSeparator: \.isWhitespace).map(String.init)
+        } else {
+            config.url = address
+            // A header named is a header kept; of two of one name, the last
+            // word wins.
+            let kept = Dictionary(
+                headerRows.map { ($0.name.trimmingCharacters(in: .whitespaces), $0.worth) }
+                    .filter { !$0.0.isEmpty },
+                uniquingKeysWith: { _, last in last })
+            config.headers = kept.isEmpty ? nil : kept
+        }
+        do {
+            try hub.add(config)
+            // A field cleared is the sign it was taken; the words said under
+            // it before are gone with it.
+            name = ""; command = ""; arguments = ""; address = ""; headerRows = []
+            trouble = nil
+        } catch {
+            trouble = error.localizedDescription
+        }
+    }
+}
+
+/// The Skills side of Settings › AI: the person's own instruction files,
+/// one folder apiece in the skills folder (see Skills), on until they're
+/// switched off. Nothing is written here — the words are the person's own,
+/// made by hand or dropped in.
+private struct SkillsShelf: View {
+    var drawn = false
+    @State private var found: [Skills.Listed] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                if found.isEmpty {
+                    Nothing("No skills yet — a folder in the skills folder, holding a SKILL.md with its name and description between --- lines at the top, and its words below")
+                } else {
+                    ForEach(Array(found.enumerated()), id: \.element.id) { index, skill in
+                        if index > 0 { Rule() }
+                        Line(skill.name, skill.description.isEmpty ? "One of your own files" : skill.description) {
+                            if drawn {
+                                AISettings.Stand(Skills.enabled(skill.id) ? "On" : "Off")
+                            } else {
+                                Switch(on: Binding(get: { Skills.enabled(skill.id) },
+                                                   set: { Skills.setEnabled(skill.id, $0) }))
+                            }
+                        }
+                    }
+                }
+            }
+            Card {
+                Line("The folder", Skills.folder.path) {
+                    Quick("Show") {
+                        // Made if it isn't there yet, so there's something to
+                        // show; opened for the person, never from a test.
+                        try? FileManager.default.createDirectory(at: Skills.folder, withIntermediateDirectories: true)
+                        if !Store.testing { NSWorkspace.shared.open(Skills.folder) }
+                    }
+                }
+            }
+        }
+        .onAppear { found = Skills.discover() }
     }
 }

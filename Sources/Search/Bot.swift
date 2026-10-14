@@ -331,6 +331,19 @@ final class Loop {
     func resume(_ allowed: Bool) {
         guard let bot, let held = bot.pending else { return }
         bot.pending = nil
+        // A tool is an act beyond the page, held like any other; let go, it
+        // is the server's to answer (see `useTool`).
+        if held.act.verb == "tool" {
+            if allowed {
+                useTool(held.act.target, arguments: held.act.text)
+            } else {
+                var refused = held.act
+                refused.outcome = "refused"
+                bot.tell(Bot.Event(kind: .act, words: "", act: refused))
+                observe(note: "The person refused your tool \(held.act.target).", full: false, first: false)
+            }
+            return
+        }
         if allowed {
             perform(held.act.verb, held.act.target, held.act.text)
         } else {
@@ -388,9 +401,12 @@ final class Loop {
         }
         steps -= 1
         bot.status = "asking \(provider.name)…"
+        // Tools and skills of the person's, when there are any, ride along
+        // with the same words every time (see AIDescribed).
+        let system = Bot.system + AIDescribed.forTheBot()
         let stream = provider == .thisMac
-            ? AIEngine.shared.stream(system: Bot.system, messages: messages)
-            : AIClient.shared.stream(provider, model: model, system: Bot.system, messages: messages, key: key)
+            ? AIEngine.shared.stream(system: system, messages: messages)
+            : AIClient.shared.stream(provider, model: model, system: system, messages: messages, key: key)
         var whole = ""
         task = Task { @MainActor [weak self] in
             do {
@@ -422,7 +438,7 @@ final class Loop {
             if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
             if !words.isEmpty { bot.tell(Bot.Event(kind: .say, words: words, act: nil)) }
             bot.status = "asking again — the last reply wasn't in shape"
-            observe(note: "Your last reply wasn't JSON with say, act, read, ui, goto, wait, full or answer — one object, alone or wrapped in words. Try again.", full: false, first: false)
+            observe(note: "Your last reply wasn't JSON with say, act, read, ui, goto, wait, full, answer, tool or skill — one object, alone or wrapped in words. Try again.", full: false, first: false)
             return
         }
         bot.status = nil
@@ -445,7 +461,7 @@ final class Loop {
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         }
         if let whole = object(text) { return whole }
-        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer"]
+        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer", "tool", "skill"]
         for line in text.split(separator: "\n").map(String.init) {
             if let one = object(line), !known.isDisjoint(with: one.keys) { return one }
         }
@@ -502,6 +518,24 @@ final class Loop {
             observe(note: nil, full: true, first: false)
             return
         }
+        // A tool of the person's called — an act beyond the page, so it
+        // waits for the person's Allow like any act (Auto lets it go).
+        if let tool = line["tool"] as? [String: Any],
+           let name = tool["name"] as? String, !name.isEmpty {
+            let arguments = tool["arguments"] as? [String: Any] ?? [:]
+            let held = (try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            if bot.auto {
+                useTool(name, arguments: held)
+            } else {
+                bot.pending = Bot.Pending(act: Bot.Act(verb: "tool", target: name, text: held))
+            }
+            return
+        }
+        if let skill = line["skill"] as? String, !skill.isEmpty {
+            readSkill(skill)
+            return
+        }
         if let read = line["read"] as? String, !read.isEmpty {
             perform("read", read, "")
             return
@@ -522,7 +556,49 @@ final class Loop {
             observe(note: nil, full: false, first: false)
             return
         }
-        observe(note: "That reply had nothing to do — say, act, read, ui, goto, wait, full or answer.", full: false, first: false)
+        observe(note: "That reply had nothing to do — say, act, read, ui, goto, wait, full, answer, tool or skill.", full: false, first: false)
+    }
+
+    /// A tool called and answered: what it said comes back with the next
+    /// showing — material from the person's own server, to be read and
+    /// never obeyed. `arguments` is the JSON the model sent, held in the
+    /// act for the person to see.
+    private func useTool(_ qualified: String, arguments held: String) {
+        guard let bot else { return }
+        let arguments = (held.data(using: .utf8)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any] ?? [:]
+        bot.status = "calling \(qualified)…"
+        Task { @MainActor [weak self] in
+            guard let self, let bot = self.bot else { return }
+            var act = Bot.Act(verb: "tool", target: qualified, text: held)
+            var note: String
+            do {
+                let said = try await MCPHub.shared.call(qualified, arguments: arguments)
+                act.outcome = said.failed ? "the tool said it failed" : "done"
+                var words = said.text.isEmpty ? "nothing" : said.text
+                if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
+                note = "Your tool \(qualified) \(said.failed ? "said it failed" : "said"): \(words)"
+            } catch {
+                act.outcome = "didn't work: \(error.localizedDescription)"
+                note = "Your tool \(qualified) didn't work: \(error.localizedDescription). Try another way."
+            }
+            bot.tell(Bot.Event(kind: .act, words: "", act: act))
+            self.observe(note: note, full: false, first: false)
+        }
+    }
+
+    /// One of the person's skills read, its words taken to heart with the
+    /// next showing (the body enters the conversation here, and only here —
+    /// see Skills).
+    private func readSkill(_ name: String) {
+        guard let id = Skills.listed().first(where: { $0.name == name })?.id,
+              let body = Skills.body(id) else {
+            observe(note: "There's no skill called \(name) — the ones the person keeps are listed for you. Try another way.", full: false, first: false)
+            return
+        }
+        var words = body
+        if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
+        observe(note: "The skill \(name), the person's own words:\n\n\(words)", full: false, first: false)
     }
 
     /// An act done on the page, and told: what came of it goes back with the
@@ -612,6 +688,11 @@ extension Browser {
         // Already open on this page: the same talk goes on.
         if let open = botting, open.tab == tab.id, open.provider == provider { return }
         botting?.stop()
+        // The tools and skills the person keeps are offered to the bot as
+        // it comes in: the servers connected in the background, so their
+        // tools are there to list by the time a task is asked (see
+        // AIDescribed).
+        MCPHub.shared.wake()
         botting = Bot(tab: tab, provider: provider, model: model)
     }
 

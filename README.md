@@ -146,6 +146,14 @@ The bot is off until asked for (Settings › AI, "The bot on pages"), and indepe
 
 `python3 Tests/bot_panel.py` checks it the same hidden way — a task carried act by act against a form of the test's own, each act held for allowing and once refused, Auto on, a card drawn and tapped, and the notice a provider off this Mac is asked first.
 
+### Tools beyond the page, and skills of your own
+
+Settings › AI now speaks in tabs: AI itself, MCP, and Skills. The MCP tab holds servers — the tool-bearers of the Model Context Protocol — by a command to run on this Mac (stdio, one JSON object a line of its pipes) or an address to ask over HTTP (the streamable way: pages of tools by their cursor, a session id kept and said back), with headers of your own given along with every request — a token to say who's asking, or whatever else the server wants to hear. A server is switched on or off as it stands; its tools are listed when it's called on, and come to the model qualified by the server's name — `notes · add_note`, what it takes with it. A tool called from the bot waits for your Allow like any other act, Auto aside; the Ask panel offers only the tools a server says read only.
+
+A skill is a folder of your own with a `SKILL.md` in it — a name and a description in the frontmatter, the rest its words — kept in the app's own skills folder, wherever the tab says. Enabled skills are listed to the model with the page; the body is read only when called on, and it comes back to the model as its briefing, not as an act on anything. Skills live on this Mac and go no further than the model's prompt.
+
+`python3 Tests/mcp_skills.py` checks both against stand-ins of the test's own — one over pipes, one over HTTP with paged tools, a session id and a header of its own wanted at the door, the bot calling a tool held for allowing and a skill read into the next ask, the panel offered only what reads — the same hidden way every suite here runs.
+
 ### Contributing
 
 Issues and pull requests are genuinely welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for how this is reviewed and what tends to get merged. The short version: small changes, no new dependencies, nothing that phones home. Found a security problem? Please report it privately, as [SECURITY.md](SECURITY.md) says.

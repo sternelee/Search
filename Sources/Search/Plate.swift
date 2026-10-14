@@ -220,3 +220,39 @@ struct Quick: View {
         .buttonStyle(.plain)
     }
 }
+
+/// The words on top, for a panel with more than one side to it (see
+/// Settings › AI). The chosen one is ink with a line under it; the rest
+/// are muted with a faint one, the sides this panel isn't on.
+struct Tabs: View {
+    @Binding var picked: String
+    let tabs: [(id: String, title: String)]
+
+    init(picked: Binding<String>, _ tabs: (id: String, title: String)...) {
+        self._picked = picked
+        self.tabs = tabs
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            ForEach(tabs, id: \.id) { tab in
+                let chosen = picked == tab.id
+                Button {
+                    picked = tab.id
+                } label: {
+                    VStack(spacing: 4) {
+                        Text(tab.title)
+                            .font(.system(size: 13, weight: chosen ? .semibold : .regular))
+                            .foregroundStyle(chosen ? Palette.ink : Palette.muted)
+                        Capsule()
+                            .fill(chosen ? Palette.ink : Palette.faint)
+                            .frame(height: 2)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}

@@ -1572,6 +1572,94 @@ final class Bench {
                 answer(["error": "ai mock URL | key PROVIDER KEY | ask PROVIDER MODEL TEXT | read ID | check TEXT"])
             }
 
+        case "mcp":
+            // The person's servers (see MCP.swift) as a run can set them up:
+            // added, switched on, their tools listed, one called. Only on a
+            // SEARCH_PROBE run — and only ever a program on this Mac or an
+            // address on it.
+            guard Store.testing else { answer(["error": "mcp only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "add":
+                let usage = "mcp add NAME COMMAND [ARGS] | NAME URL [HEADERS]"
+                guard let name = request["name"] as? String else {
+                    answer(["error": usage]); return
+                }
+                var config = MCPServer.Config(name: name)
+                if let url = request["url"] as? String {
+                    guard let met = URL(string: url), ["127.0.0.1", "localhost", "::1"].contains(met.host() ?? "")
+                    else { answer(["error": "mcp add needs an address on this Mac"]); return }
+                    config.url = url
+                    // Headers said with every request — a token to say who's asking.
+                    if let headers = request["headers"] as? [String: Any] {
+                        let kept = headers.compactMapValues { $0 as? String }
+                        if !kept.isEmpty { config.headers = kept }
+                    }
+                } else if let command = request["command"] as? String {
+                    config.command = command
+                    config.args = request["args"] as? [String]
+                } else {
+                    answer(["error": usage]); return
+                }
+                do { try MCPHub.shared.add(config) } catch { answer(["error": error.localizedDescription]); return }
+                answer(["added": name])
+            case "remove":
+                guard let name = request["name"] as? String else { answer(["error": "mcp remove NAME"]); return }
+                MCPHub.shared.remove(name)
+                answer(["removed": name])
+            case "on", "off":
+                guard let name = request["name"] as? String else { answer(["error": "mcp on|off NAME"]); return }
+                MCPHub.shared.setEnabled(name, request["action"] as? String == "on")
+                answer(["name": name, "on": MCPHub.shared.enabled(name)])
+            case "list":
+                answer(["servers": MCPHub.shared.servers.map { [
+                    "name": $0.config.name,
+                    "where": $0.config.command ?? $0.config.url ?? "",
+                    "headers": $0.config.headers?.count ?? 0,
+                    "state": $0.state.words,
+                    "on": MCPHub.shared.enabled($0.config.name),
+                    "tools": $0.tools.map(\.qualified),
+                ] as [String: Any] }])
+            case "tools":
+                // Every server on, told to connect and waited for; then the
+                // tools the model would be offered.
+                Task { @MainActor in
+                    await MCPHub.shared.wakeAndWait()
+                    answer(["tools": MCPHub.shared.listed().map(\.described),
+                            "states": MCPHub.shared.servers.map { [$0.config.name: "\($0.state)"] }])
+                }
+            case "call":
+                guard let tool = request["tool"] as? String else { answer(["error": "mcp call TOOL [ARGUMENTS]"]); return }
+                let arguments = request["arguments"] as? [String: Any] ?? [:]
+                Task { @MainActor in
+                    do {
+                        let said = try await MCPHub.shared.call(tool, arguments: arguments)
+                        answer(["text": said.text, "failed": said.failed])
+                    } catch {
+                        answer(["error": error.localizedDescription])
+                    }
+                }
+            default:
+                answer(["error": "mcp add | remove | on | off | list | tools | call"])
+            }
+
+        case "skills":
+            // The person's skills (see Skills.swift) as a run can meet them.
+            guard Store.testing else { answer(["error": "skills only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "list":
+                answer(["skills": Skills.listed().map { ["name": $0.name, "description": $0.description] as [String: Any] },
+                        "found": Skills.discover().map(\.name)])
+            case "on", "off":
+                guard let name = request["name"] as? String else { answer(["error": "skills on|off NAME"]); return }
+                Skills.setEnabled(name, request["action"] as? String == "on")
+                answer(["name": name, "on": Skills.enabled(name)])
+            case "read":
+                guard let name = request["name"] as? String else { answer(["error": "skills read NAME"]); return }
+                answer(["body": Skills.body(name) ?? ""])
+            default:
+                answer(["error": "skills list | on | off | read"])
+            }
+
         case "notifications":
             // What a test run would have posted, and every site's answer.
             guard Store.testing else { answer(["error": "notifications only works on a --test run"]); return }
@@ -2529,7 +2617,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "accounts", "find", "answer", "visible", "ai", "notifications",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "accounts", "find", "answer", "visible", "ai", "mcp", "skills", "notifications",
             ]])
         }
     }
