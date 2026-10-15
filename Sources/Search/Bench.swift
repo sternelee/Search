@@ -1660,6 +1660,40 @@ final class Bench {
                 answer(["error": "skills list | on | off | read"])
             }
 
+        case "chores":
+            // The tasks set for the bot to do later (see Chores) as a run can
+            // meet them: listed, added, removed, the clock ticked by hand —
+            // a time already come runs at once. Only on a SEARCH_PROBE run,
+            // for what it runs is the bot.
+            guard Store.testing else { answer(["error": "chores only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "add":
+                let usage = "chores add GOAL AT PAGE — a time ISO 8601"
+                guard let goal = request["goal"] as? String, !goal.isEmpty,
+                      let when = request["at"] as? String, let at = Chores.read(when),
+                      let page = request["page"] as? String, !page.isEmpty else {
+                    answer(["error": usage]); return
+                }
+                let provider = browser.prefs.aiProvider
+                let task = Chores.shared.add(goal: goal, at: at, page: page,
+                                            provider: provider?.rawValue ?? "",
+                                            model: provider.map { browser.prefs.aiModel(for: $0) } ?? "")
+                answer(["added": task.id.uuidString])
+            case "remove":
+                guard let id = (request["id"] as? String).flatMap(UUID.init(uuidString:)) else {
+                    answer(["error": "chores remove ID"]); return
+                }
+                Chores.shared.remove(id)
+                answer(["removed": id.uuidString])
+            case "list":
+                answer(["tasks": Chores.shared.listed()])
+            case "tick":
+                Chores.shared.tick()
+                answer(["tasks": Chores.shared.listed()])
+            default:
+                answer(["error": "chores add | remove | list | tick"])
+            }
+
         case "notifications":
             // What a test run would have posted, and every site's answer.
             guard Store.testing else { answer(["error": "notifications only works on a --test run"]); return }
@@ -2617,7 +2651,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "accounts", "find", "answer", "visible", "ai", "mcp", "skills", "notifications",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "accounts", "find", "answer", "visible", "ai", "mcp", "skills", "chores", "notifications",
             ]])
         }
     }

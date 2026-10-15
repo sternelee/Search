@@ -67,6 +67,10 @@ final class Bot: ObservableObject, Identifiable {
     /// Asked for, the asking stops: acts go ahead on their own.
     @Published var auto = false
     @Published var draft = ""
+    /// Told when a turn is over — an answer, a card, a trouble, or the panel
+    /// closed on it — with the trouble's words, or nothing. The scheduled
+    /// run listens (see Chores); nothing else does.
+    var onOver: ((String?) -> Void)?
     /// The cards it has drawn, in the order they came — each answered by
     /// the ask that follows it, and gone.
     @Published private(set) var surfaces: [SurfaceViewModel] = []
@@ -125,6 +129,9 @@ final class Bot: ObservableObject, Identifiable {
 
     private func send(_ words: String) {
         guard let page else { return }
+        // A live turn let go for a new ask: whoever was listening on its
+        // end (a scheduled run, see Chores) is told it was taken back.
+        if loop != nil { onOver?("the person took the panel back") }
         // A card is answered by the ask that starts this turn: it has
         // served, and goes. (The model can end one sooner with a delete.)
         cards.removeAll()
@@ -161,6 +168,9 @@ final class Bot: ObservableObject, Identifiable {
 
     /// Stop everything, quietly: the panel closing, a new ask coming.
     func stop() {
+        // A turn still working was closed on: whoever listened on its end
+        // (a scheduled run, see Chores) is told it came to nothing.
+        if working { onOver?("the bot was closed on it") }
         loop?.halt()
         loop = nil
         working = false
@@ -175,6 +185,7 @@ final class Bot: ObservableObject, Identifiable {
         pending = nil
         status = nil
         if let failed { trouble = failed }
+        onOver?(failed)
     }
 
     fileprivate func tell(_ event: Event) {
@@ -248,6 +259,7 @@ final class Bot: ObservableObject, Identifiable {
         {"wait": "target"}  — wait for something to be on the page
         {"full": true}  — you were shown only what's in view; ask for the whole page
         {"answer": "…"}  — the task is done (or can't be done); the person reads this
+        {"later": {"goal": "…", "at": "…"}}  — note a task for a time to come, the goal your own\nsumming up of what's to be done, at as ISO 8601 (like 2026-10-15T08:00:00+08:00).\nEach page comes with NOW, the time it is — turn "tomorrow at eight" into a time\nto come, in the person's own timezone given with it. When the time comes, this\npage is opened again and you work it, Auto on, no one watching.
 
         Acts (the verb in an act): click, fill, press, select, check, uncheck, hover, scroll, clear.\
         fill takes text to type; select takes an option; press takes a key (Enter, Tab, Escape, ArrowDown).\
@@ -356,6 +368,14 @@ final class Loop {
 
     /// The page shown to the model: what it holds, numbered, and what came
     /// of the last thing done. The first showing carries the question.
+    /// The time it is, told with every page (ISO 8601, the person's own
+    /// timezone): what "tomorrow at eight" is worked out from.
+    static let clock: ISO8601DateFormatter = {
+        let made = ISO8601DateFormatter()
+        made.timeZone = .current
+        return made
+    }()
+
     private func observe(note: String?, full: Bool, first: Bool) {
         guard let bot, let page else { return }
         bot.status = "looking at the page…"
@@ -381,6 +401,7 @@ final class Loop {
             if let note { seen += note + "\n\n" }
             // Where it is, what it's called: what a person reads before the
             // page itself, and what a model needs to know an address by.
+            seen += "NOW \(Self.clock.string(from: Date()))\n"
             seen += "PAGE \(page.address?.absoluteString ?? "")\nTITLE \(page.title)\n\n"
             var tree = said["tree"] as? String ?? ""
             if tree.count > Bot.pageful {
@@ -461,7 +482,7 @@ final class Loop {
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         }
         if let whole = object(text) { return whole }
-        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer", "tool", "skill"]
+        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer", "later", "tool", "skill"]
         for line in text.split(separator: "\n").map(String.init) {
             if let one = object(line), !known.isDisjoint(with: one.keys) { return one }
         }
@@ -497,6 +518,23 @@ final class Loop {
             bot.tell(Bot.Event(kind: .answer, words: answer, act: nil))
             bot.messages = messages
             bot.over(nil)
+            return
+        }
+        // A task for a time to come, set: the goal noted in the model's own
+        // words, kept with the page and the time (see Chores) — the turn is
+        // over, and the time will bring it back to work the page again.
+        if let later = line["later"] as? [String: Any],
+           let goal = later["goal"] as? String, !goal.isEmpty,
+           let when = later["at"] as? String, !when.isEmpty {
+            if let at = Chores.read(when), at > Date() {
+                Chores.shared.add(goal: goal, at: at, page: page.address?.absoluteString ?? "",
+                                  provider: provider.rawValue, model: model)
+                bot.tell(Bot.Event(kind: .say, words: "Noted for \(Chores.spoken(at)): \(goal)", act: nil))
+                bot.messages = messages
+                bot.over(nil)
+            } else {
+                observe(note: "That time couldn't be read, or it has already come — NOW it is \(Self.clock.string(from: Date())). Say the task again, with a time to come, ISO 8601.", full: false, first: false)
+            }
             return
         }
         if let address = line["goto"] as? String,

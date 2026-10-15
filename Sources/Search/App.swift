@@ -699,6 +699,8 @@ struct ContentView: View {
             Links.hand(to: browser)
             BookmarkMenu.shared.start(for: browser)
             Browsers.watchFrames()
+            // The bot's tasks for later come due from here on (see Chores).
+            Chores.shared.wake(browser)
         }
     }
 

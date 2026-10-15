@@ -495,14 +495,14 @@ struct AISettings: View {
 
     /// The sides of Settings › AI.
     enum Side: String {
-        case ai, mcp, skills
+        case ai, mcp, skills, chores
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Tabs(picked: Binding(get: { side.rawValue },
                                 set: { side = Side(rawValue: $0) ?? .ai }),
-                 (id: "ai", title: "AI"), (id: "mcp", title: "MCP"), (id: "skills", title: "Skills"))
+                 (id: "ai", title: "AI"), (id: "mcp", title: "MCP"), (id: "skills", title: "Skills"), (id: "chores", title: "Tasks"))
             switch side {
             case .ai:
                 theAI
@@ -510,6 +510,8 @@ struct AISettings: View {
                 MCPServersView(drawn: drawn)
             case .skills:
                 SkillsShelf(drawn: drawn)
+            case .chores:
+                ChoresList(drawn: drawn)
             }
         }
         // The side stayed on, kept between visits.
@@ -1047,5 +1049,48 @@ private struct SkillsShelf: View {
             }
         }
         .onAppear { found = Skills.discover() }
+    }
+}
+
+/// The bot's tasks for a time to come (see Chores): the goal in its own
+/// words, when it comes, and what came of it — taken off here, watched
+/// here, missed here.
+private struct ChoresList: View {
+    var drawn = false
+    @ObservedObject private var chores = Chores.shared
+
+    /// A task's state, as a person reads it.
+    private func spoken(_ task: Chores.Chore) -> String {
+        switch task.state {
+        case .waiting: return "waiting"
+        case .running: return "running now"
+        case .done: return "done — \(task.words ?? "")"
+        case .failed: return "didn't come to it — \(task.words ?? "")"
+        case .missed: return "missed — \(task.words ?? "")"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                if chores.tasks.isEmpty {
+                    Nothing("No tasks for later yet — ask the bot over a page for something at a time to come (\"tomorrow at eight, sign me up\"), and it notes the goal in its own words and does it when the time comes")
+                } else {
+                    ForEach(Array(chores.tasks.enumerated()), id: \.element.id) { index, task in
+                        if index > 0 { Rule() }
+                        Line(task.goal, "\(Chores.spoken(task.at)) · \(spoken(task)) · \(task.page)") {
+                            if drawn {
+                                AISettings.Stand(task.state == .waiting ? "Waiting" : spoken(task))
+                            } else {
+                                Pill("Remove") { chores.remove(task.id) }
+                            }
+                        }
+                    }
+                }
+            }
+            Card {
+                Line("When the time comes", "The page is opened again and the bot works it, Auto on, while Search is running — a time that passes with Search closed is missed, not run, and says so here") { EmptyView() }
+            }
+        }
     }
 }
