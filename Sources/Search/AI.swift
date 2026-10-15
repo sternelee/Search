@@ -133,16 +133,21 @@ enum AIProvider: String, CaseIterable, Identifiable {
     }
 }
 
-/// The keys, in the keychain and nowhere else.
+/// The keys, in this Mac's keychain.
 ///
-/// The data protection keychain, under Search's own access group: only apps
-/// signed as Search, with its provisioning profile, can read or write them.
-/// This Mac only, readable while it is unlocked, never synced, and each kept
-/// for its provider's host (account "provider@host"). A copy of Search built
-/// without that profile — from source, or for testing — has no access group,
-/// and keeps no key anywhere on disk at all rather than one somewhere weaker:
-/// what's pasted into it is kept in memory for the run, and let go when it
-/// quits. Test runs keep theirs the same way.
+/// This Mac's own keychain, as ordinary keychain items under a service of the
+/// app's, one for each provider and the host it was given for — account
+/// "provider@host" — so a key is read only for the address it was given for
+/// and sent nowhere else (see AIClient.request). This Mac only, readable while
+/// the person is logged in, never synced: the same place, and the same way,
+/// Search keeps passwords (see Vault). A copy built from source keeps its keys
+/// apart from a signed Search's, because the keychain tells the two apart by
+/// their signatures; a test run keeps its own under a service of its own, so a
+/// made-up key never sits where a real one does.
+///
+/// Where the keychain won't take one at all — locked, or ruled out by policy —
+/// what's pasted is kept in memory for the run and let go when it quits, and
+/// Settings says so (see `available`).
 ///
 /// A key is read the moment a request needs it and let go with the request:
 /// never in the settings file, a published value, a log line or an error.
@@ -150,84 +155,149 @@ enum AIProvider: String, CaseIterable, Identifiable {
 enum AIKeys {
     enum Saved { case kept, unavailable, failed }
 
+    /// One key kept for a provider, and the host it was given for.
+    struct Held {
+        var host: String
+        /// The key's last four, to tell two apart without reading either.
+        var tail: String
+    }
+
     private static let service = "com.officecommun.search.ai"
-    /// Keys held for no longer than this run of this copy: a test's, or a
-    /// pasted one where the keychain can't be reached (see `available`).
+
+    /// Where this run's keys are kept: a test run's under a service of its
+    /// own, so a made-up key never sits where a real one does.
+    private static var place: String { Store.testing ? service + ".test" : service }
+
+    /// Keys held for no longer than this run, where the keychain wouldn't take
+    /// one (see save). None while keys are being kept properly.
     private static var rehearsal: [String: String] = [:]
+
+    /// Whether the keychain refused a key this run: what Settings says about
+    /// how long a pasted key lasts.
+    private static var refused = false
 
     private static func account(_ provider: AIProvider) -> String { "\(provider.rawValue)@\(provider.host)" }
 
+    private static func account(_ provider: AIProvider, host: String) -> String { "\(provider.rawValue)@\(host)" }
+
+    /// Whether a key is kept in this Mac's keychain, and past this run of this
+    /// copy: true wherever the keychain takes one, which is everywhere a
+    /// person is running Search; false only where it wouldn't (see save).
+    static var available: Bool { !refused }
+
     private static func query(_ provider: AIProvider) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecUseDataProtectionKeychain as String: true,
-         kSecAttrService as String: service,
+         kSecAttrService as String: place,
          kSecAttrAccount as String: account(provider)]
-    }
-
-    /// Whether a key can be kept past this run of this copy of Search. A
-    /// read of the keychain can't tell — a key that isn't there reads as
-    /// "not found" whether or not this copy may put one in — so the
-    /// entitlement itself is asked for: only a copy signed as Search, with
-    /// its provisioning profile, carries an access group to keep keys under.
-    static var available: Bool {
-        if Store.testing { return true }
-        guard let task = SecTaskCreateFromSelf(nil),
-              let groups = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil) as? [String]
-        else { return false }
-        return !groups.isEmpty
     }
 
     static func save(_ key: String, for provider: AIProvider) -> Saved {
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, !provider.isLocal else { return .failed }
-        if Store.testing || !available {
+        guard hold(key, for: provider) else {
+            // Nowhere on this Mac to keep it: held for the run, and said so.
             rehearsal[account(provider)] = key
-            return .kept
+            refused = true
+            return .unavailable
         }
-        SecItemDelete(query(provider) as CFDictionary)
+        rehearsal[account(provider)] = nil
+        refused = false
+        return .kept
+    }
+
+    /// One key into this Mac's keychain, over whatever was kept for that host
+    /// before.
+    private static func hold(_ key: String, for provider: AIProvider, host: String? = nil) -> Bool {
         var item = query(provider)
+        if let host { item[kSecAttrAccount as String] = account(provider, host: host) }
+        SecItemDelete(item as CFDictionary)
         item[kSecValueData as String] = Data(key.utf8)
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        item[kSecAttrSynchronizable as String] = false
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
         item[kSecAttrLabel as String] = "Search — \(provider.name) key"
         // The last four, to tell keys apart in Settings without reading one.
         item[kSecAttrComment as String] = String(key.suffix(4))
-        switch SecItemAdd(item as CFDictionary, nil) {
-        case errSecSuccess: return .kept
-        case errSecMissingEntitlement: return .unavailable
-        default: return .failed
-        }
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
     }
 
     /// The key, for the request about to go out. Nil when there is none.
     static func key(for provider: AIProvider) -> String? {
-        if Store.testing || !available { return rehearsal[account(provider)] }
         var asked = query(provider)
         asked[kSecReturnData as String] = true
         asked[kSecMatchLimit as String] = kSecMatchLimitOne
         var found: CFTypeRef?
-        guard SecItemCopyMatching(asked as CFDictionary, &found) == errSecSuccess, let data = found as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        if SecItemCopyMatching(asked as CFDictionary, &found) == errSecSuccess,
+           let data = found as? Data, let key = String(data: data, encoding: .utf8) {
+            return key
+        }
+        return rehearsal[account(provider)]
     }
 
     /// "••••1a2b" for one that is kept, without reading the key itself.
     static func hint(for provider: AIProvider) -> String? {
-        if Store.testing || !available { return rehearsal[account(provider)].map { "••••" + $0.suffix(4) } }
         var asked = query(provider)
         asked[kSecReturnAttributes as String] = true
+        asked[kSecMatchLimit as String] = kSecMatchLimitOne
+        var found: CFTypeRef?
+        if SecItemCopyMatching(asked as CFDictionary, &found) == errSecSuccess,
+           let attributes = found as? [String: Any] {
+            return "••••" + (attributes[kSecAttrComment as String] as? String ?? "")
+        }
+        return rehearsal[account(provider)].map { "••••" + $0.suffix(4) }
+    }
+
+    /// Every key kept for a provider, whichever address it was given for: for
+    /// the row that says a key is kept for another host, and offers to bring
+    /// it along (see AIAssist.key).
+    static func held(for provider: AIProvider) -> [Held] {
+        let asked: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: place,
+                                    kSecReturnAttributes as String: true,
+                                    kSecMatchLimit as String: kSecMatchLimitAll]
         var found: CFTypeRef?
         guard SecItemCopyMatching(asked as CFDictionary, &found) == errSecSuccess,
-              let attributes = found as? [String: Any]
-        else { return nil }
-        return "••••" + (attributes[kSecAttrComment as String] as? String ?? "")
+              let rows = found as? [[String: Any]]
+        else { return [] }
+        let start = provider.rawValue + "@"
+        return rows.compactMap { row in
+            guard let account = row[kSecAttrAccount as String] as? String, account.hasPrefix(start)
+            else { return nil }
+            return Held(host: String(account.dropFirst(start.count)),
+                        tail: row[kSecAttrComment as String] as? String ?? "")
+        }
+    }
+
+    /// A key kept for another host of the same provider, kept now for this
+    /// one: what the row does when an address is named after the key was given
+    /// for the provider's own.
+    static func carry(_ provider: AIProvider, from host: String) -> Saved {
+        var asked = query(provider)
+        asked[kSecAttrAccount as String] = account(provider, host: host)
+        asked[kSecReturnData as String] = true
+        asked[kSecMatchLimit as String] = kSecMatchLimitOne
+        var found: CFTypeRef?
+        guard SecItemCopyMatching(asked as CFDictionary, &found) == errSecSuccess,
+              let data = found as? Data, let key = String(data: data, encoding: .utf8)
+        else { return .failed }
+        return save(key, for: provider)
     }
 
     static func forget(_ provider: AIProvider) {
         rehearsal[account(provider)] = nil
         SecItemDelete(query(provider) as CFDictionary)
+        refused = false
+    }
+
+    /// One key kept for a provider under an address it no longer goes to.
+    static func forget(_ provider: AIProvider, host: String) {
+        var asked = query(provider)
+        asked[kSecAttrAccount as String] = account(provider, host: host)
+        SecItemDelete(asked as CFDictionary)
     }
 
     static func forgetAll() {
-        AIProvider.allCases.forEach(forget)
+        AIProvider.allCases.forEach { provider in
+            forget(provider)
+            held(for: provider).forEach { forget(provider, host: $0.host) }
+        }
     }
 }

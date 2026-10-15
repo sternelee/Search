@@ -1433,10 +1433,12 @@ final class Bench {
 
         case "ai":
             // The AI add-on's requests against a stand-in on this Mac: "mock"
-            // points every provider at it, "key" keeps a made-up key for the
-            // run (in memory), "ask" sends one question and gives back the
-            // whole answer or the error. Only on a SEARCH_PROBE run, and only
-            // ever to the loopback address.
+            // points every provider at it, "key" keeps a made-up key (in this
+            // Mac's keychain, where this run's own keys go), "keys" gives back
+            // what is kept for every provider — the key's last four, never the
+            // key — "forget" takes keys away again, "ask" sends one question
+            // and gives back the whole answer or the error. Only on a
+            // SEARCH_PROBE run, and only ever to the loopback address.
             guard Store.testing else { answer(["error": "ai only works on a --test run"]); return }
             switch request["action"] as? String {
             case "mock":
@@ -1451,6 +1453,29 @@ final class Bench {
                 else { answer(["error": "ai key PROVIDER KEY"]); return }
                 let saved = AIKeys.save(key, for: provider)
                 answer(["saved": "\(saved)", "hint": AIKeys.hint(for: provider) ?? ""])
+            case "keys":
+                // Every provider's own settings as they stand: where its
+                // requests go, the model chosen, and what is kept for it —
+                // the key's last four and the host it was given for, never
+                // the key itself (see AIKeys.held).
+                let kept: [[String: Any]] = AIProvider.allCases.filter { !$0.isLocal }.map { one in
+                    ["provider": one.rawValue,
+                     "name": one.name,
+                     "base": browser.prefs.aiBase(for: one),
+                     "model": browser.prefs.aiModel(for: one),
+                     "hint": AIKeys.hint(for: one) ?? "",
+                     "held": AIKeys.held(for: one).map { ["host": $0.host, "tail": $0.tail] }]
+                }
+                answer(["keys": kept])
+            case "forget":
+                // One provider's key, or every key this run's keys go under:
+                // for a test that leaves the keychain as it found it.
+                if let provider = (request["provider"] as? String).flatMap(AIProvider.init(rawValue:)) {
+                    AIKeys.forget(provider)
+                } else {
+                    AIKeys.forgetAll()
+                }
+                answer(["forgotten": true])
             case "ask":
                 guard let provider = (request["provider"] as? String).flatMap(AIProvider.init(rawValue:)) else {
                     answer(["error": "ai ask PROVIDER MODEL TEXT"]); return

@@ -667,11 +667,20 @@ struct AISettings: View {
     @ViewBuilder
     private func key(_ provider: AIProvider) -> some View {
         if let hint {
-            // A copy built without the signed profile keeps what's pasted
-            // for the run and no longer: said plainly, when that's the case.
-            Line("Key", "\(hint)\(AIKeys.available ? ", in this Mac's keychain" : ", kept while this copy is open, nowhere on disk")") {
+            // Where a key is kept, and how long it lasts: this Mac's keychain
+            // unless it wouldn't take one (see AIKeys.available).
+            Line("Key", "\(hint)\(AIKeys.available ? ", in this Mac's keychain" : ", kept for this run only")") {
                 Pill("Forget") {
                     AIKeys.forget(provider)
+                    refresh()
+                }
+            }
+        } else if provider.takesAnotherAddress, let elsewhere = AIKeys.held(for: provider).first {
+            // A key given for the provider's own address, with another one
+            // named since: said, and offered for the address in use now.
+            Line("Key", "••••\(elsewhere.tail), kept for \(elsewhere.host) — not for \(provider.host)") {
+                Pill("Keep for This Address") {
+                    AIKeys.carry(provider, from: elsewhere.host)
                     refresh()
                 }
             }
@@ -811,19 +820,19 @@ struct AISettings: View {
         let key = pasted
         pasted = ""
         switch AIKeys.save(key, for: provider) {
-        case .kept: browser.announce(AIKeys.available ? "Key kept in the keychain" : "Key kept while this copy is open")
-        case .unavailable: browser.announce("This copy of Search can't keep keys")
+        case .kept: browser.announce("Key kept in this Mac's keychain")
+        case .unavailable: browser.announce("The keychain wouldn't take the key — kept for this run")
         case .failed: browser.announce("The key wasn't kept")
         }
         refresh()
     }
 
-    /// What the key line says under a paste field: how long a pasted key
-    /// lasts, which depends on whether this copy can put one in the
-    /// keychain at all (see AIKeys.available).
+    /// What the key line says under a paste field: where a pasted key is kept,
+    /// which depends on whether the keychain will take one at all (see
+    /// AIKeys.available).
     private func keyPrompt(_ provider: AIProvider) -> String {
-        let open = AIKeys.available ? "Paste your API key"
-            : "Paste your API key — kept while this copy is open, nowhere on disk"
+        let open = AIKeys.available ? "Paste your API key — kept in this Mac's keychain"
+            : "Paste your API key — kept for this run only"
         return provider == .openRouter ? "Paste one, or sign in and OpenRouter makes one for you" : open
     }
 

@@ -222,6 +222,33 @@ def main():
     made, without_row = picture("/tmp/ai-address-gemini")
     t.ok("no row for a provider that takes none", without_row < with_row, f"{without_row} against {with_row}")
     t.ok("and the row is a row, not a hairline", with_row - without_row > 60, f"{with_row - without_row} pixels")
+    quit()
+
+    # A provider set up once is set up still after a restart: the address named
+    # for it, the model chosen, and the key itself. The key is kept in this
+    # Mac's keychain — the one Search keeps passwords in, which a copy made
+    # from source can reach — so one pasted into a copy is there the next time
+    # it runs (the data-protection keychain wanted the provisioning profile a
+    # signed Search carries; see AIKeys).
+    subprocess.run(["defaults", "write", SUITE, "ai.models", "-dict", "openAI", "gpt-5.4"])
+    provider("openAI"); address(RELAY)
+    launch()
+    kept = {row["provider"]: row for row in ai("keys").get("keys", [])}
+    openai = kept.get("openAI", {})
+    t.ok("the address named for a provider is kept across a restart", openai.get("base") == RELAY, openai.get("base", "nothing"))
+    t.ok("the model chosen for it is kept too", openai.get("model") == "gpt-5.4", openai.get("model", "nothing"))
+    t.ok("and the key, in this Mac's keychain", (openai.get("hint") or "").startswith("••••"), openai.get("hint", "no key"))
+    held = openai.get("held") or []
+    t.ok("kept for the host it was given for", len(held) == 1 and held[0].get("tail") == "elay", held)
+    asked = ai("ask", provider="openAI", model="gpt-5.4", text="hello again")
+    t.ok("a key kept across a restart goes with the next request",
+         (seen[-1] if seen else {}).get("auth") == "Bearer sk-made-up-for-the-relay",
+         (seen[-1] if seen else {}).get("auth", "no key"))
+    t.ok("and the answer comes back the same way", asked.get("text") == "hello from the relay", asked)
+    # Taken away, it is gone: the test leaves the keychain as it found it.
+    ai("forget")
+    gone = {row["provider"]: row for row in ai("keys").get("keys", [])}
+    t.ok("a key taken away is gone", not (gone.get("openAI", {}).get("hint") or "").startswith("••••"), gone.get("openAI", {}))
     t.done()
     finish()
     return t.failed
