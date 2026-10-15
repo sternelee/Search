@@ -21,6 +21,10 @@ while a form of the test's own is the page. Checked here:
   the run      a task come due: its page opened again, the bot let loose
                on it with Auto on — no act held — to its answer, kept
   the missing  a time that passes with Search closed: missed, not run
+  the rounds   a task asked for as one that comes round again ("every ten
+               minutes"): the gap kept with it, a round that ends setting
+               the next, and a time passed with Search closed skipped to
+               the next round, not missed; a gap too small said so
 """
 
 import hashlib
@@ -373,9 +377,96 @@ def case_missing(t):
          and tasks[0]["words"] == "its time came while Search wasn't running", tasks)
 
 
+def case_round(t):
+    """a task that comes round again: the gap kept, each round sets the next"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    # No time given, only a gap: the first round is one gap from now.
+    script.clear(); seen.clear()
+    script.extend([
+        '{"later":{"goal":"Pull the feed and pick out the AI news","every":600}}',
+    ])
+    bt("ask", text="Every ten minutes, pull the feed and pick out the AI news")
+    noted = until(t, lambda s: any(e["kind"] == "say" and e["words"].startswith("Noted for")
+                                  for e in s.get("events", [])))
+    t.ok("a task with a gap is noted like any other",
+         any(e["kind"] == "say" and e["words"].startswith("Noted for")
+             and "every 10 min" in e["words"] for e in noted.get("events", [])), noted.get("events"))
+    tasks = chores("list").get("tasks", [])
+    t.ok("the gap kept, the first round one gap away",
+         len(tasks) == 1 and tasks[0]["every"] == 600 and tasks[0]["state"] == "waiting"
+         and tasks[0]["at"] > time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 590)), tasks)
+
+    # A round that ends sets the next: the answer kept as this round's words.
+    chores("remove", id=tasks[0]["id"])
+    at = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 5))
+    added = chores("add", goal="Pull the feed and pick out the AI news", at=at,
+                   page=f"{BASE}/form", every=120)
+    t.ok("a round set for a time already come", added.get("every") == 120, added)
+
+    script.clear(); seen.clear()
+    script.extend(['{"answer":"three AI stories this round"}'])
+    chores("tick")
+    answer = until(t, lambda s: any(e["kind"] == "answer" for e in s.get("events", [])), within=60,
+                   doing="the round the clock set the bot on")
+    t.ok("the round came to its answer",
+         any(e["kind"] == "answer" and e["words"] == "three AI stories this round"
+             for e in answer.get("events", [])), answer.get("events"))
+    asking = words(seen, "The task the person set for this time")
+    t.ok("the model told the task comes round, and not to run the next round now",
+         "comes round every 2 min" in asking and "next round" in asking, asking[:200])
+    tasks = chores("list").get("tasks", [])
+    t.ok("the next round set, this round's answer kept",
+         len(tasks) == 1 and tasks[0]["every"] == 120 and tasks[0]["state"] == "waiting"
+         and tasks[0]["at"] > time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 60))
+         and tasks[0]["words"] == "three AI stories this round", tasks)
+
+
+def case_round_gap(t):
+    """a gap too small between rounds: said so, nothing noted"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    script.clear(); seen.clear()
+    script.extend([
+        '{"later":{"goal":"A task too often","every":30}}',
+        '{"answer":"the gap was too small"}',
+    ])
+    bt("ask", text="Every thirty seconds, do it")
+    until(t, lambda s: any(e["kind"] == "answer" for e in s.get("events", [])))
+    t.ok("a gap too small was said so",
+         bool(words(seen, "That gap between rounds is too small")),
+         [m.get("content", "")[:60] for m in seen[-1]["messages"]])
+    t.ok("no task came of it", chores("list").get("tasks") == [], chores("list"))
+
+
+def case_round_missed(t):
+    """rounds that find Search closed: skipped to the next, not missed"""
+    setup(); launch()
+    at = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 3))
+    chores("add", goal="Pull the feed and pick out the AI news", at=at,
+           page=f"{BASE}/form", every=120)
+    t.ok("a round set for a time to come",
+         any(s.get("every") == 120 and s.get("state") == "waiting"
+             for s in chores("list").get("tasks", [])), at)
+
+    quit(); time.sleep(4); launch()
+    tasks = chores("list").get("tasks", [])
+    t.ok("the rounds that passed with Search closed were skipped to the next",
+         len(tasks) == 1 and tasks[0]["state"] == "waiting" and tasks[0]["every"] == 120
+         and tasks[0]["at"] > time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time())), tasks)
+
+
 def main():
     t = T()
-    for case in [case_list, case_note, case_time, case_run, case_missing]:
+    for case in [case_list, case_note, case_time, case_run, case_missing, case_round, case_round_gap, case_round_missed]:
         print(f"— {case.__doc__}")
         try:
             case(t)

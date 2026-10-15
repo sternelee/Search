@@ -156,9 +156,9 @@ A skill is a folder of your own with a `SKILL.md` in it — a name and a descrip
 
 ### A task for later
 
-Ask the bot for something at a time to come — *buy this ticket at eight tomorrow morning* — and the model sums the task up in its own words and keeps it: `{"later": {"goal": "…", "at": "…"}}`, the time ISO 8601. The task is kept on this Mac with the page it was asked over (Settings › AI › Tasks); when the time comes, the page is opened again and the bot let loose on it with Auto on — no act held for an Allow — to its answer, which is kept with the task. A time that can't be read, or one already come, is said so and nothing kept; a time that passes with Search closed is marked missed, not run late.
+Ask the bot for something at a time to come — *buy this ticket at eight tomorrow morning*, or *every ten minutes, pull the feed and pick out the AI news* — and the model sums the task up in its own words and keeps it: `{"later": {"goal": "…", "at": "…", "every": 600}}`, the time ISO 8601 and, for a task that comes round again, the gap in seconds (a minute at least; the first time can be left out and is one gap from now). The task is kept on this Mac with the page it was asked over (Settings › AI › Tasks); when the time comes, the page is opened again and the bot let loose on it with Auto on — no act held for an Allow — to its answer, which is kept with the task. A time that can't be read, or one already come, is said so and nothing kept; a time that passes with Search closed is marked missed, not run late. A task with a gap comes round until you take it off: each round's answer is kept with it, rounds that find Search closed are skipped to the next rather than piled up, and a round that goes wrong tries again at its next time.
 
-`python3 Tests/chores.py` checks it the same hidden way — a task noted from the words that asked for it, a time said so, a task come due let loose on a form of the test's own to its answer, and a missed one — against a stand-in model on this Mac.
+`python3 Tests/chores.py` checks it the same hidden way — a task noted from the words that asked for it, a time said so, a task come due let loose on a form of the test's own to its answer, a missed one, and a task that comes round again setting its next round — against a stand-in model on this Mac.
 
 ### Contributing
 

@@ -1693,17 +1693,18 @@ final class Bench {
             guard Store.testing else { answer(["error": "chores only works on a --test run"]); return }
             switch request["action"] as? String {
             case "add":
-                let usage = "chores add GOAL AT PAGE — a time ISO 8601"
+                let usage = "chores add GOAL AT PAGE [EVERY] — a time ISO 8601; EVERY, seconds, for a task that comes round again"
                 guard let goal = request["goal"] as? String, !goal.isEmpty,
                       let when = request["at"] as? String, let at = Chores.read(when),
                       let page = request["page"] as? String, !page.isEmpty else {
                     answer(["error": usage]); return
                 }
+                let every = (request["every"] as? Double) ?? (request["every"] as? Int).map(Double.init)
                 let provider = browser.prefs.aiProvider
                 let task = Chores.shared.add(goal: goal, at: at, page: page,
                                             provider: provider?.rawValue ?? "",
-                                            model: provider.map { browser.prefs.aiModel(for: $0) } ?? "")
-                answer(["added": task.id.uuidString])
+                                            model: provider.map { browser.prefs.aiModel(for: $0) } ?? "", every: every)
+                answer(["added": task.id.uuidString, "every": every.map { Int($0) } ?? 0])
             case "remove":
                 guard let id = (request["id"] as? String).flatMap(UUID.init(uuidString:)) else {
                     answer(["error": "chores remove ID"]); return

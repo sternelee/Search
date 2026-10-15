@@ -1071,7 +1071,7 @@ private struct ChoresList: View {
     /// A task's state, as a person reads it.
     private func spoken(_ task: Chores.Chore) -> String {
         switch task.state {
-        case .waiting: return "waiting"
+        case .waiting: return task.every != nil ? "waiting for its next round" : "waiting"
         case .running: return "running now"
         case .done: return "done — \(task.words ?? "")"
         case .failed: return "didn't come to it — \(task.words ?? "")"
@@ -1079,15 +1079,24 @@ private struct ChoresList: View {
         }
     }
 
+    /// A task's time, as a person reads it: for one that comes round
+    /// again, the gap and the next time it comes.
+    private func timing(_ task: Chores.Chore) -> String {
+        if let every = task.every {
+            return "every \(Chores.gap(every)) · next \(Chores.spoken(task.at))"
+        }
+        return Chores.spoken(task.at)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Card {
                 if chores.tasks.isEmpty {
-                    Nothing("No tasks for later yet — ask the bot over a page for something at a time to come (\"tomorrow at eight, sign me up\"), and it notes the goal in its own words and does it when the time comes")
+                    Nothing("No tasks for later yet — ask the bot over a page for something at a time to come (\"tomorrow at eight, sign me up\", or \"every ten minutes, pull the feed\"), and it notes the goal in its own words and does it when the time comes")
                 } else {
                     ForEach(Array(chores.tasks.enumerated()), id: \.element.id) { index, task in
                         if index > 0 { Rule() }
-                        Line(task.goal, "\(Chores.spoken(task.at)) · \(spoken(task)) · \(task.page)") {
+                        Line(task.goal, "\(timing(task)) · \(spoken(task)) · \(task.page)") {
                             if drawn {
                                 AISettings.Stand(task.state == .waiting ? "Waiting" : spoken(task))
                             } else {
@@ -1098,7 +1107,7 @@ private struct ChoresList: View {
                 }
             }
             Card {
-                Line("When the time comes", "The page is opened again and the bot works it, Auto on, while Search is running — a time that passes with Search closed is missed, not run, and says so here") { EmptyView() }
+                Line("When the time comes", "The page is opened again and the bot works it, Auto on, while Search is running — a time that passes with Search closed is missed, not run, and says so here. A task asked for as one that comes round again (\"every ten minutes\") comes round until it's taken off: each round's answer is kept with it, a round that finds Search closed is skipped, not piled up, and one that goes wrong tries again at its next time") { EmptyView() }
             }
         }
     }

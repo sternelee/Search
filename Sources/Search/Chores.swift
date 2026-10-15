@@ -26,6 +26,9 @@ final class Chores: ObservableObject {
         var provider: String
         var model: String
         var state = State.waiting
+        /// For a task that comes round again ("every ten minutes"): the gap
+        /// between rounds, in seconds. A task with none comes once.
+        var every: TimeInterval?
         /// What came of it: the answer it ended with, or the trouble.
         var words: String?
         /// When the person set it.
@@ -46,10 +49,17 @@ final class Chores: ObservableObject {
             tasks = held
         }
         // A time that passed while Search wasn't running is missed, not
-        // run — the task says so, and can be set again.
+        // run — the task says so, and can be set again. One that comes
+        // round again rolls on to its next round instead: the news is as
+        // good ten minutes late as twenty, and the rounds that were
+        // skipped while Search was closed aren't run all at once.
         for place in tasks.indices where tasks[place].state == .waiting && tasks[place].at <= Date() {
-            tasks[place].state = .missed
-            tasks[place].words = "its time came while Search wasn't running"
+            if let every = tasks[place].every, every >= Self.roundLeast {
+                while tasks[place].at <= Date() { tasks[place].at = tasks[place].at.addingTimeInterval(every) }
+            } else {
+                tasks[place].state = .missed
+                tasks[place].words = "its time came while Search wasn't running"
+            }
         }
         keep()
     }
@@ -76,9 +86,14 @@ final class Chores: ObservableObject {
         browser.runChore(tasks[place])
     }
 
+    /// The least gap a task that comes round again can have: the clock
+    /// looks every half minute, so less than a minute apart would be
+    /// rounds run back to back.
+    static let roundLeast: TimeInterval = 60
+
     /// A task set (Bot's own later line, or a test run's say-so).
-    @discardableResult func add(goal: String, at: Date, page: String, provider: String, model: String) -> Chore {
-        let task = Chore(goal: goal, at: at, page: page, provider: provider, model: model)
+    @discardableResult func add(goal: String, at: Date, page: String, provider: String, model: String, every: TimeInterval? = nil) -> Chore {
+        let task = Chore(goal: goal, at: at, page: page, provider: provider, model: model, every: every)
         tasks.append(task)
         keep()
         return task
@@ -90,11 +105,20 @@ final class Chores: ObservableObject {
     }
 
     /// What came of a run: the answer it ended with, or the trouble
-    /// (Browser.runChore, when the bot's turn is over).
+    /// (Browser.runChore, when the bot's turn is over). A task that comes
+    /// round again is set for its next round instead — done or not, what
+    /// came of this round kept as its words — until the person takes it
+    /// off; a round that went wrong tries again at its next time.
     func finished(_ id: UUID, state: Chore.State, words: String?) {
         guard let place = tasks.firstIndex(where: { $0.id == id }) else { return }
-        tasks[place].state = state
-        tasks[place].words = words
+        if let every = tasks[place].every, every >= Self.roundLeast {
+            tasks[place].at = Date().addingTimeInterval(every)
+            tasks[place].state = .waiting
+            tasks[place].words = words
+        } else {
+            tasks[place].state = state
+            tasks[place].words = words
+        }
         keep()
     }
 
@@ -126,11 +150,25 @@ final class Chores: ObservableObject {
         return read.string(from: at)
     }
 
+    /// A gap between rounds, as the person reads it: "10 min", "1 hour
+    /// 30 min", "1 day".
+    static func gap(_ every: TimeInterval) -> String {
+        let seconds = max(Int(Self.roundLeast), Int(every))
+        func many(_ n: Int, _ one: String, _ rest: String) -> String { n == 1 ? one : "\(n) \(rest)" }
+        var parts: [String] = []
+        let days = seconds / 86400, hours = seconds % 86400 / 3600, minutes = seconds % 3600 / 60
+        if days > 0 { parts.append(many(days, "1 day", "days")) }
+        if hours > 0 { parts.append(many(hours, "1 hour", "hours")) }
+        if minutes > 0 || parts.isEmpty { parts.append(many(minutes, "1 min", "min")) }
+        return parts.joined(separator: " ")
+    }
+
     /// For the bench: every task, in words.
     func listed() -> [[String: Any]] {
         let iso = ISO8601DateFormatter()
         return tasks.map { [
             "id": $0.id.uuidString, "goal": $0.goal, "at": iso.string(from: $0.at),
+            "every": $0.every.map { Int($0) } ?? 0,
             "page": $0.page, "state": $0.state.rawValue, "words": $0.words ?? "",
         ] as [String: Any] }
     }
@@ -169,6 +207,10 @@ extension Browser {
                 return
             }
             bot.auto = true
+            var draft = "The task the person set for this time: \(chore.goal). No one may be watching — don't draw a card, it waits for a tap that may never come. Work the page, and when it's done, or when you need the person, answer with what you have."
+            if let every = chore.every {
+                draft += " This task comes round every \(Chores.gap(every)); this round's answer is kept for the person, and the next round is already set — answer with what this one round brought, and don't try to do the next round's work."
+            }
             // Every turn's end told: what came of it goes to the task —
             // an answer, a trouble, or a card waiting for a tap no one
             // may ever give (a tap or a new ask carries it on).
@@ -185,7 +227,7 @@ extension Browser {
                     Chores.shared.finished(chore.id, state: .failed, words: "it ended without an answer")
                 }
             }
-            bot.draft = "The task the person set for this time: \(chore.goal). No one may be watching — don't draw a card, it waits for a tap that may never come. Work the page, and when it's done, or when you need the person, answer with what you have."
+            bot.draft = draft
             bot.submit()
         }
     }

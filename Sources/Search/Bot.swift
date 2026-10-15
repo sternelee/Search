@@ -259,7 +259,7 @@ final class Bot: ObservableObject, Identifiable {
         {"wait": "target"}  — wait for something to be on the page
         {"full": true}  — you were shown only what's in view; ask for the whole page
         {"answer": "…"}  — the task is done (or can't be done); the person reads this
-        {"later": {"goal": "…", "at": "…"}}  — note a task for a time to come, the goal your own\nsumming up of what's to be done, at as ISO 8601 (like 2026-10-15T08:00:00+08:00).\nEach page comes with NOW, the time it is — turn "tomorrow at eight" into a time\nto come, in the person's own timezone given with it. When the time comes, this\npage is opened again and you work it, Auto on, no one watching.
+        {"later": {"goal": "…", "at": "…", "every": 600}}  — note a task for a time to come, the goal your own\nsumming up of what's to be done, at as ISO 8601 (like 2026-10-15T08:00:00+08:00).\nEach page comes with NOW, the time it is — turn "tomorrow at eight" into a time\nto come, in the person's own timezone given with it. For a task that comes round\nagain ("every ten minutes"), give every as the gap in seconds (a minute at least)\nand at as the first time to come — at can be left out, and the first time is one\ngap from now. When the time comes, this page is opened again and you work it,\nAuto on, no one watching; a task with every comes round again until the person\ntakes it off.
 
         Acts (the verb in an act): click, fill, press, select, check, uncheck, hover, scroll, clear.\
         fill takes text to type; select takes an option; press takes a key (Enter, Tab, Escape, ArrowDown).\
@@ -522,14 +522,24 @@ final class Loop {
         }
         // A task for a time to come, set: the goal noted in the model's own
         // words, kept with the page and the time (see Chores) — the turn is
-        // over, and the time will bring it back to work the page again.
+        // over, and the time will bring it back to work the page again. One
+        // that comes round again carries the gap between rounds (every, in
+        // seconds): a time already come, or none given with one, starts a
+        // gap from now.
         if let later = line["later"] as? [String: Any],
            let goal = later["goal"] as? String, !goal.isEmpty,
-           let when = later["at"] as? String, !when.isEmpty {
-            if let at = Chores.read(when), at > Date() {
+           (later["at"] as? String)?.isEmpty == false || later["every"] != nil {
+            let every: TimeInterval? = (later["every"] as? Double) ?? (later["every"] as? Int).map(Double.init)
+            if let every, every < Chores.roundLeast {
+                observe(note: "That gap between rounds is too small — a task that comes round again needs a minute or more between them. Say the task again, with a gap of at least a minute.", full: false, first: false)
+                return
+            }
+            var at = (later["at"] as? String).flatMap(Chores.read)
+            if (at == nil || at! <= Date()), let every { at = Date().addingTimeInterval(every) }
+            if let at, at > Date() {
                 Chores.shared.add(goal: goal, at: at, page: page.address?.absoluteString ?? "",
-                                  provider: provider.rawValue, model: model)
-                bot.tell(Bot.Event(kind: .say, words: "Noted for \(Chores.spoken(at)): \(goal)", act: nil))
+                                  provider: provider.rawValue, model: model, every: every)
+                bot.tell(Bot.Event(kind: .say, words: "Noted for \(Chores.spoken(at))\(every.map { ", every \(Chores.gap($0))" } ?? ""): \(goal)", act: nil))
                 bot.messages = messages
                 bot.over(nil)
             } else {
