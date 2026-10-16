@@ -1,14 +1,20 @@
 import AppKit
-import CoreText
 import Metal
 import simd
 
-// The renderer: everything between the grid and the screen. A 2048-square
-// atlas of glyph coverage — one R8 slot per character and style, rasterised
-// with CoreText the first time one is asked for — and one resident buffer of
-// cell records that the shaders walk by instance id, so a frame costs three
-// instanced draws and nothing else. No frame is asked for until something
-// changed; what asks for frames is TerminalView (see TerminalView.swift).
+// The renderer: everything between the grid and the screen. A square of
+// glyph coverage kept resident on the GPU — one R8 slot per character and
+// style, cut with CoreText away from the frame that first asked for it (see
+// TerminalAtlas) — and a small ring of
+// resident cell buffers that the shaders walk by instance id, so a frame
+// costs three instanced draws and nothing else. The ring is what lets a
+// frame convert only the rows it does not already have in the slot it is
+// drawing into — a row the slot was written from is a row nobody can have
+// written since, and a scroll is the same rows at other indices (see
+// `update` and TerminalCells); what a frame says is drawn from a scene taken
+// as a moment of the screen, so nothing is ever read while it is being
+// written. No frame is asked for until something changed; what asks for
+// frames is TerminalView (see TerminalView.swift).
 //
 // The shaders live here as a string, which the device compiles on the first
 // terminal of a run — the Metal toolchain that SwiftPM would need to build
@@ -16,6 +22,12 @@ import simd
 // have. The same source is picked up as a .metal file when a build has one
 // (the library lookup tries the bundle first), and the string is the one
 // truth until then.
+
+/// How many slots the ring of cell buffers has, and with it how many frames
+/// may be reading the cells at once. One per drawable, which is what the
+/// layer is asked for below; the assertion in the initializer is what keeps
+/// the two from coming apart.
+private let cellRing = 3
 
 @MainActor
 final class TerminalDraw {
@@ -41,7 +53,8 @@ final class TerminalDraw {
         var grid = SIMD2<UInt32>()         // columns, rows
         var slot = SIMD2<UInt32>()          // one atlas slot, pixels
         var slots: UInt32 = 0              // slots per atlas row
-        var fill: UInt32 = 0                // keeps the tail aligned
+        var cursorStyle: UInt32 = 0         // TerminalCursor: 0 block, 1 bar, 2 underline
+        var cursorInk: UInt32 = 0           // packed RGBA of the caret, 0 for the theme's own
         var cursor = simd_float4()         // col, row, on, strong
         var selection = simd_float4()      // col0, row0, col1, row1; -1 = none
         var ground = simd_float4()
@@ -53,9 +66,10 @@ final class TerminalDraw {
 
     let layer = CAMetalLayer()
     /// One rect over the grid, in the mark pass: a gutter mark of a
-    /// command block, or the highlight of a find. The place is in cells —
-    /// column, row, cells wide, cells tall — and can reach outside them,
-    /// into the inset, for the gutter. Mirrored in the shaders.
+    /// command block, the highlight of a find, or the cursor when it is not
+    /// a block. The place is in cells — column, row, cells wide, cells tall
+    /// — and can reach outside them, into the inset, for the gutter.
+    /// Mirrored in the shaders.
     struct Rect {
         var place: simd_float4
         var tint: simd_float4
@@ -68,19 +82,46 @@ final class TerminalDraw {
     private let glyph: MTLRenderPipelineState
     private let mark: MTLRenderPipelineState
 
-    /// The font the atlas is cut from, and the cell it sets in points.
-    let font: NSFont
-    let cell: CGSize                       // set below, once, from the font
+    /// The font the atlas is cut from, and the cell it sets in points. Both
+    /// move when the face is changed under a live terminal (see `refont`),
+    /// which is why neither is a constant.
+    private(set) var font: NSFont
+    private(set) var cell: CGSize          // measured from the font, in the initializer
     /// The room a terminal leaves at its edges, in points, so a cell's
-    /// glyphs never touch the chrome around them.
-    static let inset: CGFloat = 4
+    /// glyphs never touch the chrome around them. From Settings, and asked
+    /// for afresh every time: a terminal is never made to remember it.
+    static var inset: CGFloat { CGFloat(TerminalLook.padding) }
 
-    private let atlas: MTLTexture
-    private var next = 0                    // first free slot in the atlas
-    private var given: [String: UInt16] = [:]
-    private var faces: [String: NSFont] = [:]   // "style@scale" → the face rasterised with
+    /// The glyphs, and the slots in it that cells name: cut away from the
+    /// frame that asks for one, so that no frame waits on CoreText (see
+    /// TerminalAtlas). The renderer asks it what a character's slot is and
+    /// blits in whatever has landed since the last frame; everything else
+    /// about it is the atlas's own.
+    private let atlas: GlyphAtlas
 
-    private var cells: MTLBuffer?
+    /// The colours the frame is painted with. Resolved when they change
+    /// rather than once a frame: working a theme out reads the Mac's
+    /// appearance, and a terminal that is being scrolled does that a
+    /// hundred and twenty times a second for an answer that has not
+    /// moved. `repaint` is what re-asks, and it is what both of the ways a
+    /// theme can change go through.
+    private var theme = Theme.current(TerminalLook.theme)
+
+    // The ring of cell buffers. A frame reads its cells by instance id
+    // while the next frame is being built, so there is one buffer per
+    // drawable and a slot is only written again once the frame that read
+    // it has completed — writing where the GPU is reading is not a late
+    // frame but a torn one. `book` is what each slot already says (see
+    // TerminalCells), which is what makes a frame that follows one with
+    // nothing changed cost nothing.
+    private var buffers: [MTLBuffer?] = Array(repeating: nil, count: cellRing)
+    /// The frame that was encoded from each slot, still reading it until
+    /// it completes.
+    private var flight: [MTLCommandBuffer?] = Array(repeating: nil, count: cellRing)
+    /// The slot the next write goes into.
+    private var place = -1
+    private var book = TerminalCells(ring: cellRing)
+
     private var rects: MTLBuffer?
     private var rectCount = 0
     private var frame = Frame()
@@ -98,22 +139,25 @@ final class TerminalDraw {
         layer.device = device
         layer.pixelFormat = .bgra8Unorm
         layer.isOpaque = true
+        // Three drawables: what lets a frame be encoded while the one
+        // before it is still on the GPU, and what a damage-driven cell
+        // cache sizes its ring by, since a slot in the ring is only free
+        // once the frame that read it is done. The rest is the default,
+        // said out loud because the frame schedule depends on it: the
+        // clock is the pacer's (see TerminalPacer), not the layer's own.
+        layer.maximumDrawableCount = 3
+        layer.displaySyncEnabled = true
+        layer.presentsWithTransaction = false
+        assert(cellRing == layer.maximumDrawableCount, "the cell ring and the drawable count have come apart")
 
-        let square = 2048
-        let shape = MTLTextureDescriptor()
-        shape.textureType = .type2D
-        shape.pixelFormat = .r8Unorm
-        shape.width = square
-        shape.height = square
-        shape.storageMode = .managed
-        guard let atlas = device.makeTexture(descriptor: shape),
-              let library = TerminalDraw.library(device),
+        guard let library = TerminalDraw.library(device),
+              let glyphs = GlyphAtlas(device: device),
               let back = TerminalDraw.pipeline("backgroundVertex", flat: true, library: library, device: device, blend: false),
               let line = TerminalDraw.pipeline("decorationVertex", flat: true, library: library, device: device, blend: false),
               let face = TerminalDraw.pipeline("glyphVertex", flat: false, library: library, device: device, blend: true),
               let stripe = TerminalDraw.pipeline("markVertex", flat: true, library: library, device: device, blend: true)
         else { return nil }
-        self.atlas = atlas
+        atlas = glyphs
         background = back
         decoration = line
         glyph = face
@@ -175,8 +219,36 @@ final class TerminalDraw {
     /// The layer's drawable is the view's size in device pixels; the view
     /// tells it, whenever it is laid out, what that is now.
     func size(_ bounds: CGRect, scale: CGFloat) {
+        // A different scale is a different cut of the atlas, so the slot a
+        // record names is not the glyph it meant: the ring is emptied of
+        // anything worth keeping, and the first cut of the new scale is
+        // what says so to the atlas itself.
+        if scale != layer.contentsScale { book.forget() }
         layer.contentsScale = scale
         layer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+    }
+
+    /// A new face for a terminal already on screen. The atlas is cut from
+    /// the font, so the slots already in it are not this font's: the next
+    /// frame's `begin` turns the atlas over — every slot handed out again,
+    /// every glyph cut again — and until then nothing drawn from this ring
+    /// can be trusted, since its records name slots of an atlas that is
+    /// about to be somebody else's. The slots themselves are not written
+    /// again until that frame is encoded, and this one waits for the frames
+    /// still reading them (see `begin` on the atlas).
+    func refont(_ new: NSFont) {
+        font = new
+        cell = TerminalDraw.measure(new)
+        book.forget()
+    }
+
+    /// Called on the main thread when the atlas has cut a glyph some frame
+    /// had to do without. Whoever draws sets it to ask for a frame: the
+    /// square was left blank by the frame that named the slot, and a
+    /// terminal with nothing else to say has nothing else to ask with.
+    var onLanded: (() -> Void)? {
+        get { atlas.onLanded }
+        set { atlas.onLanded = newValue }
     }
 
     /// Columns and rows that fit a width and a height, in points.
@@ -190,126 +262,46 @@ final class TerminalDraw {
 
     // MARK: - the atlas
 
-    /// The slot a character is drawn from — cut fresh, and uploaded, the
-    /// first time it is asked for, at whatever scale the layer is set in by
-    /// then. Zero when the atlas is full or the character is not one to draw.
-    private func slot(for char: Character, wide: Bool, bold: Bool, italic: Bool) -> UInt16 {
-        if char == " " { return 0 }
-        let style: UInt16 = (bold ? 1 : 0) | (italic ? 2 : 0)
-        let key = "\(style)\(wide ? "w" : "")\(char)"
-        if cutScale != scale {
-            // A scale change retires every slot: the ones already cut were
-            // cut at the old one.
-            cutScale = scale
-            given = [:]
+    /// Says what this frame is cut at — the scale it is drawn in, the cell
+    /// it is drawn in, the face it is drawn with — and lets the atlas turn
+    /// over if that is not what the last frame was cut at. Every frame says
+    /// it, once, at the top; the atlas is the one that decides whether
+    /// anything about it has moved, which is what makes a scale change or a
+    /// new face something one call can be right about.
+    ///
+    /// Turning the atlas over is only safe once nothing is reading it: the
+    /// frames that could be are the ones this renderer has encoded and not
+    /// yet seen finish, so they are waited for here — once per face, not
+    /// once a frame. (`take` waits for the slot it is about to write; that
+    /// is a different account, and between them every frame that names an
+    /// atlas slot is either finished or in `flight`.)
+    private func beginAtlas() {
+        atlas.begin(scale: layer.contentsScale, cell: cell, font: font) {
+            for frame in flight { frame?.waitUntilCompleted() }
         }
-        if let found = given[key] { return found }
-        let room = (wide ? 2 : 1) * across
-        guard let cut = raster(char, across: room, down: down, style: style) else { return 0 }
-        inFlight?.waitUntilCompleted()
-        inFlight = nil
-        guard let place = reserve(wide: wide) else { return 0 }
-        let region = MTLRegionMake2D((place % slotsPerRow) * room, (place / slotsPerRow) * down, room, down)
-        atlas.replace(region: region, mipmapLevel: 0, withBytes: cut, bytesPerRow: room)
-        let index = UInt16(place + 1)
-        given[key] = index
-        return index
-    }
-
-    /// The scale the atlas was last cut at, retired when it changes.
-    private var cutScale: CGFloat = 0
-
-    /// An atlas slot's size, in device pixels: the cell's, rounded up so a
-    /// slot always starts on a whole pixel of its own.
-    private var scale: CGFloat { layer.contentsScale }
-    private var across: Int { Int((cell.width * scale).rounded(.up)) }
-    private var down: Int { Int((cell.height * scale).rounded(.up)) }
-
-    /// Where the next slot comes from. A wide character takes the pair of
-    /// slots it spans, which is why the atlas keeps whole rows of them.
-    private var slotsPerRow: Int { 2048 / across }
-
-    private func reserve(wide: Bool) -> Int? {
-        let total = slotsPerRow * (2048 / down)
-        if wide {
-            if next % slotsPerRow + 1 >= slotsPerRow { next = (next / slotsPerRow + 1) * slotsPerRow }
-            guard next + 1 < total else { return nil }
-            let place = next
-            next += 2
-            return place
-        }
-        guard next < total else { return nil }
-        let place = next
-        next += 1
-        return place
-    }
-
-    /// One glyph of coverage, in an R8 square: white on black, drawn by
-    /// CoreText at the scale the layer is set in, sitting on the baseline
-    /// the cell's height was cut from. A scale change empties the cache —
-    /// the slots of a new scale are not the slots of the old one.
-    private func raster(_ char: Character, across: Int, down: Int, style: UInt16) -> [UInt8]? {
-        let key = "\(style)@\(scale)"
-        let face = faces[key] ?? {
-            var font = self.font
-            var traits: NSFontTraitMask = []
-            if style & 1 != 0 { traits.insert(.boldFontMask) }
-            if style & 2 != 0 { traits.insert(.italicFontMask) }
-            if !traits.isEmpty { font = NSFontManager.shared.convert(self.font, toHaveTrait: traits) }
-            font = NSFontManager.shared.convert(font, toSize: font.pointSize * scale)
-            faces[key] = font
-            return font
-        }()
-        guard across > 0, down > 0 else { return nil }
-        var bytes = [UInt8](repeating: 0, count: across * down)
-        let marked = NSAttributedString(string: String(char), attributes: [
-            .font: face, .foregroundColor: NSColor.white,
-        ])
-        let line = CTLineCreateWithAttributedString(marked)
-        let space = CGColorSpaceCreateDeviceGray()
-        // The baseline: the descent above the bitmap's floor, plus half the
-        // leading — the same room the cell's height was measured from.
-        let rise = -face.descender + (CGFloat(down) - face.ascender + face.descender) / 2
-        bytes.withUnsafeMutableBytes { raw in
-            guard let page = CGContext(
-                data: raw.baseAddress, width: across, height: down,
-                bitsPerComponent: 8, bytesPerRow: across,
-                space: space, bitmapInfo: CGImageAlphaInfo.none.rawValue
-            ) else { return }
-            page.textPosition = CGPoint(x: 0, y: rise)
-            CTLineDraw(line, page)
-        }
-        return bytes
     }
 
     // MARK: - one frame's cells
 
-    /// Writes the visible rows into the resident buffer: everything the
-    /// frame needs but what only it knows. Called whenever anything the
-    /// cells say or look like has changed — never on a clock of its own.
-    /// The scene is the renderer's own moment of the screen (Terminal's
-    /// `scene(scroll:)`), taken under the lane's order, so this reads
-    /// rows nobody is writing. The marks are the command blocks the shell
-    /// pointed at (OSC 133), the finds the matches a search left in the
-    /// frame — with `found` the one it is standing on, held brighter.
-    func refresh(
-        scene: Terminal.Scene, selection: simd_float4?, strong: Bool,
-        marks: [Terminal.Scene.Mark] = [], finds: [simd_float4] = [], found: simd_float4? = nil
+    /// Everything a frame says that is not its cells: the uniforms the
+    /// shaders read, and the rects the mark pass draws — the gutter marks
+    /// of the command blocks (OSC 133), the finds a search has left in the
+    /// frame with `found` the one it is standing on, and the caret when it
+    /// is not the block the background pass draws. `cursor` is whether the
+    /// caret is showing at all, which is how a blinking cursor is left out
+    /// of the frames it blinks off in; `strong` is whether the window has
+    /// the keyboard, which halves the ink of a caret that has lost it.
+    private func begin(
+        scene: Terminal.Scene, theme: Theme, selection: simd_float4?, strong: Bool, showing: Bool,
+        marks: [Terminal.Scene.Mark], finds: [simd_float4], found: simd_float4?
     ) {
         let columns = scene.width
         let lines = scene.height
-        guard columns > 0, lines > 0 else { return }
-        let count = columns * lines
-        if cells == nil || cells!.length < count * MemoryLayout<Record>.stride {
-            cells = device.makeBuffer(length: count * MemoryLayout<Record>.stride, options: .storageModeShared)
-        }
-        guard let cells else { return }
-        let theme = Theme.current()
 
         frame = Frame()
-        frame.atlas = simd_float2(2048, 2048)
-        frame.slot = SIMD2(UInt32(across), UInt32(down))
-        frame.slots = UInt32(slotsPerRow)
+        frame.atlas = simd_float2(Swift.Float(GlyphAtlas.side), Swift.Float(GlyphAtlas.side))
+        frame.slot = SIMD2(UInt32(atlas.across), UInt32(atlas.down))
+        frame.slots = UInt32(atlas.slotsPerRow)
         frame.grid = SIMD2(UInt32(columns), UInt32(lines))
         frame.cell = simd_float2(
             Swift.Float(cell.width * layer.contentsScale),
@@ -324,35 +316,12 @@ final class TerminalDraw {
         frame.ink = theme.ink
         frame.select = theme.select
         frame.selection = selection ?? simd_float4(-1, -1, -1, -1)
+        frame.cursorStyle = TerminalLook.cursor.word
+        frame.cursorInk = theme.fore(scene.cursorInk)
         if let caret = scene.caret, caret.y < lines, caret.x < columns {
-            frame.cursor = simd_float4(Swift.Float(caret.x), Swift.Float(caret.y), 1, strong ? 1 : 0)
-        }
-
-        let words = cells.contents().assumingMemoryBound(to: Record.self)
-        for row in 0..<lines {
-            let line = scene.lines[row]
-            let base = row * columns
-            for column in 0..<columns {
-                let square = line.cells[column]
-                var record = Record()
-                if square.char != " " {
-                    record.glyph = slot(
-                        for: square.char, wide: square.wide,
-                        bold: square.ink.bold, italic: square.ink.italic
-                    )
-                }
-                var fore = theme.fore(square.ink.foreground)
-                var back = theme.fore(square.ink.background)
-                if square.ink.inverse { swap(&fore, &back) }
-                if square.ink.hidden { record.glyph = 0 }
-                if square.ink.faint { fore = (fore & 0xFFFFFF00) | 0x80 }
-                record.fore = fore
-                record.back = back
-                if square.ink.underline { record.flags |= 2 }
-                if square.ink.strike { record.flags |= 4 }
-                if square.wide { record.flags |= 1 }
-                words[base + column] = record
-            }
+            frame.cursor = simd_float4(
+                Swift.Float(caret.x), Swift.Float(caret.y), showing ? 1 : 0, strong ? 1 : 0
+            )
         }
 
         // The rects the mark pass draws: the gutter marks first, the
@@ -361,8 +330,10 @@ final class TerminalDraw {
         // is the cell itself, the theme's selection, the current one held
         // harder.
         var stripes: [Rect] = []
-        stripes.reserveCapacity(marks.count + finds.count + 1)
-        let gutter = Swift.Float((TerminalDraw.inset - 1) / cell.width)
+        stripes.reserveCapacity(marks.count + finds.count + 2)
+        // A terminal with no padding has no room to hang a gutter mark in:
+        // the sliver sits at the very edge rather than outside it.
+        let gutter = Swift.Float(max(0, TerminalDraw.inset - 1) / cell.width)
         let sliver = Swift.Float(2 / cell.width)
         for gutterMark in marks {
             stripes.append(Rect(
@@ -381,10 +352,36 @@ final class TerminalDraw {
                 tint: simd_float4(theme.select.x, theme.select.y, theme.select.z, min(1, theme.select.w * 1.8))
             ))
         }
+        // The cursor, when it is not the block the background pass draws: a
+        // bar down the left of its cell, or a line under it. Drawn with the
+        // marks, so it sits over the background and under the glyphs.
+        if showing, let caret = scene.caret, caret.y < lines, caret.x < columns {
+            // The colour a program gave the caret (OSC 12) if it named one,
+            // and the theme's ink otherwise — half of it mixed toward the
+            // ground in a window that has lost the keyboard, which is what
+            // the background pass does to the block.
+            let tint = TerminalDraw.tint(scene.cursorInk, theme: theme, strong: strong)
+            switch TerminalLook.cursor {
+            case .block:
+                break                       // the background pass has it
+            case .bar:
+                stripes.append(Rect(
+                    place: SIMD4(Swift.Float(caret.x), Swift.Float(caret.y), Swift.Float(2 / cell.width), 1),
+                    tint: tint
+                ))
+            case .underline:
+                let high = Swift.Float(max(2 / cell.height, 0.06))
+                stripes.append(Rect(
+                    place: SIMD4(Swift.Float(caret.x), Swift.Float(caret.y) + 1 - high, 1, high),
+                    tint: tint
+                ))
+            }
+        }
         rectCount = stripes.count
         if !stripes.isEmpty {
-            if rects == nil || rects!.length < stripes.count * MemoryLayout<Rect>.stride {
-                rects = device.makeBuffer(length: stripes.count * MemoryLayout<Rect>.stride, options: .storageModeShared)
+            let room = stripes.count * MemoryLayout<Rect>.stride
+            if (rects?.length ?? 0) < room {
+                rects = device.makeBuffer(length: room, options: .storageModeShared)
             }
             if let rects {
                 stripes.withUnsafeBytes { raw in
@@ -394,36 +391,213 @@ final class TerminalDraw {
         }
     }
 
+    // MARK: - one frame's cells, whole
+
+    /// Writes every visible row into a slot of the ring: the whole frame,
+    /// from a scene taken as a moment of the screen (Terminal's
+    /// `scene(scroll:)`, read under the lane's own order, so these are rows
+    /// nobody is writing). This is the shape for a caller with one frame to
+    /// draw and nothing before it, and the same conversion is what `update`
+    /// does when a screen has turned over and there is nothing in a slot
+    /// worth keeping.
+    func refresh(
+        scene: Terminal.Scene, selection: simd_float4?, strong: Bool, cursor showing: Bool = true,
+        marks: [Terminal.Scene.Mark] = [], finds: [simd_float4] = [], found: simd_float4? = nil
+    ) {
+        let columns = scene.width
+        let lines = scene.height
+        guard columns > 0, lines > 0 else { return }
+        // A frame drawn whole has no need of the ring — every slot says all
+        // of itself as soon as it is drawn from again — but the rows the
+        // other slots are holding are rows of a screen this frame is not:
+        // let them go rather than keep them alive for nothing.
+        book.forget()
+        let slot = take()
+        beginAtlas()
+        begin(
+            scene: scene, theme: theme, selection: selection, strong: strong, showing: showing,
+            marks: marks, finds: finds, found: found
+        )
+        guard let buffer = buffer(slot, columns: columns, lines: lines) else { return }
+        let words = buffer.contents().assumingMemoryBound(to: Record.self)
+        convert(scene.lines, band: 0..<lines, into: words, columns: columns)
+        book.written(slot, top: scene.top, columns: columns, held: scene.lines)
+    }
+
+    // MARK: - one frame's cells, and only the ones that changed
+
+    /// Writes only what this frame's slot does not already say: a row the
+    /// slot was written from is a row nobody can have written since — it is
+    /// held, and an Array is copied when it is written to — so its records
+    /// are already right; a row a scroll moved is the same row at another
+    /// index, so its records move with it; and everything else is converted.
+    /// The scene is the same moment of the screen `refresh` takes; what
+    /// differs is that a frame which follows one with nothing changed
+    /// converts nothing at all, and that a scroll is a move.
+    ///
+    /// `damage` is what the screen has said changed since the last frame,
+    /// drained as it is spent. The cells need only one thing from it: that
+    /// the screen was turned over (a resize, the alternate screen, a dropped
+    /// scrollback), where nothing a slot holds was written from a frame like
+    /// this one. What the screen wrote does not have to be reported at all —
+    /// a row written in place is a row whose name has changed, and a report
+    /// that never comes costs a conversion, not a stale row.
+    func update(
+        scene: Terminal.Scene, damage: Damage, selection: simd_float4?, strong: Bool,
+        cursor showing: Bool = true, marks: [Terminal.Scene.Mark] = [],
+        finds: [simd_float4] = [], found: simd_float4? = nil
+    ) {
+        let columns = scene.width
+        let lines = scene.height
+        guard columns > 0, lines > 0 else { return }
+        let slot = take()
+        beginAtlas()
+        begin(
+            scene: scene, theme: theme, selection: selection, strong: strong, showing: showing,
+            marks: marks, finds: finds, found: found
+        )
+        guard let buffer = buffer(slot, columns: columns, lines: lines) else { return }
+        let plan = book.plan(
+            slot, rows: scene.lines, top: scene.top, columns: columns, overturned: damage.overturned
+        )
+        let words = buffer.contents().assumingMemoryBound(to: Record.self)
+        if plan.whole {
+            convert(scene.lines, band: 0..<lines, into: words, columns: columns)
+        } else {
+            if plan.shift != 0 {
+                // The rows kept from this slot have moved with the screen.
+                // A move, not a copy: the band being moved overlaps where
+                // it is going, and memmove is what keeps the rows it has
+                // not read yet.
+                let kept = lines - abs(plan.shift)
+                let bytes = kept * columns * MemoryLayout<Record>.stride
+                memmove(
+                    UnsafeMutableRawPointer(words + (plan.shift > 0 ? 0 : -plan.shift * columns)),
+                    UnsafeMutableRawPointer(words + (plan.shift > 0 ? plan.shift * columns : 0)),
+                    bytes
+                )
+            }
+            for band in plan.ranges {
+                convert(scene.lines, band: band, into: words, columns: columns)
+            }
+        }
+        book.written(slot, top: scene.top, columns: columns, held: scene.lines)
+    }
+
+    /// Nothing in the ring is to be trusted again: every cell is said
+    /// afresh by the next frame, and the colours are worked out again
+    /// rather than taken from the last frame's. For a change the cells
+    /// carry their part of but the screen never saw — the colours of a
+    /// theme that has just been changed, or the Mac's appearance changing
+    /// under a terminal drawn in "Match the Mac".
+    func repaint() {
+        theme = Theme.current(TerminalLook.theme)
+        book.forget()
+    }
+
+    /// The slot the next write goes into. The frame that last read it has
+    /// to be done with it first: the shaders walk the cells by instance id,
+    /// so a write under a frame still on the GPU is a torn row rather than
+    /// a stale one. Waiting for a frame three slots back is waiting for
+    /// nothing in practice — it has been presented by then — and it is the
+    /// same wait `nextDrawable()` makes, on the same account.
+    private func take() -> Int {
+        let slot = (place + 1) % cellRing
+        flight[slot]?.waitUntilCompleted()
+        place = slot
+        return slot
+    }
+
+    /// The cell buffer of one slot, made or grown to hold a frame of this
+    /// shape. A growth only ever happens where the slot has nothing worth
+    /// keeping anyway — a shape it was not written at is a shape `plan`
+    /// calls whole — so nothing has to be carried over into the new one.
+    private func buffer(_ slot: Int, columns: Int, lines: Int) -> MTLBuffer? {
+        let room = columns * lines * MemoryLayout<Record>.stride
+        if (buffers[slot]?.length ?? 0) < room {
+            buffers[slot] = device.makeBuffer(length: room, options: .storageModeShared)
+        }
+        return buffers[slot]
+    }
+
+    /// A run of rows — all of them for a whole frame, a band for one that
+    /// kept the rest — converted into the slot's records at their own
+    /// places in it.
+    private func convert(
+        _ lines: [Row], band: Range<Int>, into words: UnsafeMutablePointer<Record>, columns: Int
+    ) {
+        for row in band {
+            convert(lines[row], into: words, at: row * columns, columns: columns, theme: theme)
+        }
+    }
+
+    /// One row of the frame, as the records the shaders walk by instance
+    /// id: what each square says, in the colours and the styles it says it
+    /// with. Zero in `glyph` is nothing to draw — a space, or a square the
+    /// program hid — and a paint the square does not name is the theme's
+    /// own.
+    private func convert(
+        _ line: Row, into words: UnsafeMutablePointer<Record>, at base: Int, columns: Int, theme: Theme
+    ) {
+        for column in 0..<columns {
+            let square = line.cells[column]
+            var record = Record()
+            if square.char != " " {
+                record.glyph = atlas.slot(
+                    square.char, bold: square.ink.bold, italic: square.ink.italic, wide: square.wide
+                )
+            }
+            var fore = theme.fore(square.ink.foreground)
+            var back = theme.fore(square.ink.background)
+            if square.ink.inverse { swap(&fore, &back) }
+            if square.ink.hidden { record.glyph = 0 }
+            if square.ink.faint { fore = (fore & 0xFFFFFF00) | 0x80 }
+            record.fore = fore
+            record.back = back
+            if square.ink.underline { record.flags |= 2 }
+            if square.ink.strike { record.flags |= 4 }
+            if square.wide { record.flags |= 1 }
+            words[base + column] = record
+        }
+    }
+
     // MARK: - one frame
 
     /// Draws one frame, if there is a frame to draw. Only the view calls
     /// this, when something has changed — an idle terminal never does.
     func render() {
-        guard cells != nil, layer.drawableSize.width > 0, layer.drawableSize.height > 0,
+        guard place >= 0, buffers[place] != nil, layer.drawableSize.width > 0, layer.drawableSize.height > 0,
               let drawable = layer.nextDrawable(),
               let command = queue.makeCommandBuffer()
         else { return }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = drawable.texture
-        encode(pass, on: command)
+        encode(pass, on: command, landed: true)
         command.present(drawable)
-        inFlight = command
+        flight[place] = command
         command.commit()
     }
-
-    /// The previous frame's command buffer, still reading the atlas until
-    /// it completes. A glyph cut (`slot`) must not rewrite the atlas while
-    /// this is in flight or the GPU can read a half-written slot — the
-    /// fragment glyphs that appear when frames are fast.
-    private var inFlight: MTLCommandBuffer?
 
     /// Renders one frame into a fresh texture of its own instead of the
     /// layer's, and hands it back for reading. A presented drawable cannot
     /// be read after the fact, so a test that wants to know what the frame
     /// really painted goes through here.
-    func snapshot() -> MTLTexture? {
+    ///
+    /// `landed` is whether this frame waits for the glyphs it asks for.
+    /// True — the default — settles the cutting queue first, so the glyphs
+    /// are in the atlas before the frame is encoded, which makes a snapshot
+    /// the frame *after* the glyphs landed rather than the frame that had to
+    /// do without them: a test comparing one frame with another would
+    /// otherwise be comparing how far ahead the cutting queue happened to
+    /// be. False hands the frame the atlas as it stands, which is the frame
+    /// a terminal really draws when output arrives faster than glyphs can be
+    /// cut — the one where a square whose glyph is still being cut has to
+    /// show something, and shows nothing.
+    func snapshot(landed: Bool = true) -> MTLTexture? {
         let width = Int(layer.drawableSize.width), height = Int(layer.drawableSize.height)
-        guard width > 0, height > 0, cells != nil, let command = queue.makeCommandBuffer() else { return nil }
+        guard width > 0, height > 0, place >= 0, buffers[place] != nil,
+              let command = queue.makeCommandBuffer() else { return nil }
+        if landed { atlas.settle() }
         let shape = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: layer.pixelFormat, width: width, height: height, mipmapped: false
         )
@@ -431,15 +605,26 @@ final class TerminalDraw {
         guard let target = device.makeTexture(descriptor: shape) else { return nil }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
-        encode(pass, on: command)
+        encode(pass, on: command, landed: landed)
+        flight[place] = command
         command.commit()
         command.waitUntilCompleted()
         return target
     }
 
     /// One frame's three instanced passes — background, marks, glyphs —
-    /// written into whichever target the pass was handed.
-    private func encode(_ pass: MTLRenderPassDescriptor, on command: MTLCommandBuffer) {
+    /// written into whichever target the pass was handed, and ahead of them
+    /// the blit of whatever glyphs have been cut since the last frame (see
+    /// `land`) and the clearing of an atlas that has just been made.
+    private func encode(_ pass: MTLRenderPassDescriptor, on command: MTLCommandBuffer, landed: Bool) {
+        if landed {
+            atlas.land(on: command)
+        } else {
+            // The atlas as it stands: emptied if it is new, and otherwise
+            // holding exactly the glyphs that had been cut by the time this
+            // frame was made.
+            atlas.wipe(on: command)
+        }
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColor(
@@ -450,7 +635,7 @@ final class TerminalDraw {
         let span = Int(frame.grid.x * frame.grid.y)
         var frame = self.frame
         encoder.setVertexBytes(&frame, length: MemoryLayout<Frame>.stride, index: 1)
-        encoder.setVertexBuffer(cells, offset: 0, index: 2)
+        encoder.setVertexBuffer(buffers[place], offset: 0, index: 2)
         encoder.setRenderPipelineState(background)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: span)
         if rectCount > 0, let rects {
@@ -461,12 +646,30 @@ final class TerminalDraw {
         encoder.setRenderPipelineState(decoration)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: span)
         encoder.setRenderPipelineState(glyph)
-        encoder.setFragmentTexture(atlas, index: 0)
+        encoder.setFragmentTexture(atlas.texture, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: span)
         encoder.endEncoding()
     }
 
     // MARK: - the colours
+
+    /// A colour a program named (OSC 12) as the float4 a rect wants, or the
+    /// theme's own ink when it named none. Only a truecolour ever arrives
+    /// this way — the escape sequence carries red, green and blue and
+    /// nothing else — so the one case is the one case. A window that has
+    /// lost the keyboard halves it toward the ground, which is the same
+    /// mix the shader makes of the block's ink.
+    static func tint(_ paint: Paint, theme: Theme, strong: Bool) -> simd_float4 {
+        var ink = theme.ink
+        if case .rgb(let red, let green, let blue) = paint {
+            ink = simd_float4(Swift.Float(red) / 255, Swift.Float(green) / 255, Swift.Float(blue) / 255, 1)
+        }
+        guard !strong else { return ink }
+        return simd_float4(
+            (theme.ground.x + ink.x) / 2, (theme.ground.y + ink.y) / 2,
+            (theme.ground.z + ink.z) / 2, 1
+        )
+    }
 
     /// The colours a theme paints cells with: the two of its own — ground
     /// and ink — and the sixteen ANSI ones. Everything the parser can say
@@ -477,18 +680,67 @@ final class TerminalDraw {
         let ink: simd_float4
         let select: simd_float4
         let ansi: [simd_float4]
+        /// The palette packed for the shader, one word an index: a frame
+        /// asks for it once per cell it converts — the same sixteen
+        /// colours, in the same order, over and over — so it is packed
+        /// once here rather than per cell.
+        let packed: [UInt32]
 
-        static func current() -> Theme {
+        init(ground: simd_float4, ink: simd_float4, select: simd_float4, ansi: [simd_float4]) {
+            self.ground = ground
+            self.ink = ink
+            self.select = select
+            self.ansi = ansi
+            self.packed = Theme.table(ansi)
+        }
+
+        /// The theme a look asks for. "Match the Mac" — the default — is
+        /// the pair the app has always painted with; a named one is the same
+        /// palette whichever way the Mac is set.
+        static func current(_ look: TerminalTheme = .system) -> Theme {
             // Outside an app there is no NSApp to ask: light is the honest
             // default, and the app always asks with one in hand.
-            let dark = NSApp?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            let ground = dark
-                ? simd_float4(0.11, 0.11, 0.113, 1.0)     // the same as Palette.NS.ground's dark
-                : simd_float4(1.0, 1.0, 1.0, 1.0)
-            let ink = dark ? simd_float4(0.93, 0.93, 0.93, 1.0) : simd_float4(0.09, 0.09, 0.09, 1.0)
-            let select = dark ? simd_float4(0.30, 0.51, 0.83, 0.35) : simd_float4(0.22, 0.46, 0.85, 0.22)
-            return Theme(ground: ground, ink: ink, select: select, ansi: dark ? darkANSI : lightANSI)
+            let isDark = NSApp?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            switch look {
+            case .system: return isDark ? .dark : .light
+            case .light: return .light
+            case .dark: return .dark
+            case .solarizedLight: return .solarizedLight
+            case .solarizedDark: return .solarizedDark
+            }
         }
+
+        /// The colours the app has always painted a terminal with.
+        static let light = Theme(
+            ground: simd_float4(1.0, 1.0, 1.0, 1.0),
+            ink: simd_float4(0.09, 0.09, 0.09, 1.0),
+            select: simd_float4(0.22, 0.46, 0.85, 0.22),
+            ansi: lightANSI
+        )
+
+        static let dark = Theme(
+            ground: simd_float4(0.11, 0.11, 0.113, 1.0),   // the same as Palette.NS.ground's dark
+            ink: simd_float4(0.93, 0.93, 0.93, 1.0),
+            select: simd_float4(0.30, 0.51, 0.83, 0.35),
+            ansi: darkANSI
+        )
+
+        /// Solarized, as it was published (Ethan Schoonover, 2011): base3
+        /// paper with base00 ink, base03 paper with base1 ink, and the eight
+        /// accents for the colours.
+        static let solarizedLight = Theme(
+            ground: simd_float4(0.992, 0.965, 0.890, 1),    // base3
+            ink: simd_float4(0.396, 0.482, 0.514, 1),       // base00
+            select: simd_float4(0.576, 0.631, 0.631, 0.45), // base1
+            ansi: solarizedANSI
+        )
+
+        static let solarizedDark = Theme(
+            ground: simd_float4(0.000, 0.169, 0.212, 1),    // base03
+            ink: simd_float4(0.576, 0.631, 0.631, 1),       // base1
+            select: simd_float4(0.027, 0.212, 0.259, 0.85), // base02
+            ansi: solarizedANSI
+        )
 
         /// A paint, packed for the shader. Zero is the theme's own colour —
         /// the ink for words, no background for a cell without one.
@@ -497,27 +749,33 @@ final class TerminalDraw {
             case .plain:
                 return 0
             case .ansi(let index):
-                guard index < 16, index < ansi.count else { return shade(index) }
-                let colour = ansi[Int(index)]
-                return pack(colour)
+                return packed[Int(index)]
             case .rgb(let red, let green, let blue):
                 return UInt32(red) | UInt32(green) << 8 | UInt32(blue) << 16 | 0xFF000000
             }
         }
 
-        /// The ANSI colours past sixteen: the colour cube, then the grey ramp.
-        private func shade(_ index: UInt8) -> UInt32 {
+        /// Every index the parser can name, packed: the sixteen of the
+        /// palette, then the colour cube, then the grey ramp.
+        private static func table(_ ansi: [simd_float4]) -> [UInt32] {
             let steps: [UInt32] = [0, 95, 135, 175, 215, 255]
-            if index < 232 {
-                let cube = Int(index) - 16
-                let red = steps[cube / 36], green = steps[(cube / 6) % 6], blue = steps[cube % 6]
-                return red | green << 8 | blue << 16 | 0xFF000000
+            var out = Array(ansi.prefix(16)).map(pack)
+            out.reserveCapacity(256)
+            for index in 16..<256 {
+                if index < 232 {
+                    let cube = index - 16
+                    out.append(
+                        steps[cube / 36] | steps[(cube / 6) % 6] << 8 | steps[cube % 6] << 16 | 0xFF000000
+                    )
+                } else {
+                    let grey = UInt32(8 + 10 * (index - 232))
+                    out.append(grey | grey << 8 | grey << 16 | 0xFF000000)
+                }
             }
-            let grey = UInt32(8 + 10 * (Int(index) - 232))
-            return grey | grey << 8 | grey << 16 | 0xFF000000
+            return out
         }
 
-        private func pack(_ colour: simd_float4) -> UInt32 {
+        private static func pack(_ colour: simd_float4) -> UInt32 {
             let red = UInt32(min(255, max(0, colour.x * 255)).rounded())
             let green = UInt32(min(255, max(0, colour.y * 255)).rounded())
             let blue = UInt32(min(255, max(0, colour.z * 255)).rounded())
@@ -543,6 +801,29 @@ final class TerminalDraw {
         simd_float4(0.38, 0.40, 0.43, 1), simd_float4(0.96, 0.46, 0.44, 1), simd_float4(0.31, 0.88, 0.41, 1),
         simd_float4(0.97, 0.87, 0.48, 1), simd_float4(0.47, 0.71, 1.00, 1), simd_float4(0.88, 0.54, 0.96, 1),
         simd_float4(0.43, 0.87, 0.96, 1), simd_float4(0.71, 0.72, 0.74, 1),
+    ]
+
+    /// Solarized's sixteen, in the order the scheme assigns them: the base
+    /// shades for the neutrals, the accents for the colours, and the bright
+    /// half the base shades again from the other end.
+    @MainActor
+    private static let solarizedANSI: [simd_float4] = [
+        simd_float4(0.027, 0.212, 0.259, 1),   // base02  black
+        simd_float4(0.863, 0.196, 0.184, 1),   // red
+        simd_float4(0.522, 0.600, 0.000, 1),   // green
+        simd_float4(0.710, 0.537, 0.000, 1),   // yellow
+        simd_float4(0.149, 0.545, 0.824, 1),   // blue
+        simd_float4(0.827, 0.212, 0.510, 1),   // magenta
+        simd_float4(0.165, 0.631, 0.596, 1),   // cyan
+        simd_float4(0.933, 0.910, 0.835, 1),   // base2   white
+        simd_float4(0.000, 0.169, 0.212, 1),   // base03  bright black
+        simd_float4(0.796, 0.294, 0.086, 1),   // orange  bright red
+        simd_float4(0.345, 0.431, 0.459, 1),   // base01  bright green
+        simd_float4(0.396, 0.482, 0.514, 1),   // base00  bright yellow
+        simd_float4(0.514, 0.580, 0.588, 1),   // base0   bright blue
+        simd_float4(0.424, 0.443, 0.769, 1),   // violet  bright magenta
+        simd_float4(0.576, 0.631, 0.631, 1),   // base1   bright cyan
+        simd_float4(0.992, 0.965, 0.890, 1),   // base3   bright white
     ]
 
     // MARK: - the shaders
@@ -582,7 +863,8 @@ final class TerminalDraw {
         uint2 grid;
         uint2 slot;
         uint slots;
-        uint fill;
+        uint cursorStyle;
+        uint cursorInk;
         float4 cursor;
         float4 selection;
         float4 ground;
@@ -601,8 +883,13 @@ final class TerminalDraw {
         float2 uv;
     };
 
+    // A triangle strip takes its vertices two at a time, so these have to
+    // zigzag. Going round the quad's edge instead makes the second triangle
+    // share an edge with the first rather than the diagonal: the two of them
+    // then overlap down one half of the cell and leave a wedge of the other
+    // half unpainted, which cuts a slice out of every glyph.
     static constant float2 corners[4] = {
-        float2(0, 0), float2(1, 0), float2(1, 1), float2(0, 1)
+        float2(0, 0), float2(0, 1), float2(1, 0), float2(1, 1)
     };
 
     static float4 unpack(uint32_t word) {
@@ -649,10 +936,15 @@ final class TerminalDraw {
         if (held) {
             colour = float4(mix(colour.rgb, f.select.rgb, f.select.a), colour.a);
         }
-        if (under) {
-            // A block cursor is the ink itself; a window that has lost the
-            // keyboard gets half of one, mixed toward the ground.
-            colour = f.cursor.w > 0.5 ? f.ink : mix(f.ground, f.ink, 0.5);
+        if (under && f.cursorStyle == 0u) {
+            // A block cursor is the ink itself — or the colour a program
+            // gave it (OSC 12), which is the one thing a program can say
+            // about a caret it has otherwise no say in; a window that has
+            // lost the keyboard gets half of one, mixed toward the ground.
+            // A bar or a line is drawn with the marks instead — see
+            // markVertex.
+            float4 ink = f.cursorInk == 0u ? f.ink : unpack(f.cursorInk);
+            colour = f.cursor.w > 0.5 ? ink : mix(f.ground, ink, 0.5);
         }
         float2 point = f.origin + float2(col, row) * f.cell + corners[vid] * f.cell;
         out.place = toClip(point, f.drawable);
@@ -661,7 +953,8 @@ final class TerminalDraw {
     }
 
     // The mark pass: one quad per rect — a command block's gutter mark,
-    // a find's highlight — over the background, under the glyphs.
+    // a find's highlight, the cursor when it is not a block — over the
+    // background, under the glyphs.
     vertex FlatOut markVertex(
         uint vid [[vertex_id]], uint iid [[instance_id]],
         constant Frame& f [[buffer(1)]], const device RectRecord* rects [[buffer(0)]]
@@ -722,7 +1015,10 @@ final class TerminalDraw {
         uint held = c.glyph - 1u;
         float2 place = float2((held % f.slots) * f.slot.x, (held / f.slots) * f.slot.y);
         out.uv = (place + corners[vid] * float2(f.slot) * float2(wide ? 2.0 : 1.0, 1.0)) / f.atlas;
-        out.tint = underCursor(col, row, f) ? f.ground : (c.fore == 0u ? f.ink : unpack(c.fore));
+        // Only a block cursor inverts the glyph it covers; a bar or a line
+        // leaves the glyph alone and is drawn over the background.
+        bool covered = underCursor(col, row, f) && f.cursorStyle == 0u;
+        out.tint = covered ? f.ground : (c.fore == 0u ? f.ink : unpack(c.fore));
         out.place = toClip(point, f.drawable);
         return out;
     }

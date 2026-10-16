@@ -165,6 +165,16 @@ struct SearchApp: App {
                 Button("Search Tabs…") { browser.summon() }
                     .shortcut("tabs.search")
                 Divider()
+                // The shell's own marks (OSC 133) are what these walk, so
+                // they are offered only where there is a shell (see
+                // TerminalView.jumpToPrompt).
+                Button("Next Command") { browser.jumpPrompt(forward: true) }
+                    .shortcut("tabs.nextCommand")
+                    .disabled(browser.active?.isTerminal != true)
+                Button("Previous Command") { browser.jumpPrompt(forward: false) }
+                    .shortcut("tabs.previousCommand")
+                    .disabled(browser.active?.isTerminal != true)
+                Divider()
                 if browser.prefs.splitView {
                     Button("Split Current Page") { browser.startSplit() }
                         .shortcut("tabs.split")

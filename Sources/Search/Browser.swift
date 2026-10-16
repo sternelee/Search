@@ -425,6 +425,13 @@ final class Browser: NSObject, ObservableObject {
         }
     }
 
+    /// Walk to the next command's prompt in a terminal, or the one before
+    /// it (see TerminalView.jumpToPrompt). A page has no commands to walk,
+    /// so this does nothing there — the menu does not offer it either.
+    func jumpPrompt(forward: Bool) {
+        active?.console?.jumpToPrompt(forward: forward)
+    }
+
     func look(forward: Bool) {
         // A terminal steps its own search (see TerminalFind).
         if let console = active?.console {

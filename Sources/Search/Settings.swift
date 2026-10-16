@@ -17,12 +17,13 @@ struct SettingsPanel: View {
     @State private var page: Page = Page(rawValue: Store.settings.string(forKey: "settings.page") ?? "") ?? .general
 
     enum Page: String, CaseIterable, Identifiable {
-        case general, tabs, shortcuts, extensions, passwords, downloads, privacy, ai, about
+        case general, tabs, terminal, shortcuts, extensions, passwords, downloads, privacy, ai, about
         var id: String { rawValue }
         var title: String {
             switch self {
             case .general: return "General"
             case .tabs: return "Tabs"
+            case .terminal: return "Terminal"
             case .shortcuts: return "Shortcuts"
             case .extensions: return "Extensions"
             case .passwords: return "Passwords"
@@ -36,6 +37,7 @@ struct SettingsPanel: View {
             switch self {
             case .general: return "macwindow"
             case .tabs: return "rectangle.split.3x1"
+            case .terminal: return "terminal"
             case .shortcuts: return "keyboard"
             case .extensions: return "puzzlepiece.extension"
             case .passwords: return "key"
@@ -141,6 +143,7 @@ struct SettingsPanel: View {
                     case .tabs:
                         tabs
                         if !prefs.sidebar { toolbar }
+                    case .terminal: terminal
                     case .shortcuts: ShortcutsPage(browser: browser, store: .shared)
                     case .extensions: ExtensionsPage(browser: browser)
                     case .passwords: passwords
@@ -538,6 +541,123 @@ struct SettingsPanel: View {
         }
     }
 
+    // MARK: - terminal
+
+    /// The terminal's own settings. Everything here reaches the terminals
+    /// already open — the renderer reads the settings for every frame — so
+    /// a change is seen as it is made, except the shell and the folder,
+    /// which a program already running cannot be moved to.
+    private var terminal: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                Line("Font", "Every terminal draws with this face") {
+                    Picker("", selection: $prefs.terminalFont) {
+                        Text("System Mono").tag("")
+                        ForEach(TerminalLook.faces) { face in
+                            Text(face.title).tag(face.name)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                }
+                Rule()
+                Line("Size") {
+                    Steps(stops: TerminalLook.sizes, value: $prefs.terminalSize, home: 13) {
+                        String(format: "%.1f", $0)
+                    }
+                }
+                Rule()
+                Line("Theme", "Solarized is the scheme as it was published; the rest are the Mac's own") {
+                    Picker("", selection: $prefs.terminalTheme) {
+                        ForEach(TerminalTheme.allCases) { theme in
+                            Text(theme.title).tag(theme)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                }
+            }
+            Card {
+                Line("Cursor") {
+                    Segmented(
+                        options: TerminalCursor.allCases.map { ($0, $0.title) },
+                        selection: $prefs.terminalCursor
+                    )
+                }
+                Rule()
+                Line("Blink", "Twice a second, while the keyboard is in the terminal") {
+                    Switch(on: $prefs.terminalBlinks)
+                }
+                Rule()
+                Line("Padding", "The room left around the cells, in points") {
+                    Steps(stops: TerminalLook.paddings, value: $prefs.terminalPadding, home: 4) {
+                        String(format: "%.0f", $0)
+                    }
+                }
+            }
+            Card {
+                Line("Take the mouse", "Clicks and drags go to htop, vim and the rest — hold ⌥ to select text instead") {
+                    Switch(on: $prefs.terminalMouse)
+                }
+                Rule()
+                Line("Set the clipboard", "How a program copies, by printing an escape sequence; reading one back is never allowed") {
+                    Switch(on: $prefs.terminalClipboard)
+                }
+                Rule()
+                Line("⌘-click opens links", "Where a program has said a run of words is a link (OSC 8)") {
+                    Switch(on: $prefs.terminalLinks)
+                }
+                Rule()
+                Line("Synchronized output", "A program drawing a frame says when it is whole, and the terminal waits rather than showing half of it") {
+                    Switch(on: $prefs.terminalSync)
+                }
+            }
+            Card {
+                Line(
+                    "Shell",
+                    shown(prefs.terminalShell.isEmpty ? TerminalLook.shellPath() : prefs.terminalShell)
+                ) {
+                    HStack(spacing: 8) {
+                        if !prefs.terminalShell.isEmpty {
+                            Pill("System default") { prefs.terminalShell = "" }
+                        }
+                        Pill("Change…") { chooseShell() }
+                    }
+                }
+                Rule()
+                Line(
+                    "Start in",
+                    prefs.terminalDirectory.isEmpty
+                        ? "Wherever Search was started"
+                        : shown(prefs.terminalDirectory)
+                ) {
+                    HStack(spacing: 8) {
+                        if !prefs.terminalDirectory.isEmpty {
+                            Pill("Default") { prefs.terminalDirectory = "" }
+                        }
+                        Pill("Change…") { chooseTerminalFolder() }
+                    }
+                }
+                Rule()
+                Line("Scrollback", "The lines a terminal keeps above its screen") {
+                    Steps(
+                        stops: TerminalLook.scrollbacks.map(Double.init),
+                        value: Binding(
+                            get: { Double(prefs.terminalScrollback) },
+                            set: { prefs.terminalScrollback = Int($0) }
+                        ),
+                        home: 100_000
+                    ) {
+                        Int($0).formatted()
+                    }
+                }
+            }
+            Caption("The shell and the folder are for the next terminal: a program already running is not moved.")
+        }
+    }
+
     // MARK: - privacy
 
     private var privacy: some View {
@@ -709,15 +829,48 @@ struct SettingsPanel: View {
 
     // MARK: - doing
 
-    private func chooseFolder() {
+    /// The panel all three of these settings put up — the folder downloads
+    /// go to, the program a terminal runs, the folder a terminal starts in
+    /// — with what differs passed in: whether a folder or a file is being
+    /// chosen, where the panel opens, whether hidden files are shown, and
+    /// where the answer goes. One panel's behaviour, in one place.
+    private func choose(
+        _ prompt: String, folders: Bool, from start: URL?, hidden: Bool = false, into store: (URL) -> Void
+    ) {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseDirectories = folders
+        panel.canChooseFiles = !folders
         panel.canCreateDirectories = true
-        panel.directoryURL = prefs.downloads
-        panel.prompt = "Use this folder"
+        panel.showsHiddenFiles = hidden
+        panel.directoryURL = start
+        panel.prompt = prompt
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        prefs.downloads = url
+        store(url)
+    }
+
+    private func chooseFolder() {
+        choose("Use this folder", folders: true, from: prefs.downloads) { prefs.downloads = $0 }
+    }
+
+    /// The program a new terminal runs. Any file can be chosen and not only
+    /// an executable: what is wanted is a path to try, and the terminal
+    /// falls back to the Mac's own shell for one that will not run.
+    private func chooseShell() {
+        choose("Use this shell", folders: false, from: URL(fileURLWithPath: "/bin"), hidden: true) {
+            prefs.terminalShell = $0.path
+        }
+    }
+
+    private func chooseTerminalFolder() {
+        let start = prefs.terminalDirectory.isEmpty
+            ? nil
+            : URL(fileURLWithPath: (prefs.terminalDirectory as NSString).expandingTildeInPath)
+        choose("Start here", folders: true, from: start) { prefs.terminalDirectory = $0.path }
+    }
+
+    /// A path as the panel writes it: the home folder as a tilde.
+    private func shown(_ path: String) -> String {
+        path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 
     // MARK: - pieces

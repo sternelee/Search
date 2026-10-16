@@ -184,6 +184,8 @@ struct Command: Identifiable {
         Command("tabs.search", "Search Tabs…", .tabs, KeyCombo("k")) { browser in
             if browser.editing, !browser.offers.isEmpty { browser.stepSummon() } else { browser.summon() }
         },
+        Command("tabs.nextCommand", "Next Command", .tabs, KeyCombo("down")) { $0.jumpPrompt(forward: true) },
+        Command("tabs.previousCommand", "Previous Command", .tabs, KeyCombo("up")) { $0.jumpPrompt(forward: false) },
         // ⌥⌘N, Chrome's on the Mac: ⌃⌘S is the Mac's own Show Sidebar, and
         // sits beside ⌘S, which folds the tabs away.
         Command("tabs.split", "Split Current Page", .tabs, KeyCombo("n", option: true)) { browser in

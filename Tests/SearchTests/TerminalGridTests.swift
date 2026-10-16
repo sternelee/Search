@@ -130,6 +130,27 @@ final class TerminalGridTests: XCTestCase {
         XCTAssertTrue(screen.take().blocks)
     }
 
+    /// Trimming to a limit set after the fact — what turning the scrollback
+    /// down in Settings does — drops the rows scrolling past that limit
+    /// would have dropped.
+    func testTrimDropsRowsPastALoweredLimit() {
+        let screen = Screen(width: 5, height: 2)
+        type(screen, "one\r\ntwo")
+        screen.markPrompt()
+        for _ in 0..<5 {
+            screen.lineFeed()
+            type(screen, "x")
+        }
+        XCTAssertEqual(screen.back.count, 5, "no limit was in force while the rows went past")
+
+        screen.backLimit = 3
+        screen.trim()
+        XCTAssertEqual(screen.back.count, 3)
+        XCTAssertEqual(screen.backBase, 2)
+        XCTAssertTrue(screen.blocks.isEmpty, "the block was in the rows that fell out of the scrollback")
+        XCTAssertTrue(screen.take().blocks)
+    }
+
     // MARK: Erasing and rearranging
 
     func testEraseDisplayModes() {
@@ -206,7 +227,7 @@ final class TerminalGridTests: XCTestCase {
         screen.exitAlternate()
         XCTAssertFalse(screen.alternate)
         XCTAssertEqual(screen.rows[0].text, "main")
-        XCTAssertEqual(screen.back.isEmpty, true, "the alternate never scrolls into the scrollback")
+        XCTAssertTrue(screen.back.isEmpty, "the alternate never scrolls into the scrollback")
     }
 
     func testAlternateRebuildsAfterResize() {
@@ -271,6 +292,52 @@ final class TerminalGridTests: XCTestCase {
         XCTAssertTrue(screen.take().empty)
         screen.reset()
         XCTAssertTrue(screen.take().overturned)
+        XCTAssertTrue(screen.take().empty)
+    }
+
+    /// A caret that moved is a change in its own right. Nothing in the
+    /// cells says so, and a frame that draws no caret where the caret is
+    /// is a frame drawn wrong — so a screen where only the caret moved
+    /// still owes one (`printf '\033[10C'` on an idle terminal).
+    func testDamageCountsACaretThatMoved() {
+        let screen = Screen(width: 5, height: 3)
+        XCTAssertTrue(screen.take().empty)
+        screen.move(to: 3, row: 2)
+        let moved = screen.take()
+        XCTAssertTrue(moved.moved, "the caret is somewhere else now")
+        XCTAssertTrue(moved.rows.isEmpty, "and not one cell changed with it")
+        XCTAssertTrue(screen.take().empty, "taken, not watched")
+    }
+
+    /// Every way of moving it counts, the erased-for-a-moment ones too: a
+    /// program that hides its caret and draws nothing is still a program
+    /// whose screen has changed (DECSET 25 is what every full-screen
+    /// program sends on its way in and out).
+    func testDamageCountsEveryWayTheCaretMoves() {
+        for moving in [
+            { (screen: Screen) in screen.carriageReturn() },
+            { (screen: Screen) in screen.lineFeed() },
+            { (screen: Screen) in screen.backspace() },
+            { (screen: Screen) in screen.tab() },
+            { (screen: Screen) in screen.moveBack(1) },
+            { (screen: Screen) in screen.restoreCursor() },
+            { (screen: Screen) in screen.visible = false },
+            { (screen: Screen) in screen.reverseVideo = true },
+        ] {
+            let screen = Screen(width: 5, height: 3)
+            screen.move(to: 3, row: 1)
+            _ = screen.take()
+            moving(screen)
+            XCTAssertTrue(screen.take().moved, "a frame is owed for that")
+        }
+    }
+
+    /// A mode the frame or the keyboard reads is set back to what it
+    /// already was: nothing moved, and nothing is owed.
+    func testDamageLeavesAModeThatDidNotChangeAlone() {
+        let screen = Screen(width: 5, height: 3)
+        _ = screen.take()
+        screen.visible = true
         XCTAssertTrue(screen.take().empty)
     }
 

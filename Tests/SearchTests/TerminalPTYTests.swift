@@ -12,8 +12,9 @@ final class TerminalPTYTests: XCTestCase {
         var saw = ""
         let terminal = Terminal(command: command)
         terminal.onEnded = { _, _ in ended.fulfill() }
-        terminal.onDraw = { screen, _ in
-            saw = screen.rows.map(\.text).joined(separator: "\n")
+        terminal.onDraw = { [weak terminal] _, _ in
+            guard let scene = terminal?.scene(scroll: 0) else { return }
+            saw = scene.lines.map(\.text).joined(separator: "\n")
         }
         wait(for: [ended], timeout: timeout)
         return (terminal, saw)
@@ -40,8 +41,9 @@ final class TerminalPTYTests: XCTestCase {
         var saw = ""
         let terminal = Terminal(
             command: TerminalCommand(argv: ["/bin/sh", "-c", "read line; printf 'back:%s' \"$line\"; exit 0"]))
-        terminal.onDraw = { screen, _ in
-            saw = screen.rows.map(\.text).joined(separator: "\n")
+        terminal.onDraw = { [weak terminal] _, _ in
+            guard let scene = terminal?.scene(scroll: 0) else { return }
+            saw = scene.lines.map(\.text).joined(separator: "\n")
             if saw.contains("back:") { replied.fulfill() }
         }
         terminal.send("yo\n")
@@ -78,8 +80,9 @@ final class TerminalPTYTests: XCTestCase {
             command: TerminalCommand(argv: ["/bin/sh", "-c", "printf started; trap '' HUP TERM; sleep 30; exit 0"]))
         // Wait until the program says it has started — only then are its
         // traps up, and the escalation has something stubborn to beat.
-        terminal.onDraw = { screen, _ in
-            if screen.rows.map(\.text).joined(separator: "\n").contains("started") {
+        terminal.onDraw = { [weak terminal] _, _ in
+            guard let scene = terminal?.scene(scroll: 0) else { return }
+            if scene.lines.map(\.text).joined(separator: "\n").contains("started") {
                 started.fulfill()
             }
         }

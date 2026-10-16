@@ -9,6 +9,7 @@ final class TerminalParseTests: XCTestCase {
     private var parser = Parser(screen: Screen())
     private var notices: [Notice] = []
     private var replies: [String] = []
+    private var copies: [String] = []
 
     override func setUp() {
         super.setUp()
@@ -16,8 +17,10 @@ final class TerminalParseTests: XCTestCase {
         parser = Parser(screen: screen)
         notices = []
         replies = []
+        copies = []
         parser.say = { [weak self] in self?.notices.append($0) }
         parser.reply = { [weak self] in self?.replies.append($0) }
+        parser.copied = { [weak self] in self?.copies.append($0) }
     }
 
     private func feed(_ text: String) {
@@ -85,7 +88,7 @@ final class TerminalParseTests: XCTestCase {
         feed("\u{1b}[31mR\u{1b}[1;38;2;10;20;30mB\u{1b}[mP")
         XCTAssertEqual(screen.ink.foreground, .plain, "0 puts the whole pen back")
         XCTAssertEqual(screen.rows[0].cells[0].ink.foreground, .ansi(1))
-        XCTAssertEqual(screen.rows[0].cells[0].ink.bold, false)
+        XCTAssertFalse(screen.rows[0].cells[0].ink.bold)
         let blue = screen.rows[0].cells[1].ink
         XCTAssertTrue(blue.bold)
         XCTAssertEqual(blue.foreground, .rgb(10, 20, 30))
@@ -107,7 +110,7 @@ final class TerminalParseTests: XCTestCase {
         // A colon speaks the sub-parameter's semicolon (4:3 the curly
         // underline, the straight one as far as this is concerned).
         feed("\u{1b}[4:3mX")
-        XCTAssertEqual(screen.rows[0].cells[0].ink.underline, true)
+        XCTAssertTrue(screen.rows[0].cells[0].ink.underline)
     }
 
     // MARK: The private modes
@@ -115,7 +118,7 @@ final class TerminalParseTests: XCTestCase {
     func testDecsetAndDecrst() {
         feed("\u{1b}[?1000;1006;2004h")
         XCTAssertEqual(screen.mouse, .click)
-        XCTAssertTrue(screen.mouseExact)
+        XCTAssertEqual(screen.mouseFormat, .sgr)
         XCTAssertTrue(screen.bracketedPaste)
         feed("\u{1b}[?1002h")
         XCTAssertEqual(screen.mouse, .drag)
@@ -281,11 +284,181 @@ final class TerminalParseTests: XCTestCase {
         XCTAssertEqual(screen.rows[0].text.prefix(2), "xy")
     }
 
+    // MARK: Modes the program asks about and turns on
+
+    func testFocusAndSynchronizedOutput() {
+        feed("\u{1b}[?1004h")
+        XCTAssertTrue(screen.focusReporting, "1004: the program wants to hear when the keyboard moves")
+        feed("\u{1b}[?1004l")
+        XCTAssertFalse(screen.focusReporting)
+        feed("\u{1b}[?2026h")
+        XCTAssertTrue(screen.syncOutput, "2026: the program is building a frame out of sight")
+        feed("\u{1b}[?2026l")
+        XCTAssertFalse(screen.syncOutput)
+    }
+
+    func testAModeThatChangedIsDamage() {
+        screen.take()
+        feed("\u{1b}[?1004h")
+        XCTAssertTrue(screen.take().moved, "a program that only turns a mode on still gets its frame")
+    }
+
+    /// The three mouse encodings replace each other rather than piling up:
+    /// a program that sets 1006 and then 1016 has changed its mind about
+    /// one encoding, not asked for two at once. Turning one off leaves the
+    /// plain one, which is what it was in before any of them.
+    func testOneMouseEncodingReplacesTheLast() {
+        feed("\u{1b}[?1006h")
+        XCTAssertEqual(screen.mouseFormat, .sgr)
+        feed("\u{1b}[?1015h")
+        XCTAssertEqual(screen.mouseFormat, .urxvt, "urxvt's, in place of SGR's")
+        feed("\u{1b}[?1016h")
+        XCTAssertEqual(screen.mouseFormat, .sgrPixels, "and SGR counting pixels, in place of that")
+        XCTAssertTrue(screen.mouseFormat.pixels)
+        feed("\u{1b}[?1016l")
+        XCTAssertEqual(screen.mouseFormat, .legacy, "turning it off leaves the plain encoding behind")
+        feed("\u{1b}[?1006h")
+        feed("\u{1b}[?1006l")
+        XCTAssertEqual(screen.mouseFormat, .legacy)
+    }
+
+    /// And each of them answers for itself when asked: 1006 on does not
+    /// mean 1015 is on.
+    func testTheMouseEncodingsAreAnsweredApart() {
+        feed("\u{1b}[?1016h")
+        feed("\u{1b}[?1016$p")
+        XCTAssertEqual(replies.last, "\u{1b}[?1016;1$y", "the encoding that is on says so")
+        feed("\u{1b}[?1006$p")
+        XCTAssertEqual(replies.last, "\u{1b}[?1006;2$y", "and the one it replaced does not")
+        feed("\u{1b}[?1015$p")
+        XCTAssertEqual(replies.last, "\u{1b}[?1015;2$y")
+    }
+
+    func testModeQueryIsAnswered() {
+        feed("\u{1b}[?2004h")            // bracketed paste, on
+        feed("\u{1b}[?1004$p")           // ...and is it on?
+        XCTAssertEqual(replies.last, "\u{1b}[?1004;2$y", "a mode that is off says so")
+        feed("\u{1b}[?2004$p")
+        XCTAssertEqual(replies.last, "\u{1b}[?2004;1$y", "a mode that is on says so")
+        feed("\u{1b}[?9999$p")
+        XCTAssertEqual(replies.last, "\u{1b}[?9999;0$y", "a mode nobody has is answered as unknown, not guessed at")
+        feed("\u{1b}[4$p")
+        XCTAssertEqual(replies.last, "\u{1b}[4;2$y", "and the ansi modes are answered the same way")
+    }
+
+    func testAnAnswerIsNotAQuestion() {
+        // DECRPM, the reply to the above. A terminal that answered its own
+        // answers would talk to itself for ever.
+        let before = replies.count
+        feed("\u{1b}[?2004;1$y")
+        XCTAssertEqual(replies.count, before)
+    }
+
+    func testTheCursorIsMovedByRestoreNotByTheKeyboardsQuery() {
+        feed("abc")
+        feed("\u{1b}[1;1H\u{1b}7")      // somewhere, and remembered there
+        feed("\u{1b}[3;3H")
+        feed("\u{1b}[?u")               // the kitty keyboard query: not a cursor at all
+        XCTAssertEqual(screen.x, 2, "the query left the cursor where it was")
+        XCTAssertEqual(screen.y, 2)
+        feed("\u{1b}[u")                // and this one is the restore it has always been
+        XCTAssertEqual(screen.x, 0)
+        XCTAssertEqual(screen.y, 0)
+    }
+
+    // MARK: Character sets
+
+    func testG2AndG3() {
+        feed("\u{1b}*0\u{1b}nq")
+        XCTAssertEqual(screen.rows[0].cells[0].char, "─", "G2 given the drawing set, chosen by LS2")
+        feed("\u{1b}+0\u{1b}ol")
+        XCTAssertEqual(screen.rows[0].cells[1].char, "┌", "G3 given the drawing set, chosen by LS3")
+        feed("\u{1b}+B\u{1b}om")
+        XCTAssertEqual(screen.rows[0].cells[2].char, "m", "G3 put back to ASCII, and still the one chosen")
+    }
+
     // MARK: Swallowing
+
+    func testHyperlinksAreLaidOverTheWordsTheyCover() {
+        feed("\u{1b}]8;;https://metalterm.dev\u{1b}\\this way\u{1b}]8;;\u{1b}\\ and not this")
+        XCTAssertEqual(screen.links, ["https://metalterm.dev"])
+        let cells = screen.rows[0].cells
+        XCTAssertNotEqual(cells[0].link, 0, "the words under the link carry it")
+        XCTAssertNotEqual(cells[7].link, 0, "all of them")
+        XCTAssertEqual(cells[8].link, 0, "and the ones past the end do not")
+        XCTAssertEqual(screen.link(of: cells[0]), "https://metalterm.dev")
+        XCTAssertNil(screen.link(of: cells[9]))
+    }
+
+    func testTheSameAddressWrittenTwiceIsOneEntry() {
+        feed("\u{1b}]8;;https://a.dev\u{1b}\\one\u{1b}]8;;\u{1b}\\\u{1b}]8;;https://a.dev\u{1b}\\two\u{1b}]8;;\u{1b}\\")
+        XCTAssertEqual(screen.links, ["https://a.dev"], "the table holds the address, not each use of it")
+        XCTAssertEqual(screen.rows[0].cells[0].link, screen.rows[0].cells[3].link)
+    }
+
+    func testALinkEndsWhereTheProgramEndsIt() {
+        feed("\u{1b}]8;;https://b.dev\u{1b}\\in")
+        feed("\u{1b}]8;;\u{1b}\\out")
+        XCTAssertEqual(screen.rows[0].cells[0].link, 1)
+        XCTAssertEqual(screen.rows[0].cells[2].link, 0, "the empty address is how a link is closed")
+    }
+
+    func testAnAddressWithSemicolonsInItIsKeptWhole() {
+        feed("\u{1b}]8;;https://x.dev/a;b;c\u{1b}\\there")
+        XCTAssertEqual(screen.links, ["https://x.dev/a;b;c"])
+    }
+
+    // MARK: The caret's colour, and the clipboard
+
+    func testOsc12SetsTheCaretColour() {
+        feed("\u{1b}]12;#ff0000\u{07}")
+        XCTAssertEqual(screen.cursorInk, .rgb(255, 0, 0), "#RRGGBB")
+        feed("\u{1b}]12;#f00\u{07}")
+        XCTAssertEqual(screen.cursorInk, .rgb(255, 0, 0), "and the short way: one digit to a channel")
+        feed("\u{1b}]12;rgb:00/80/ff\u{07}")
+        XCTAssertEqual(screen.cursorInk, .rgb(0, 128, 255), "rgb:RR/GG/BB")
+        feed("\u{1b}]12;rgba:ff/ff/ff/80\u{07}")
+        XCTAssertEqual(screen.cursorInk, .rgb(255, 255, 255), "rgba: — the alpha is dropped, nothing here being translucent")
+    }
+
+    func testASpecThatIsNotAColourLeavesTheCaretAsItWas() {
+        feed("\u{1b}]12;#123456\u{07}")
+        feed("\u{1b}]12;not a colour\u{07}")
+        XCTAssertEqual(screen.cursorInk, .rgb(0x12, 0x34, 0x56))
+        feed("\u{1b}]12\u{07}")
+        XCTAssertEqual(screen.cursorInk, .rgb(0x12, 0x34, 0x56), "and neither does a sequence with no spec at all")
+    }
+
+    func testOsc112PutsTheCaretBackToTheThemesOwn() {
+        feed("\u{1b}]12;#123456\u{07}")
+        _ = screen.take()
+        feed("\u{1b}]112\u{07}")
+        XCTAssertEqual(screen.cursorInk, .plain)
+        XCTAssertTrue(screen.take().moved, "a caret that changed colour is a frame owed")
+    }
+
+    func testOsc52PutsTextOnTheClipboard() {
+        let said = Data("hello from the program".utf8).base64EncodedString()
+        feed("\u{1b}]52;c;\(said)\u{07}")
+        XCTAssertEqual(copies, ["hello from the program"])
+    }
+
+    func testAProgramThatAsksToReadTheClipboardIsRefused() {
+        feed("\u{1b}]52;c;?\u{07}")
+        XCTAssertEqual(copies, [], "no escape sequence reads the clipboard")
+        XCTAssertEqual(replies, ["\u{1b}]52;c;\u{07}"], "and the program is told the selection is empty rather than left waiting")
+    }
+
+    func testAClipboardPayloadThatIsNotBase64IsSwallowed() {
+        let before = parser.swallowed
+        feed("\u{1b}]52;c;not base64 at all!\u{07}")
+        XCTAssertEqual(copies, [])
+        XCTAssertGreaterThan(parser.swallowed, before)
+    }
 
     func testUnknownSequencesAreCountedNotRun() {
         let before = parser.swallowed
-        feed("\u{1b}]8;;https://search.dev\u{07}")  // hyperlinks: not spoken
+        feed("\u{1b}]4;1;rgb:00/00/00\u{07}")      // the palette: not spoken
         feed("\u{1b}[?9001h")                        // a mode nobody knows
         feed("\u{1b}[99z")                            // a final nobody sends
         feed("\u{1b}_hidden\u{1b}\\")                 // APC: skipped whole

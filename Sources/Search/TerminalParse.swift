@@ -31,6 +31,10 @@ final class Parser {
     var say: ((Notice) -> Void)?
     /// What the terminal must write back: where the cursor is, what it is.
     var reply: ((String) -> Void)?
+    /// What the program put on the clipboard (OSC 52). Taken out of here
+    /// rather than set from here, because the clipboard is the app's and
+    /// this is a parser's: it is handed the text and told nothing else.
+    var copied: ((String) -> Void)?
 
     /// Every sequence fed that was swallowed whole — the honest count of
     /// how much this doesn't know, for whoever is curious.
@@ -73,11 +77,17 @@ final class Parser {
     private var inter: Character?
     private var payload: [UInt8] = []
 
-    // The character sets: G0 and G1, one of them chosen at a time, each
-    // either the letters as they are or the DEC line-drawing set.
+    // The character sets: four of them, one in use at a time, each either
+    // the letters as they are or the DEC line-drawing set. A program
+    // designates into G0–G3 (ESC ( ) * +) and shifts between them — SI and
+    // SO for the first two, ESC n and ESC o for the other two, which only
+    // ever mattered to the programs that drew boxes in the corner of a
+    // screen full of them.
     private var g0 = false
     private var g1 = false
-    private var usingG1 = false
+    private var g2 = false
+    private var g3 = false
+    private var graphic = 0
 
     // A UTF-8 character, taken apart as its bytes arrive.
     private var pending: [UInt8] = []
@@ -131,8 +141,8 @@ final class Parser {
         case 0x09: screen.tab()
         case 0x0A, 0x0B, 0x0C: screen.lineFeed()
         case 0x0D: screen.carriageReturn()
-        case 0x0E: usingG1 = true
-        case 0x0F: usingG1 = false
+        case 0x0E: graphic = 1     // SO: G1
+        case 0x0F: graphic = 0     // SI: G0
         default: break
         }
     }
@@ -143,7 +153,17 @@ final class Parser {
     /// with the character set in force and put on the screen with the
     /// width it takes there.
     private func print(_ char: Character) {
-        let drawn = (usingG1 ? g1 : g0) ? Parser.drawing[char] ?? char : char
+        // This runs once per character the program prints, so it picks the
+        // set in force without building anything: `graphic` is one of the
+        // four SI, SO, LS2 and LS3 name, and cannot be anything else.
+        let on: Bool
+        switch graphic {
+        case 1: on = g1
+        case 2: on = g2
+        case 3: on = g3
+        default: on = g0
+        }
+        let drawn = on ? Parser.drawing[char] ?? char : char
         let wide = Parser.isWide(drawn)
         screen.put(drawn, wide: wide)
         last = (drawn, wide)
@@ -191,6 +211,41 @@ final class Parser {
         "x": "│", "y": "≤", "z": "≥", "{": "π", "|": "≠", "}": "£", "~": "·",
     ]
 
+    /// An X11 colour spec, as much of one as a terminal is ever sent:
+    /// `rgb:RR/GG/BB` (and `rgba:`, whose alpha nothing here can show) and
+    /// `#RRGGBB`. The digits are hex and may number one per channel or four
+    /// — a spec may say the colour at any precision it likes — so each is
+    /// scaled to a byte by what its own width can hold.
+    private static func colour(_ spec: String) -> (red: UInt8, green: UInt8, blue: UInt8)? {
+        var parts: [Substring] = []
+        if spec.hasPrefix("#") {
+            let hex = spec.dropFirst()
+            guard hex.count % 3 == 0 else { return nil }
+            let each = hex.count / 3
+            guard each > 0 else { return nil }
+            let digits = Array(hex)
+            for channel in 0..<3 {
+                parts.append(Substring(String(digits[(channel * each)..<((channel + 1) * each)])))
+            }
+        } else if spec.hasPrefix("rgb"), let colon = spec.firstIndex(of: ":") {
+            parts = spec[spec.index(after: colon)...].split(separator: "/", omittingEmptySubsequences: false)
+            // `rgba:` says a fourth thing this cannot show — nothing here is
+            // translucent — and it is dropped rather than refused, so a
+            // program that names its colours that way still gets them.
+            if parts.count == 4 { parts.removeLast() }
+        } else {
+            return nil
+        }
+        guard parts.count == 3 else { return nil }
+        var bytes: [UInt8] = []
+        for part in parts {
+            guard !part.isEmpty, part.count <= 4, let value = UInt32(part, radix: 16) else { return nil }
+            let most = (1 << (4 * part.count)) - 1
+            bytes.append(UInt8((value * 255 + UInt32(most / 2)) / UInt32(most)))
+        }
+        return (bytes[0], bytes[1], bytes[2])
+    }
+
     // MARK: After ESC
 
     private func escape(_ byte: UInt8) {
@@ -208,8 +263,10 @@ final class Parser {
             state = .osc
         case 0x50, 0x58, 0x5E, 0x5F: // P X ^ _
             state = .skip
-        case 0x28, 0x29, 0x23: // ( ) #
+        case 0x28, 0x29, 0x2A, 0x2B, 0x23: // ( ) * + #
             state = .slot(Character(UnicodeScalar(byte)))
+        case 0x6E: graphic = 2                // n: LS2, the set G2 holds
+        case 0x6F: graphic = 3                // o: LS3
         case 0x37: screen.saveCursor()        // 7
         case 0x38: screen.restoreCursor()     // 8
         case 0x44: screen.lineFeed()          // D
@@ -237,6 +294,10 @@ final class Parser {
             g0 = char == "0"
         case ")":
             g1 = char == "0"
+        case "*":
+            g2 = char == "0"
+        case "+":
+            g3 = char == "0"
         case "#":
             if char == "8" { screen.fillPattern() }
         default:
@@ -293,10 +354,24 @@ final class Parser {
     }
 
     private func run(_ final: Character) {
-        // The ones with an intermediate byte are the cursor's style and
-        // its shape — nothing a screen holds.
-        if inter != nil {
-            if final != "m" { swallowed += 1 }
+        // The ones with an intermediate byte: the cursor's style and shape,
+        // and the mode question a program asks before it dares to set one.
+        if let inter {
+            switch (inter, final) {
+            case ("$", "p"):
+                // DECRQM: is this mode set? Asked with `?` for the private
+                // modes and without for the ANSI ones, answered in the same
+                // form — and answered for the ones this terminal has not
+                // got too, with a zero, which is what makes the question
+                // worth asking at all.
+                for what in params where what >= 0 { answer(what, private: marker == "?") }
+            case ("$", "y"):
+                break               // DECRPM: an answer, never a question we asked
+            case (_, "m"):
+                break               // the cursor's style or shape, kept by the screen
+            default:
+                swallowed += 1
+            }
             return
         }
         switch final {
@@ -325,7 +400,12 @@ final class Parser {
         case "r": screen.setRegion(top: n(0, 1) - 1, bottom: n(1, screen.height) - 1)
         case "s":
             if marker == nil { screen.saveCursor() } else { swallowed += 1 }
-        case "u": screen.restoreCursor()
+        case "u":
+            // `CSI u` gives the cursor back; `CSI ? u` is a program asking
+            // about a keyboard protocol this terminal does not have, and
+            // answering nothing at all is how it finds that out — a
+            // program that gets an answer believes it.
+            if marker == nil { screen.restoreCursor() } else { swallowed += 1 }
         case "g":
             // TBC: 0 the stop at the cursor, 3 every one there is.
             switch n(0, 0) {
@@ -355,6 +435,37 @@ final class Parser {
         default:
             swallowed += 1
         }
+    }
+
+    /// DECRQM's answer, for one mode: the number, then whether it is set.
+    /// One is set, two is not, and zero is a mode this terminal has never
+    /// heard of — the three answers xterm gives, and the only ones a
+    /// program that asks can do anything with. The private modes are
+    /// answered in the private form, the ANSI ones in the plain.
+    private func answer(_ what: Int, private isPrivate: Bool) {
+        let state: Int
+        if isPrivate {
+            switch what {
+            case 1: state = screen.applicationCursor ? 1 : 2
+            case 5: state = screen.reverseVideo ? 1 : 2
+            case 6: state = screen.origin ? 1 : 2
+            case 7: state = screen.wraparound ? 1 : 2
+            case 25: state = screen.visible ? 1 : 2
+            case 47, 1047, 1048, 1049: state = screen.alternate ? 1 : 2
+            case 1000, 1002, 1003: state = screen.mouse.mode == what ? 1 : 2
+            case 1004: state = screen.focusReporting ? 1 : 2
+            case 1006, 1015, 1016: state = screen.mouseFormat.mode == what ? 1 : 2
+            case 2004: state = screen.bracketedPaste ? 1 : 2
+            case 2026: state = screen.syncOutput ? 1 : 2
+            default: state = 0
+            }
+        } else {
+            switch what {
+            case 4: state = screen.insert ? 1 : 2
+            default: state = 0
+            }
+        }
+        reply?("\u{1b}[\(isPrivate ? "?" : "")\(what);\(state)$y")
     }
 
     // MARK: SGR
@@ -451,11 +562,14 @@ final class Parser {
                     screen.exitAlternate()
                     screen.restoreCursor()
                 }
-            case 1000: screen.mouse = on ? .click : .off
-            case 1002: screen.mouse = on ? .drag : .off
-            case 1003: screen.mouse = on ? .motion : .off
-            case 1006: screen.mouseExact = on
+            case 1000, 1002, 1003: screen.mouse = on ? MouseMode(mode: what) ?? .off : .off
+            case 1004: screen.focusReporting = on
+            // The three encodings, each replacing the one before it: a
+            // program that wants SGR and then asks for pixels has not
+            // asked for two encodings, it has changed its mind about one.
+            case 1006, 1015, 1016: screen.mouseFormat = on ? MouseReport.Format(mode: what) ?? .legacy : .legacy
             case 2004: screen.bracketedPaste = on
+            case 2026: screen.syncOutput = on
             default: swallowed += 1
             }
         }
@@ -499,6 +613,15 @@ final class Parser {
             if let path = String(rest).removingPercentEncoding, path.hasPrefix("/") {
                 say?(.cwd(URL(fileURLWithPath: path)))
             }
+        case 8:
+            // 8;params;address — everything written from here on belongs
+            // to that address, until a program ends it by leaving the
+            // address empty. The params hold an id, for a link split over
+            // several runs; it is not kept, because a click already knows
+            // two runs are one link by their being the same address, and
+            // nothing else here reads it.
+            guard parts.count > 2 else { break }
+            screen.link(parts[2...].joined(separator: ";"))
         case 9:
             // 9;body, or 9;title;body.
             guard parts.count > 1 else { break }
@@ -511,6 +634,36 @@ final class Parser {
             // 777;notify;title;body — the one iTerm took from rxvt.
             guard parts.count > 3 else { break }
             say?(.note(title: parts[2], body: parts[3...].joined(separator: ";")))
+        case 12:
+            // 12;spec — the colour of the caret. A program that sets one
+            // has a reason: vim paints the caret to say which mode it is
+            // in, and this is the only way it can say it.
+            guard parts.count > 1, let named = Parser.colour(parts[1]) else { break }
+            screen.cursorInk = .rgb(named.red, named.green, named.blue)
+        case 112:
+            screen.cursorInk = .plain
+        case 52:
+            // 52;selection;payload — the clipboard, with the payload
+            // base64 because an escape sequence has no room for arbitrary
+            // bytes. A payload of "?" is the program asking to read it
+            // back, and it is answered with an empty selection rather than
+            // with what is on the clipboard: a program that can read the
+            // clipboard can read whatever was last copied into it from
+            // anywhere on the machine, which is not something a program
+            // gets to do by printing an escape sequence.
+            guard parts.count > 2 else { break }
+            let payload = parts[2...].joined(separator: ";")
+            guard payload != "?" else {
+                reply?("\u{1b}]52;\(parts[1]);\u{07}")
+                return
+            }
+            guard let data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters),
+                  let text = String(data: data, encoding: .utf8)
+            else {
+                swallowed += 1
+                return
+            }
+            copied?(text)
         case 133:
             // The shell's own marks (A a prompt, B the prompt's end, C the
             // command running, D done, with the exit when it says one).

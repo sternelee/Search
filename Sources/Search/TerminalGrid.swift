@@ -45,11 +45,21 @@ struct Cell: Equatable {
     var char: Character = " "
     var wide = false
     var ink: Ink = .plain
+    /// The link this square belongs to, as an index into the screen's own
+    /// table, or zero for none — which is what almost every square there
+    /// has ever been. A hyperlink is the one thing here that does not
+    /// belong in the square: it is a string, and the same string is laid
+    /// over every square of the words it covers. So the string is kept
+    /// once and the square carries its number, and a screen with no
+    /// hyperlinks on it pays two bytes a square for the privilege of not
+    /// knowing about them.
+    var link: UInt16 = 0
 
-    init(char: Character = " ", wide: Bool = false, ink: Ink = .plain) {
+    init(char: Character = " ", wide: Bool = false, ink: Ink = .plain, link: UInt16 = 0) {
         self.char = char
         self.wide = wide
         self.ink = ink
+        self.link = link
     }
 }
 
@@ -65,7 +75,7 @@ struct Row: Equatable {
     /// a line starts with are the line's, not padding; a prompt's dent
     /// matters.
     var text: String {
-        let said = cells.reduce(into: "") { $0.append($1.char) }
+        let said = String(cells.map(\.char))
         return String(said.reversed().drop { $0 == " " }.reversed())
     }
 }
@@ -92,6 +102,44 @@ struct Block: Equatable {
 /// down, motion adds motion without one.
 enum MouseMode: Equatable {
     case off, click, drag, motion
+
+    /// The mode number that asks for this, zero for the mouse that was
+    /// never asked for. The same number is both the one a program sets and
+    /// the one DECRQM is answered with, so it is written here once rather
+    /// than in each of the two switches that read it.
+    var mode: Int {
+        switch self {
+        case .click: return 1000
+        case .drag: return 1002
+        case .motion: return 1003
+        case .off: return 0
+        }
+    }
+
+    init?(mode: Int) {
+        switch mode {
+        case 1000: self = .click
+        case 1002: self = .drag
+        case 1003: self = .motion
+        default: return nil
+        }
+    }
+}
+
+/// The screen's modes as one small word: what a frame has to know to draw
+/// it, and what the keyboard and the hand have to know to talk to it.
+/// Carried with the damage rather than read off the screen, so a keystroke
+/// or a click never reaches into a screen the lane may be writing — the
+/// reason a program that only sets a mode, and draws nothing, still gets
+/// its frame (see Damage.moved).
+struct Modes: Equatable {
+    var mouse = MouseMode.off
+    var mouseFormat = MouseReport.Format.legacy // 1006, 1015, 1016: how the pointer is written
+    var applicationCursor = false // DECCKM: the arrows speak SS3, not CSI
+    var applicationKeypad = false // DECKPAM
+    var focus = false             // 1004: the program wants to hear the keyboard come and go
+    var sync = false              // 2026: the program is holding the screen while it composes
+    var visible = true            // DECTCEM: whether the caret is there at all
 }
 
 /// What feeding the screen changed, for whoever draws it: the rows by
@@ -104,10 +152,28 @@ struct Damage: Equatable {
     var scrolled = false
     var overturned = false
     var blocks = false
+    /// A change that is not in the cells: the caret moved, or a mode the
+    /// frame or the keyboard reads was set. A frame is owed for it — the
+    /// caret is drawn where it now is, the arrows take the form the
+    /// program just asked for — but not one cell has to be said again,
+    /// which is what makes it worth naming apart from `rows`.
+    var moved = false
 
-    var empty: Bool { rows.isEmpty && !scrolled && !overturned && !blocks }
+    var empty: Bool { rows.isEmpty && !scrolled && !overturned && !blocks && !moved }
 
-    static let everything = Damage(rows: [], scrolled: true, overturned: true, blocks: true)
+    /// Adds another report to this one: what a view owes a frame across a
+    /// burst of readings. The fields are listed once, here, rather than at
+    /// each place that accumulates — a field added to `Damage` and not to
+    /// this merge would be damage nobody ever draws.
+    mutating func merge(_ other: Damage) {
+        rows.formUnion(other.rows)
+        scrolled = scrolled || other.scrolled
+        overturned = overturned || other.overturned
+        blocks = blocks || other.blocks
+        moved = moved || other.moved
+    }
+
+    static let everything = Damage(rows: [], scrolled: true, overturned: true, blocks: true, moved: true)
 }
 
 final class Screen {
@@ -142,23 +208,132 @@ final class Screen {
     /// The pen characters are written with (SGR).
     var ink: Ink = .plain
 
-    // The modes a program sets, each the terminal's own name for it.
+    /// The hyperlink characters are written with (OSC 8), as an index into
+    /// `links`, or zero for none. Like the ink it is a pen setting: it
+    /// lasts until the program changes it, so a link laid over several
+    /// writes covers all of them.
+    private var linkNow: UInt16 = 0
+
+    /// Every hyperlink this screen has seen, interned: the same address
+    /// written a thousand times over a thousand rows is one string here
+    /// and a thousand copies of one small number in the squares. Index
+    /// zero is the "no link" the squares start at, so the table is read
+    /// from one — `links[cell.link - 1]`.
+    ///
+    /// Nothing takes an entry away again: a square in the scrollback may
+    /// still be pointing at it, and there is no count of who else is. The
+    /// table is capped instead — past it, a new address is dropped rather
+    /// than kept, which costs a link nobody can click and cannot grow a
+    /// session's memory without end.
+    private(set) var links: [String] = []
+
+    /// Where an address already in `links` sits, so that writing the same
+    /// one again is a lookup rather than a walk of the table. `ls
+    /// --hyperlink` writes an address per file, and a long listing would
+    /// otherwise cost a scan of every address before it, for every file —
+    /// on the queue that reads the program's output.
+    private var linkAt: [String: UInt16] = [:]
+
+    /// The most addresses a screen keeps. `ls --hyperlink` writes one per
+    /// file, so this is a directory listing's worth of them and then some.
+    private static let linkLimit = 16_384
+
+    /// OSC 8: everything written from here on is part of this address, or
+    /// of no address at all when it is nil or empty — which is how a
+    /// program ends a link.
+    func link(_ target: String?) {
+        guard let target, !target.isEmpty else {
+            linkNow = 0
+            return
+        }
+        if let at = linkAt[target] {
+            linkNow = at
+            return
+        }
+        guard links.count < Screen.linkLimit else {
+            linkNow = 0
+            return
+        }
+        links.append(target)
+        linkNow = UInt16(links.count)
+        linkAt[target] = linkNow
+    }
+
+    /// The address a square belongs to, if it belongs to one.
+    func link(of square: Cell) -> String? {
+        let at = Int(square.link) - 1
+        return at >= 0 && at < links.count ? links[at] : nil
+    }
+
+    /// A square in the pen's own terms: the character, the ink and the
+    /// link in force. The one place a cell is made, so that a pen setting
+    /// added later cannot be forgotten in one of the erasures.
+    private func square(_ char: Character, wide: Bool = false) -> Cell {
+        Cell(char: char, wide: wide, ink: ink, link: linkNow)
+    }
+
+    // The modes a program sets, each the terminal's own name for it. The
+    // ones a frame, the keyboard or the hand acts on say so when they
+    // change: a program that only sets a mode draws nothing, and would
+    // otherwise get no frame in which to hear that it had.
     var wraparound = true         // DECAWM, on by default
     var origin = false            // DECOM
-    var visible = true            // DECTCEM
-    var reverseVideo = false     // DECSCNM
+    var visible = true {          // DECTCEM
+        didSet { if visible != oldValue { damage.moved = true } }
+    }
+    var reverseVideo = false {    // DECSCNM
+        didSet { if reverseVideo != oldValue { damage.moved = true } }
+    }
     var insert = false            // IRM
-    var applicationCursor = false // DECCKM
-    var applicationKeypad = false // DECKPAM
-    var mouse = MouseMode.off
-    var mouseExact = false        // SGR mouse (1006) rather than the old character encoding
-    var bracketedPaste = false    // 2004
+    var applicationCursor = false {  // DECCKM
+        didSet { if applicationCursor != oldValue { damage.moved = true } }
+    }
+    var applicationKeypad = false {  // DECKPAM
+        didSet { if applicationKeypad != oldValue { damage.moved = true } }
+    }
+    var mouse = MouseMode.off {
+        didSet { if mouse != oldValue { damage.moved = true } }
+    }
+    /// How the pointer is written when it is reported: the old byte
+    /// encoding, SGR, urxvt's, or SGR counting pixels (1006, 1015, 1016).
+    /// One at a time, because the modes replace each other — a program
+    /// that sets 1016 after 1006 wants pixels, not both.
+    var mouseFormat = MouseReport.Format.legacy {
+        didSet { if mouseFormat != oldValue { damage.moved = true } }
+    }
+    var bracketedPaste = false {  // 2004
+        didSet { if bracketedPaste != oldValue { damage.moved = true } }
+    }
+    var focusReporting = false {  // 1004
+        didSet { if focusReporting != oldValue { damage.moved = true } }
+    }
+    var syncOutput = false {      // 2026: synchronized output
+        didSet { if syncOutput != oldValue { damage.moved = true } }
+    }
+    /// The colour the program gave the caret (OSC 12), or `.plain` for the
+    /// theme's own. The shape of the caret is the person's setting and
+    /// stays one; the colour is the program's, which is the division that
+    /// matters — vim paints the caret to say which mode it is in, and only
+    /// vim knows which.
+    var cursorInk: Paint = .plain {
+        didSet { if cursorInk != oldValue { damage.moved = true } }
+    }
+
+    /// The modes as one small word, for whoever has to act on them with no
+    /// screen in hand (see Modes).
+    var modes: Modes {
+        Modes(
+            mouse: mouse, mouseFormat: mouseFormat, applicationCursor: applicationCursor,
+            applicationKeypad: applicationKeypad,
+            focus: focusReporting, sync: syncOutput, visible: visible
+        )
+    }
 
     /// The alternate screen: the rows of the main one are kept here while
     /// it shows. The alternate has no scrollback — lines that leave its
     /// top are gone.
     private(set) var alternate = false
-    private var kept: (rows: [Row], x: Int, y: Int, ink: Ink)?
+    private var kept: (rows: [Row], x: Int, y: Int, ink: Ink, link: UInt16)?
 
     /// What has changed since it was last taken.
     private(set) var damage = Damage()
@@ -174,6 +349,13 @@ final class Screen {
     /// whole, counting every row that has ever left the top.
     func place(_ row: Int) -> Int { backBase + back.count + row }
 
+    /// The caret is somewhere else: a frame is owed for it, though not one
+    /// cell has changed. Every way of moving the cursor without writing
+    /// says this, or a program that only repositions is drawn nowhere it
+    /// has gone — a cursor-motion sequence on an idle screen used to leave
+    /// the drawing exactly as it was.
+    private func caretMoved() { damage.moved = true }
+
     // MARK: Writing
 
     /// Put a character where the cursor is, wrapping and scrolling as the
@@ -188,12 +370,12 @@ final class Screen {
         guard y < height, x < width else { return }
         var row = rows[y]
         if insert {
-            row.cells.insert(Cell(ink: ink), at: min(x, width - 1))
+            row.cells.insert(square(" "), at: min(x, width - 1))
             row.cells.removeLast()
         }
-        row.cells[x] = Cell(char: char, wide: wide, ink: ink)
+        row.cells[x] = square(char, wide: wide)
         if wide, x + 1 < width {
-            row.cells[x + 1] = Cell(ink: ink)
+            row.cells[x + 1] = square(" ")
             x += 1
         }
         rows[y] = row
@@ -209,6 +391,7 @@ final class Screen {
     func carriageReturn() {
         x = 0
         pendingWrap = false
+        caretMoved()
     }
 
     /// The line feed: down a row, scrolling the region if the cursor is at
@@ -220,6 +403,7 @@ final class Screen {
         } else if y < height - 1 {
             y += 1
         }
+        caretMoved()
     }
 
     /// ESC M: up a row, scrolling the region down if the cursor is at its
@@ -230,11 +414,13 @@ final class Screen {
         } else if y > 0 {
             y -= 1
         }
+        caretMoved()
     }
 
     func backspace() {
         pendingWrap = false
         if x > 0 { x -= 1 }
+        caretMoved()
     }
 
     /// The tab stops, every eighth column to start with (HTS sets one,
@@ -260,6 +446,7 @@ final class Screen {
         } else {
             x = width - 1
         }
+        caretMoved()
     }
 
     // MARK: Moving
@@ -273,6 +460,7 @@ final class Screen {
         let below = origin ? bottom : height - 1
         y = min(max(row, left), below)
         x = min(max(column, 0), width - 1)
+        caretMoved()
     }
 
     /// Up and down stop at the edge of the scroll region from inside it,
@@ -281,22 +469,26 @@ final class Screen {
         pendingWrap = false
         let edge = y >= top ? top : 0
         y = max(y - steps, edge)
+        caretMoved()
     }
 
     func moveDown(_ steps: Int) {
         pendingWrap = false
         let edge = y <= bottom ? bottom : height - 1
         y = min(y + steps, edge)
+        caretMoved()
     }
 
     func moveForward(_ steps: Int) {
         pendingWrap = false
         x = min(x + steps, width - 1)
+        caretMoved()
     }
 
     func moveBack(_ steps: Int) {
         pendingWrap = false
         x = max(x - steps, 0)
+        caretMoved()
     }
 
     /// The scroll region the program asked for. Both inclusive, both
@@ -345,11 +537,11 @@ final class Screen {
         var row = rows[y]
         switch mode {
         case 0:
-            for column in x..<width { row.cells[column] = Cell(ink: ink) }
+            for column in x..<width { row.cells[column] = square(" ") }
         case 1:
-            for column in 0...min(x, width - 1) { row.cells[column] = Cell(ink: ink) }
+            for column in 0...min(x, width - 1) { row.cells[column] = square(" ") }
         default:
-            row.cells = Array(repeating: Cell(ink: ink), count: width)
+            row.cells = Array(repeating: square(" "), count: width)
         }
         rows[y] = row
         damage.rows.insert(place(y))
@@ -359,7 +551,7 @@ final class Screen {
     func eraseChars(_ count: Int) {
         guard y < height else { return }
         var row = rows[y]
-        for column in x..<min(x + count, width) { row.cells[column] = Cell(ink: ink) }
+        for column in x..<min(x + count, width) { row.cells[column] = square(" ") }
         rows[y] = row
         damage.rows.insert(place(y))
     }
@@ -390,7 +582,7 @@ final class Screen {
         var row = rows[y]
         let slide = min(count, width - x)
         row.cells.removeLast(slide)
-        row.cells.insert(contentsOf: Array(repeating: Cell(ink: ink), count: slide), at: x)
+        row.cells.insert(contentsOf: Array(repeating: square(" "), count: slide), at: x)
         rows[y] = row
         damage.rows.insert(place(y))
     }
@@ -400,9 +592,24 @@ final class Screen {
         var row = rows[y]
         let slide = min(count, width - x)
         row.cells.removeSubrange(x..<(x + slide))
-        row.cells.append(contentsOf: Array(repeating: Cell(ink: ink), count: slide))
+        row.cells.append(contentsOf: Array(repeating: square(" "), count: slide))
         rows[y] = row
         damage.rows.insert(place(y))
+    }
+
+    /// The scrollback holds its limit; rows that fall out of it are gone,
+    /// and the blocks that were in them go with them. Called by the scroll
+    /// that pushed them out, and by Settings when the limit itself is
+    /// lowered under a terminal already running.
+    func trim() {
+        guard back.count > backLimit else { return }
+        let extra = back.count - backLimit
+        back.removeFirst(extra)
+        backBase += extra
+        blocks.removeAll { block in
+            (block.last ?? block.first) < backBase
+        }
+        damage.blocks = true
     }
 
     /// SU and SD: the scroll region moved up or down a row at a time.
@@ -412,17 +619,7 @@ final class Screen {
         let gone = min(count, bottom - top + 1)
         if top == 0, !alternate {
             back.append(contentsOf: rows[0..<gone])
-            // The scrollback holds its limit; rows that fall out of it are
-            // gone, and the blocks that were in them go with them.
-            if back.count > backLimit {
-                let extra = back.count - backLimit
-                back.removeFirst(extra)
-                backBase += extra
-                blocks.removeAll { block in
-                    (block.last ?? block.first) < backBase
-                }
-                damage.blocks = true
-            }
+            trim()
             damage.scrolled = true
         }
         let blank = Array(repeating: Row(width: width), count: gone)
@@ -442,9 +639,9 @@ final class Screen {
     // MARK: Saving, keeping, resetting
 
     /// ESC 7 and CSI s: the cursor and the pen, kept for the restore.
-    private var saved: (x: Int, y: Int, ink: Ink, origin: Bool)?
+    private var saved: (x: Int, y: Int, ink: Ink, link: UInt16, origin: Bool)?
     func saveCursor() {
-        saved = (x: x, y: y, ink: ink, origin: origin)
+        saved = (x: x, y: y, ink: ink, link: linkNow, origin: origin)
     }
 
     /// ESC 8 and CSI u: the cursor and the pen as they were kept, or home
@@ -457,8 +654,10 @@ final class Screen {
         x = min(saved.x, width - 1)
         y = min(saved.y, height - 1)
         ink = saved.ink
+        linkNow = saved.link
         origin = saved.origin
         pendingWrap = false
+        caretMoved()
     }
 
     /// To the alternate screen (47, 1047, 1049): the main one's rows are
@@ -467,11 +666,12 @@ final class Screen {
     /// gone, which is what a program like vim wants.
     func enterAlternate() {
         guard !alternate else { return }
-        kept = (rows: rows, x: x, y: y, ink: ink)
+        kept = (rows: rows, x: x, y: y, ink: ink, link: linkNow)
         rows = Array(repeating: Row(width: width), count: height)
         alternate = true
         x = 0
         y = 0
+        linkNow = 0
         pendingWrap = false
         damage.overturned = true
     }
@@ -491,6 +691,7 @@ final class Screen {
         x = min(kept.x, width - 1)
         y = min(kept.y, height - 1)
         ink = kept.ink
+        linkNow = kept.link
         alternate = false
         pendingWrap = false
         self.kept = nil
@@ -515,6 +716,10 @@ final class Screen {
         x = 0
         y = 0
         ink = .plain
+        cursorInk = .plain
+        linkNow = 0
+        links.removeAll()
+        linkAt.removeAll()
         top = 0
         bottom = height - 1
         wraparound = true
@@ -545,10 +750,8 @@ final class Screen {
             row.cells = Array(row.cells.prefix(width)) + Array(repeating: Cell(), count: max(0, width - row.cells.count))
             return row
         }
-        if kept != nil {
-            // The main screen is kept as it was; it will be rebuilt on the
-            // way back (see `exitAlternate`).
-        }
+        // The main screen kept for the alternate is left as it was; it is
+        // rebuilt on the way back (see `exitAlternate`).
         rows += Array(repeating: Row(width: width), count: max(0, height - rows.count))
         rows.removeLast(max(0, rows.count - height))
         self.width = width
@@ -575,19 +778,19 @@ final class Screen {
 
     /// OSC 133;B then C: the prompt is done and the command is running.
     func markCommand() {
-        guard !blocks.isEmpty else { return }
-        blocks[blocks.count - 1].state = .running
+        guard let index = blocks.indices.last else { return }
+        blocks[index].state = .running
         damage.blocks = true
     }
 
     /// OSC 133;D: the command is done, with its exit code if the shell
     /// said one. The block ends on the row the cursor is on.
     func markEnd(exit: Int32?) {
-        guard !blocks.isEmpty else { return }
-        blocks[blocks.count - 1].last = place(y)
-        blocks[blocks.count - 1].state = .done
-        blocks[blocks.count - 1].ended = Date()
-        blocks[blocks.count - 1].exit = exit
+        guard let index = blocks.indices.last else { return }
+        blocks[index].last = place(y)
+        blocks[index].state = .done
+        blocks[index].ended = Date()
+        blocks[index].exit = exit
         damage.blocks = true
     }
 

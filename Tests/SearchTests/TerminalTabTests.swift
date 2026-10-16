@@ -37,7 +37,6 @@ final class TerminalTabTests: XCTestCase {
         let console = try XCTUnwrap(tab.console)
         XCTAssertNotNil(tab.shell)
         XCTAssertTrue(tab.console === console, "the console is built once")
-        XCTAssertTrue(console is TerminalView)
 
         // A shell never sleeps: it is a live process (Browser.awake guards
         // it by tab.isTerminal), and closing the tab ends it.
@@ -78,7 +77,7 @@ final class TerminalTabTests: XCTestCase {
         let console = try XCTUnwrap(
             stage.subviews.flatMap { $0.subviews }.compactMap { $0 as? TerminalView }.first)
         XCTAssertTrue(console.superview is StageView, "the console is held by a slot, as a page is")
-        XCTAssertEqual(console.superview?.superview === stage, true)
+        XCTAssertTrue(console.superview?.superview === stage)
         XCTAssertNil(tab.built)
         tab.close()
     }

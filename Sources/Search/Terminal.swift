@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Darwin
 import Foundation
@@ -37,7 +38,11 @@ struct TerminalCommand: Equatable {
 /// type nested in an isolated one is isolated with it). Reaching back is
 /// by the three closures it is born with, which hop to the main thread
 /// themselves.
-private final class TerminalLane {
+private final class TerminalLane: @unchecked Sendable {
+    // Sendable because there is one of these per terminal and one queue
+    // that touches it: every read of the screen, the parser and the master
+    // happens inside `queue.async`, in one order, which is the promise
+    // `@unchecked` is standing in for.
     let screen: Screen
     let parser: Parser
     let queue: DispatchQueue
@@ -45,7 +50,8 @@ private final class TerminalLane {
     // Terminal's init): the lane holds weakly, the terminal owns strongly.
     var said: ((Notice) -> Void)?
     var ended: ((Int32) -> Void)?
-    var drawn: ((Damage) -> Void)?
+    var drawn: ((Damage, Modes) -> Void)?
+    var copied: ((String) -> Void)?
 
     private var reading: DispatchSourceRead?
     private var dying: DispatchSourceProcess?
@@ -71,6 +77,7 @@ private final class TerminalLane {
             _ = TerminalLane.pour(master, Array(text.utf8))
         }
         parser.say = { [weak self] notice in self?.said?(notice) }
+        parser.copied = { [weak self] text in self?.copied?(text) }
 
         // The reading itself: woken when there is something to read, fed
         // until the kernel says there is nothing more, the damage handed
@@ -122,8 +129,14 @@ private final class TerminalLane {
             // it: a low byte of zero is an exit, the code above it;
             // anything else is a signal, the negated code to tell the
             // two apart.
-            let code = status & 0x7F == 0 ? (status >> 8) & 0x7F
-                : (status & 0x7F) < 0x7F ? -(status & 0x7F) : 0
+            let code: Int32
+            if status & 0x7F == 0 {
+                code = (status >> 8) & 0x7F
+            } else if status & 0x7F < 0x7F {
+                code = -(status & 0x7F)
+            } else {
+                code = 0
+            }
             self.reading?.cancel()
             self.reading = nil
             self.dying = nil
@@ -134,13 +147,16 @@ private final class TerminalLane {
         dies.resume()
     }
 
-    /// Take the screen's damage and hand it over. Nothing when nothing
-    /// changed — the promise the renderer keeps: no frames when there is
-    /// nothing to see.
+    /// Take the screen's damage and hand it over, with the modes as they
+    /// stand at that same moment — read here, in the lane's own order, so
+    /// the two can never come apart. Nothing when nothing changed, which
+    /// is the promise the renderer keeps: no frames when there is nothing
+    /// to see. A mode the keyboard or the hand reads counts as a change,
+    /// so a program that sets one and draws nothing is still heard.
     func deliver() {
         let taken = screen.take()
         guard !taken.empty else { return }
-        drawn?(taken)
+        drawn?(taken, screen.modes)
     }
 
     // MARK: Talking to it
@@ -185,11 +201,12 @@ final class Terminal: ObservableObject, Identifiable {
     /// The exit of the program, when it has ended. Zero is the good one.
     @Published private(set) var exit: Int32?
 
-    /// The screen, with what has changed since the last look — on the
-    /// main thread, once a reading is done. The screen is the lane's while
-    /// it is being drawn: a look is a moment of it, and the renderer that
-    /// comes (see TerminalDraw) is the one that makes the moment formal.
-    var onDraw: ((Screen, Damage) -> Void)?
+    /// Something changed, on the main thread, once a reading is done: what
+    /// it was, and the modes a frame and the keyboard need to know about.
+    /// Nothing of the screen comes with it: the screen is the lane's, and
+    /// whoever reads it has to do it in the lane's own order (`look`,
+    /// `scene`) rather than hold a reference to rows being written.
+    var onDraw: ((Damage, Modes) -> Void)?
     /// The program has ended: the exit, and whether it was Search that
     /// ended it. The last thing this says about itself.
     var onEnded: ((_ exit: Int32, _ byHand: Bool) -> Void)?
@@ -207,19 +224,20 @@ final class Terminal: ObservableObject, Identifiable {
 
     // The lane, and everything it holds: the screen, the parser, the
     // master fd — none of it touched from anywhere but the lane, which is
-    // what `nonisolated(unsafe)` is promising the compiler it can stop
-    // worrying about: one queue, one order, no shared word.
-    nonisolated(unsafe) private let lane: TerminalLane?
+    // what TerminalLane's `@unchecked Sendable` is standing in for: one
+    // queue, one order, no shared word.
+    private let lane: TerminalLane?
 
     // MARK: Starting
 
     init(command: TerminalCommand? = nil, width: Int = 80, height: Int = 24) {
         self.command = command
         let screen = Screen(width: width, height: height)
+        screen.backLimit = TerminalLook.scrollback
         let parser = Parser(screen: screen)
         let queue = DispatchQueue(label: "search.terminal." + UUID().uuidString)
 
-        let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
+        let shell = TerminalLook.shellPath()
         var argv = command?.argv ?? [shell, "-l"]
         var environment = command?.environment ?? ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
         environment.append(contentsOf: [
@@ -228,29 +246,28 @@ final class Terminal: ObservableObject, Identifiable {
             "TERM_PROGRAM=Search",
             "TERM_PROGRAM_VERSION=\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1")",
         ])
-        var pair: (master: Int32, pid: pid_t)?
         // The user's own shell is asked to mark the commands it runs (OSC
         // 133, OSC 7 — see TerminalShell); a command run on purpose is
         // never wrapped, having asked to be exactly what it is.
         if command == nil {
             (argv, environment) = TerminalShell.wrap(argv: argv, environment: environment)
         }
-        if let made = Terminal.spawn(argv, environment: environment, width: width, height: height) {
-            pair = made
-            pid = made.pid
+        let made = Terminal.spawn(
+            argv, environment: environment, width: width, height: height,
+            directory: TerminalLook.startDirectory()
+        )
+        pid = made?.pid ?? 0
+        lane = made.map {
+            TerminalLane(screen: screen, parser: parser, master: $0.master, pid: $0.pid, queue: queue)
         }
-
-        var holding: TerminalLane?
-        if let pair {
-            holding = TerminalLane(
-                screen: screen, parser: parser, master: pair.master, pid: pair.pid, queue: queue)
-        }
-        lane = holding
-        if let lane, pair != nil {
+        if let lane {
             // Now that the terminal is whole, the lane can hold it weakly.
             lane.said = { [weak self] notice in DispatchQueue.main.async { self?.heard(notice) } }
+            lane.copied = { [weak self] text in DispatchQueue.main.async { self?.copied(text) } }
             lane.ended = { [weak self] code in DispatchQueue.main.async { self?.ended(code) } }
-            lane.drawn = { [weak self] taken in DispatchQueue.main.async { self?.drawn(taken) } }
+            lane.drawn = { [weak self] taken, modes in
+                DispatchQueue.main.async { self?.drawn(taken, modes) }
+            }
             queue.async { lane.listen() }
         } else {
             exit = -1
@@ -262,7 +279,9 @@ final class Terminal: ObservableObject, Identifiable {
     /// the slave opened by the program itself as its controlling terminal,
     /// the master closed to it, everything else Search has open withheld
     /// (POSIX_SPAWN_CLOEXEC_DEFAULT).
-    private static func spawn(_ argv: [String], environment: [String], width: Int, height: Int) -> (master: Int32, pid: pid_t)? {
+    private static func spawn(
+        _ argv: [String], environment: [String], width: Int, height: Int, directory: String?
+    ) -> (master: Int32, pid: pid_t)? {
         var master: Int32 = 0
         var slave: Int32 = 0
         var win = winsize(ws_row: UInt16(max(1, height)), ws_col: UInt16(max(1, width)), ws_xpixel: 0, ws_ypixel: 0)
@@ -296,6 +315,12 @@ final class Terminal: ObservableObject, Identifiable {
         // The master is Search's; never the program's.
         posix_spawn_file_actions_addclose(&actions, master)
         posix_spawn_file_actions_addclose(&actions, slave)
+        // Where it starts: the folder Settings names, when it names one.
+        // A command run on purpose starts there too — there is one answer
+        // to where a terminal starts, and it is not different for a command.
+        if let directory {
+            posix_spawn_file_actions_addchdir_np(&actions, directory)
+        }
         // A session of its own, and nothing else Search has open.
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
 
@@ -325,9 +350,20 @@ final class Terminal: ObservableObject, Identifiable {
         }
     }
 
-    private func drawn(_ taken: Damage) {
-        guard let lane else { return }
-        onDraw?(lane.screen, taken)
+    /// OSC 52: the program put something on the clipboard. Honoured, but
+    /// only if the person said programs may — the setting exists because
+    /// this is a write into a place the whole machine shares, made by a
+    /// program nobody is watching. A *read* never is, whichever way the
+    /// setting goes: see the parser, where the refusal is written, because
+    /// that is where the question is asked.
+    private func copied(_ text: String) {
+        guard TerminalLook.takesClipboard else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func drawn(_ taken: Damage, _ modes: Modes) {
+        onDraw?(taken, modes)
     }
 
     /// One moment of the screen, as the renderer sees it: the rows a
@@ -349,48 +385,48 @@ final class Terminal: ObservableObject, Identifiable {
         var width: Int
         var height: Int
         var back: Int
+        /// The place the frame's first line is at, so that a row of one
+        /// frame can be told from the same row of the last: a place is
+        /// absolute and never comes round again, and row `r` of a frame is
+        /// the place `top + r`. How far a frame has moved up the screen is
+        /// what tells the damage-driven cell cache which way to move the
+        /// records it keeps, and how far (see TerminalCells).
+        var top = 0
+        /// Every hyperlink the screen has interned (see Screen.links), so
+        /// that whoever draws it, or clicks in it, can turn the number a
+        /// square carries back into an address.
+        var links: [String] = []
+        /// The colour the program gave the caret (OSC 12), or `.plain`
+        /// for the theme's own.
+        var cursorInk: Paint = .plain
     }
 
-    /// The scene a frame would show, `scroll` lines above the bottom.
+    /// The scene a frame would show, `scroll` lines above the bottom: what
+    /// the view draws, taken as one moment of the screen. A value, so that
+    /// nothing in it moves while the frame is drawn — the rows in it are
+    /// copies, though the squares are the screen's own (see Screen.scene) —
+    /// and the lane's queue is held for the length of the copy and no
+    /// longer. For asks the live screen can answer where it stands, `look`.
     func scene(scroll: Int) -> Scene? {
         guard let lane else { return nil }
         return lane.queue.sync {
-            let screen = lane.screen
-            let lifted = min(max(scroll, 0), screen.back.count)
-            var lines: [Row] = []
-            lines.reserveCapacity(screen.height)
-            for row in 0..<screen.height {
-                let index = screen.back.count + row - lifted
-                if index < 0 { lines.append(Row(width: screen.width)) }
-                else if index < screen.back.count { lines.append(screen.back[index]) }
-                else { lines.append(screen.rows[index - screen.back.count]) }
-            }
-            let caret = lifted == 0 && screen.visible && screen.y < screen.height
-                ? (screen.x, screen.y) : nil
-            // The gutter marks of the command blocks (OSC 133), a place at a
-            // time: the visible row of a place is found the way the rows
-            // above were, the whole screen kept in mind. A block rolled past
-            // the top of the scrollback is gone with its rows.
-            var marks: [Scene.Mark] = []
-            let ending = screen.place(screen.y)
-            for block in screen.blocks {
-                // A finished command that went fine leaves no mark — a
-                // glance only wants the failures (red) and the command
-                // still running (a wisp from where it began to the caret).
-                // Striping every finished block's whole span reads as a
-                // stray vertical line once the output is tall.
-                if block.state == .done && !block.failed { continue }
-                let end = block.last ?? ending
-                let first = block.first - screen.backBase - screen.back.count + lifted
-                let last = end - screen.backBase - screen.back.count + lifted
-                let low = max(first, 0), high = min(last, screen.height - 1)
-                guard low <= high else { continue }
-                marks.append(Scene.Mark(row: low, span: high - low + 1, failed: block.failed))
-            }
-            return Scene(
-                lines: lines, marks: marks, caret: caret,
-                width: screen.width, height: screen.height, back: screen.back.count
-            )
+            let lifted = min(max(scroll, 0), lane.screen.back.count)
+            return lane.screen.scene(lifted: lifted)
+        }
+    }
+
+    /// One look at the screen without copying it: `body` runs on the lane's
+    /// own queue, in the lane's own order, on the live rows — the same
+    /// promise `scene` keeps, with none of the allocation. For an ask the
+    /// live screen can answer where it stands (where the next command block
+    /// begins, how many there are) this is the whole of it; `scene` is for
+    /// an ask whose answer has to outlive the look — the rows a frame is
+    /// drawn from. The lift is clamped to the scrollback for the reader, so
+    /// `body` never has to.
+    func look<T>(scroll: Int, _ body: (Screen, Int) -> T) -> T? {
+        guard let lane else { return nil }
+        return lane.queue.sync {
+            body(lane.screen, min(max(scroll, 0), lane.screen.back.count))
         }
     }
 
@@ -404,8 +440,16 @@ final class Terminal: ObservableObject, Identifiable {
     /// Write to the program. What the keyboard sends, and the answers to
     /// its questions.
     func send(_ text: String) {
+        pour(Array(text.utf8))
+    }
+
+    /// Bytes to the program as they are, with nothing put round them. The
+    /// mouse protocols count in bytes and not in characters — 32 plus a
+    /// column, which passes 127 on a screen wider than 95 — and a String
+    /// would write those as two bytes each, which the program on the other
+    /// end reads as a different event entirely.
+    func pour(_ bytes: [UInt8]) {
         guard let lane else { return }
-        let bytes = Array(text.utf8)
         lane.queue.async {
             _ = lane.pour(bytes)
         }
@@ -430,6 +474,17 @@ final class Terminal: ObservableObject, Identifiable {
         }
     }
 
+    /// The scrollback a terminal keeps, changed under one already running:
+    /// the limit lives on the screen, which is the lane's, so it is set
+    /// there — and the rows a lower limit just put outside it go with it.
+    func setScrollback(_ limit: Int) {
+        guard let lane else { return }
+        lane.queue.async {
+            lane.screen.backLimit = limit
+            lane.screen.trim()
+        }
+    }
+
     /// End the program: the hangup a closing terminal has always sent,
     /// the polite way first and the sure one shortly after.
     func stop() {
@@ -442,17 +497,6 @@ final class Terminal: ObservableObject, Identifiable {
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
             kill(pid, SIGKILL)
-        }
-    }
-
-    /// Look at the screen where it lives, on the lane — for whoever draws
-    /// (see TerminalDraw, when there is one) and whoever tests. The look
-    /// takes the damage with it.
-    func look(_ see: @escaping (Screen) -> Void) {
-        guard let lane else { return }
-        lane.queue.async {
-            _ = lane.screen.take()
-            see(lane.screen)
         }
     }
 
@@ -473,5 +517,63 @@ final class Terminal: ObservableObject, Identifiable {
         if !title.isEmpty { return title }
         if let command, let last = command.argv.last { return last }
         return "Terminal"
+    }
+}
+
+extension Screen {
+    /// The cell the caret is drawn in, or nil when there is nothing to
+    /// draw: the view is lifted into the scrollback, the program turned the
+    /// caret off (DECTCEM), or the cursor is below the last row. One home
+    /// for that rule, so a view that reads it off a live screen and one
+    /// that reads it from a copied scene cannot disagree about it.
+    func caret(lifted: Int) -> (x: Int, y: Int)? {
+        lifted == 0 && visible && y < height ? (x, y) : nil
+    }
+
+    /// The frame this screen is showing, `lifted` rows above the bottom of
+    /// it: the whole of what the view draws, taken in one look.
+    ///
+    /// The rows are copied out by value, but a copied row is the same
+    /// squares — an `Array` is copied only when it is written to — so a row
+    /// of one frame is the same row as the row of the last, which is what
+    /// lets a frame be drawn from the one before it (see TerminalCells).
+    func scene(lifted: Int) -> Terminal.Scene {
+        var lines: [Row] = []
+        lines.reserveCapacity(height)
+        for row in 0..<height {
+            let index = back.count + row - lifted
+            if index < 0 { lines.append(Row(width: width)) }
+            else if index < back.count { lines.append(back[index]) }
+            else { lines.append(rows[index - back.count]) }
+        }
+        let caret = caret(lifted: lifted)
+        // The gutter marks of the command blocks (OSC 133), a place at a
+        // time: the visible row of a place is found the way the rows above
+        // were, the whole screen kept in mind. A block rolled past the top
+        // of the scrollback is gone with its rows.
+        var marks: [Terminal.Scene.Mark] = []
+        let ending = place(y)
+        for block in blocks {
+            // A finished command that went fine leaves no mark — a glance
+            // only wants the failures (red) and the command still running (a
+            // wisp from where it began to the caret). Striping every
+            // finished block's whole span reads as a stray vertical line
+            // once the output is tall.
+            if block.state == .done && !block.failed { continue }
+            let end = block.last ?? ending
+            let first = block.first - backBase - back.count + lifted
+            let last = end - backBase - back.count + lifted
+            let low = max(first, 0), high = min(last, height - 1)
+            guard low <= high else { continue }
+            marks.append(Terminal.Scene.Mark(row: low, span: high - low + 1, failed: block.failed))
+        }
+        return Terminal.Scene(
+            lines: lines, marks: marks, caret: caret,
+            width: width, height: height, back: back.count,
+            // The first line's place: the lift is clamped to the scrollback
+            // above, so this is a row that is really there.
+            top: place(0) - lifted,
+            links: links, cursorInk: cursorInk
+        )
     }
 }
