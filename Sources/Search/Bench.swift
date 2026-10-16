@@ -1402,6 +1402,10 @@ final class Bench {
             case "auto":
                 browser.botting?.auto = request["on"] as? Bool ?? true
                 answer(["auto": browser.botting?.auto ?? false])
+            case "every":
+                // The panel's switch, turned mid-talk: the open bot follows it.
+                browser.botEverywhere = request["on"] as? Bool ?? true
+                answer(["every": browser.botting?.mode == .every])
             case "tap":
                 // A control in a card it drew, tapped: the event the model gets.
                 guard let name = request["name"] as? String, let bot = browser.botting else {
@@ -1431,7 +1435,7 @@ final class Bench {
                 browser.closeBot()
                 answer(["open": browser.botting != nil])
             default:
-                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | tap | state | close"])
+                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | every | tap | state | close"])
             }
 
         case "ai":

@@ -22,6 +22,9 @@ test's own is the page. Checked here:
                the tabs listed for the model, a "tab" taken by its id, an
                act on a tab the person isn't on working all the same, and
                the talk kept across switching tabs, one bot only
+  the switch  the panel's switch turned mid-talk (see browser.botEverywhere):
+               the open bot follows it, the talk kept, the tabs shown or not
+               from the next ask on
 """
 
 import hashlib
@@ -512,6 +515,17 @@ def tab_of(listing, url):
     return None
 
 
+def last_shown(records):
+    """What the model was last shown: the newest user message of the newest
+    ask. The talk it carries counts too — a listing from an earlier turn
+    stays in the history — so only the fresh showing is asked."""
+    for asked in reversed(records):
+        for message in reversed(asked.get("messages", [])):
+            if message.get("role") == "user":
+                return message.get("content", "")
+    return ""
+
+
 def case_every(t):
     """the bot over every tab: one talk, every tab"""
     setup(); launch()
@@ -615,9 +629,53 @@ def case_page_kept(t):
     t.ok("switching tabs puts the page's bot away, as ever", state.get("open") is False, state)
 
 
+def case_switched(t):
+    """the switch turned mid-talk: the open bot follows it"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    first = cmd({"do": "open", "url": f"{BASE}/form"})
+    second = cmd({"do": "open", "url": f"{BASE}/other"})
+    form_ready(first["id"])
+    bt("use", provider="ollama")
+    opened = bt("open", id=first["id"])
+    t.ok("the bot opens on this page", opened.get("open") is True and opened.get("every") is False, opened)
+    script.clear(); seen.clear()
+    script.extend(['{"answer":"a page"}'])
+    bt("ask", text="What is this?")
+    until(t, lambda s: any(e["kind"] == "answer" for e in s.get("events", [])))
+    t.ok("the model wasn't shown the tabs", not words(seen, "TABS", role="user"), "")
+
+    # Turned to every tab, mid-talk: the same bot, the same talk — the next
+    # ask is for every tab.
+    switched = bt("every", on=True)
+    state = bt("state")
+    t.ok("the open bot follows the switch",
+         switched.get("every") is True and state.get("every") is True, (switched, state))
+    t.ok("…and the talk it already had is kept",
+         any(e["kind"] == "answer" and e["words"] == "a page" for e in state.get("events", [])),
+         state.get("events"))
+    script.clear(); seen.clear()
+    script.extend(['{"answer":"every tab now"}'])
+    bt("ask", text="And now?")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "every tab now" for e in s.get("events", [])))
+    t.ok("the next ask shows the tabs", "the page you're shown" in last_shown(seen), last_shown(seen)[:120])
+
+    # And back to this one page: the tabs go from the asking again, and a
+    # switch of tabs puts it away, as ever.
+    back = bt("every", on=False)
+    t.ok("and back to this page", back.get("every") is False, back)
+    script.clear(); seen.clear()
+    script.extend(['{"answer":"just this again"}'])
+    bt("ask", text="What about now?")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "just this again" for e in s.get("events", [])))
+    t.ok("the tabs aren't shown again", "TABS" not in last_shown(seen), last_shown(seen)[:120])
+    cmd({"do": "select", "id": second["id"]})
+    t.ok("switching tabs puts it away, as ever", bt("state").get("open") is False, bt("state"))
+
+
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_wrapped, case_notice, case_every, case_page_kept]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
         print(f"— {case.__doc__}")
         try:
             case(t)

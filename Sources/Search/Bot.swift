@@ -52,8 +52,9 @@ final class Bot: ObservableObject, Identifiable {
     let tab: Tab.ID
     let provider: AIProvider
     let model: String
-    /// Where it works: this page, or every tab (see Mode).
-    let mode: Mode
+    /// Where it works: this page, or every tab (see Mode). The switch on
+    /// the panel can turn it on the talk it's already carrying on.
+    @Published private(set) var mode: Mode
     /// The page it works on, held weakly: the tab outliving the bot means
     /// nothing.
     private(set) weak var page: Tab?
@@ -185,6 +186,12 @@ final class Bot: ObservableObject, Identifiable {
     func always() {
         auto = true
         resolve(true)
+    }
+
+    /// The switch on the panel turned: the talk it's carrying on goes on,
+    /// and from here it is for this page only, or for every tab.
+    func setMode(_ mode: Mode) {
+        self.mode = mode
     }
 
     /// Stop everything, quietly: the panel closing, a new ask coming.
@@ -788,10 +795,17 @@ enum TabsOfBrowser {
 
 extension Browser {
     /// Where the bot works: this page, or every tab. The switch is kept, so
-    /// a bot asked for again comes back where it was left (see BotPanel).
+    /// a bot asked for again comes back where it was left (see BotPanel) —
+    /// and a bot already open follows it right away: the switch is drawn
+    /// again the moment it's turned (a plain setting wouldn't be), and the
+    /// talk goes on under the other mode.
     var botEverywhere: Bool {
         get { Store.settings.bool(forKey: "bot.every") }
-        set { Store.settings.set(newValue, forKey: "bot.every") }
+        set {
+            Store.settings.set(newValue, forKey: "bot.every")
+            objectWillChange.send()
+            botting?.setMode(newValue ? .every : .page)
+        }
     }
 
     func openBot() {
