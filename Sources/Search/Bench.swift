@@ -1375,10 +1375,11 @@ final class Bench {
                 answer(["provider": provider.rawValue, "model": browser.prefs.aiModel(for: provider)])
             case "open":
                 guard let tab = find(request, in: browser) else { answer(missing(request)); return }
+                if let everywhere = request["every"] as? Bool { browser.botEverywhere = everywhere }
                 browser.select(tab)
                 browser.openBot()
                 answer(["open": browser.botting != nil, "notice": browser.botting?.notice ?? "",
-                        "trouble": browser.botting?.trouble ?? ""])
+                        "trouble": browser.botting?.trouble ?? "", "every": browser.botting?.mode == .every])
             case "ask":
                 guard let text = request["text"] as? String, let bot = browser.botting else {
                     answer(["error": "bot ask TEXT, with the bot open"]); return
@@ -1415,9 +1416,11 @@ final class Bench {
                 answer([
                     "open": true, "working": bot.working, "auto": bot.auto, "addressed": bot.addressed,
                     "notice": bot.notice ?? "", "trouble": bot.trouble ?? "", "place": bot.place,
-                    "status": bot.status ?? "",
-                    "pending": bot.pending.map { ["verb": $0.act.verb, "target": $0.act.target, "text": $0.act.text] }
-                        as [String: Any]? ?? [:],
+                    "status": bot.status ?? "", "every": bot.mode == .every,
+                    "pending": bot.pending.map { held in
+                        ["verb": held.act.verb, "target": held.act.target, "text": held.act.text,
+                         "tab": held.tab.map { "tab-\(String($0.uuidString.suffix(6)))" } ?? NSNull()] as [String: Any]
+                    } ?? [:],
                     "surfaces": bot.surfaces.map { $0.surface.id },
                     "events": bot.events.map { [
                         "kind": "\($0.kind)", "words": $0.words,

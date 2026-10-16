@@ -2621,9 +2621,10 @@ final class Browser: NSObject, ObservableObject {
         // Back on a tab with the caret still in a box, the list may come again.
         looked = nil
         guard tab.id != activeID else { return }
-        // The AI panel and the bot are about the page they were opened on.
+        // The AI panel and the bot are about the page they were opened on —
+        // the bot over every tab is about them all: it stays.
         if assisting != nil { closeAssistant() }
-        if botting != nil { closeBot() }
+        if botting?.mode == .page { closeBot() }
         // Coming back to the tab whose video is out brings it home first, so
         // it is never lifted and landed in the same breath.
         if floating == tab.id { land() }

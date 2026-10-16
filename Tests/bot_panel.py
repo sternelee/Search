@@ -18,6 +18,10 @@ test's own is the page. Checked here:
   the card     a card drawn (A2UI: native controls, no code), a tap sent
                back to the model as an event
   the notice   a provider off this Mac is asked first, before anything goes
+  the every    the bot over every tab (see Bot.Mode): one talk, every tab —
+               the tabs listed for the model, a "tab" taken by its id, an
+               act on a tab the person isn't on working all the same, and
+               the talk kept across switching tabs, one bot only
 """
 
 import hashlib
@@ -97,7 +101,14 @@ class H(BaseHTTPRequestHandler):
         line = script.pop(0) if script else '{"answer":"nothing left in the script"}'
         # A dict in the script holds the reply back a while, to watch the
         # loop between replies: {"sleep": seconds, "say": line}.
-        if isinstance(line, dict): time.sleep(line.get("sleep", 0)); line = line["say"]
+        if isinstance(line, dict) and "sleep" in line: time.sleep(line.get("sleep", 0)); line = line["say"]
+        # A dict can also stand a tab's real id in for a stand-in name, so a
+        # reply can come for a tab the person isn't on: {"tab_from": url,
+        # "say": line} — {tab} in the line becomes tab-a1b2c3, from the
+        # TABS listing the model was last shown.
+        if isinstance(line, dict) and "tab_from" in line:
+            real = tab_of(words(seen, "TABS", role="user"), line["tab_from"]) or ""
+            line = line["say"].replace("{tab}", real)
         body = said(line)
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def log_message(self, *a): pass
@@ -258,12 +269,12 @@ def form_ready(tab, within=15):
         time.sleep(0.2)
     return False
 
-def words(seen, what):
+def words(seen, what, role=""):
     """What the model was shown or told, from the stand-in's record of
     requests — one ask of it for each line of the script."""
     for asked in seen:
         for message in asked.get("messages", []):
-            if what in message.get("content", ""):
+            if what in message.get("content", "") and (not role or message.get("role") == role):
                 return message["content"]
     return ""
 
@@ -492,9 +503,121 @@ def case_always(t):
          not answer.get("pending") and len(acts) == 3 and all(a["act"][3] in ("done", "read") for a in acts), answer["events"])
 
 
+def tab_of(listing, url):
+    """A tab's id, taken from the TABS listing the model was shown — the
+    first whose address holds the url."""
+    for line in listing.splitlines():
+        if url in line:
+            return line.split(" · ")[0].strip()
+    return None
+
+
+def case_every(t):
+    """the bot over every tab: one talk, every tab"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    first = cmd({"do": "open", "url": f"{BASE}/form"})
+    second = cmd({"do": "open", "url": f"{BASE}/other"})
+    form_ready(first["id"])
+    bt("use", provider="ollama")
+
+    # Opened over every tab, on the second one.
+    opened = bt("open", id=second["id"], every=True)
+    t.ok("the bot opens over every tab", opened.get("open") is True and opened.get("every") is True, opened)
+
+    script.clear(); seen.clear()
+    script.extend([
+        '{"say":"I see two tabs; I\'ll fill the form in on the first"}',
+        {"tab_from": f"{BASE}/form",
+         "say": '{"act":{"verb":"fill","tab":"{tab}","target":"css=#first","text":"Ada"}}'},
+        # The answer the turn comes to once the act is let go — loaded
+        # before, for the loop asks the model again the moment it is.
+        '{"answer":"filled in on the other tab, as asked"}',
+    ])
+    bt("ask", text="Fill in the form on the other tab, for Ada")
+    held = until(t, lambda s: s.get("pending"))
+    t.ok("an act on a tab the person isn't on is held like any other",
+         held.get("pending", {}).get("verb") == "fill" and held.get("pending", {}).get("text") == "Ada", held)
+    listing = words(seen, "TABS", role="user")
+    real = tab_of(listing, f"{BASE}/form")
+    t.ok("…and it says which tab it was held on",
+         real and held.get("pending", {}).get("tab") == real, held.get("pending", {}))
+    t.ok("the model was shown every tab, with the one it's on now marked",
+         "tab-" in listing and "the page you're shown" in listing and "/form" in listing and "/other" in listing,
+         listing[:200])
+    t.ok("…and the page it's on, as ever", "sign up" in listing, listing[:300])
+
+    # A held act let go: it goes to the tab it was held on — the first one —
+    # not the one the person is on.
+    before = len(bt("state").get("events", []))
+    bt("allow")
+    answer = until(t, lambda s: len(s.get("events", [])) > before
+                   and any(e["kind"] == "act" and e["act"][3] == "done"
+                          for e in s.get("events", [])[before:]))
+    t.ok("an act on another tab works all the same",
+         any(e["kind"] == "act" and e["act"][1] == "css=#first" and e["act"][3] == "done"
+            for e in answer["events"][before:]),
+         answer["events"])
+    fill = words(seen, "Your fill on css=#first came out done")
+    t.ok("…and what came of it goes back with the next showing", bool(fill), fill[:120])
+    answered = until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "filled in on the other tab, as asked"
+                                      for e in s.get("events", [])[before:]))
+    t.ok("the turn comes to its answer",
+         any(e["kind"] == "answer" and e["words"] == "filled in on the other tab, as asked"
+            for e in answered["events"]),
+         answered["events"])
+
+    # The talk kept across switching tabs — and one bot only, wherever you go.
+    cmd({"do": "select", "id": first["id"]})
+    state = bt("state")
+    t.ok("switching tabs keeps the bot, and its talk",
+         state.get("open") is True and state.get("every") is True
+         and any(e["kind"] == "answer" and e["words"] == "filled in on the other tab, as asked"
+                for e in state.get("events", [])), state.get("events"))
+    t.ok("…and the tabs are listed again, the other one now the one shown",
+         "the page you're shown" in words(seen, "TABS", role="user"), "")
+
+    # A tab id that isn't one: said so, nothing done.
+    script.clear(); seen.clear()
+    script.extend([
+        '{"act":{"verb":"fill","tab":"tab-nothing","target":"css=#first","text":"Ada"}}',
+        '{"answer":"no tab of that name"}',
+    ])
+    bt("ask", text="Fill the form on tab-nothing")
+    fresh = len(bt("state").get("events", []))
+    answer = until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "no tab of that name"
+                                   for e in s.get("events", [])[fresh:]))
+    t.ok("a tab that isn't one is said so",
+         any(e["kind"] == "answer" and e["words"] == "no tab of that name" for e in answer["events"]),
+         answer["events"])
+    t.ok("…and nothing was done", not any(e["kind"] == "act" for e in answer["events"][fresh:]),
+         answer["events"][fresh:])
+
+
+def case_page_kept(t):
+    """the bot on this page: switching tabs puts it away, as ever"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    first = cmd({"do": "open", "url": f"{BASE}/form"})
+    second = cmd({"do": "open", "url": f"{BASE}/other"})
+    form_ready(first["id"])
+    bt("use", provider="ollama")
+    opened = bt("open", id=first["id"])
+    t.ok("the bot opens on this page", opened.get("open") is True and opened.get("every") is False, opened)
+    script.clear(); seen.clear()
+    script.extend(['{"answer":"a page, as ever"}'])
+    bt("ask", text="What is this?")
+    until(t, lambda s: any(e["kind"] == "answer" for e in s.get("events", [])))
+    t.ok("the model wasn't shown the tabs", not words(seen, "TABS", role="user"), "")
+
+    cmd({"do": "select", "id": second["id"]})
+    state = bt("state")
+    t.ok("switching tabs puts the page's bot away, as ever", state.get("open") is False, state)
+
+
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_wrapped, case_notice]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_wrapped, case_notice, case_every, case_page_kept]:
         print(f"— {case.__doc__}")
         try:
             case(t)

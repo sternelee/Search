@@ -39,16 +39,21 @@ final class Bot: ObservableObject, Identifiable {
         var outcome: String?
     }
 
-    /// An act waiting on you: nothing has touched the page yet.
+    /// An act waiting on you: nothing has touched the page yet. The tab
+    /// it was held on — the one the line came for — so that, let go, it
+    /// goes to that tab, whatever tab the browser is on now.
     struct Pending: Identifiable, Equatable {
         let id = UUID()
         let act: Act
+        var tab: Tab.ID?
     }
 
     let id = UUID()
     let tab: Tab.ID
     let provider: AIProvider
     let model: String
+    /// Where it works: this page, or every tab (see Mode).
+    let mode: Mode
     /// The page it works on, held weakly: the tab outliving the bot means
     /// nothing.
     private(set) weak var page: Tab?
@@ -82,9 +87,10 @@ final class Bot: ObservableObject, Identifiable {
     private var waiting: String?
     private var cards: [String: SurfaceViewModel] = [:]
 
-    init(tab: Tab, provider: AIProvider, model: String) {
+    init(tab: Tab, provider: AIProvider, model: String, mode: Mode = .page) {
         self.tab = tab.id
         self.page = tab
+        self.mode = mode
         self.provider = provider
         self.model = model
         Task { @MainActor [weak self, weak tab] in
@@ -95,10 +101,25 @@ final class Bot: ObservableObject, Identifiable {
 
     var busy: Bool { working || pending != nil }
 
+    /// Where it works: one page, or every one of them — which shapes what
+    /// the model is shown (see Loop) and what the person meets (BotPanel).
+    enum Mode: String {
+        case page
+        case every
+    }
+
     /// Where it ran, for the foot of the panel.
     var place: String {
-        provider == .thisMac ? "on this Mac · \(model)"
-            : provider.isLocal ? "on this Mac · \(provider.name) · \(model)" : "sent to \(provider.name) · \(model)"
+        let where_ = mode == .every ? "over every tab" : "on this page"
+        let runs: String
+        if provider == .thisMac {
+            runs = "on this Mac · \(model)"
+        } else if provider.isLocal {
+            runs = "on this Mac · \(provider.name) · \(model)"
+        } else {
+            runs = "sent to \(provider.name) · \(model)"
+        }
+        return "\(where_) · \(runs)"
     }
 
     func submit() {
@@ -245,7 +266,11 @@ final class Bot: ObservableObject, Identifiable {
         You are the bot inside a web browser, working for the person who summoned you.\
         You see one page at a time, as a numbered list of what it holds: each line is a kind\
         (like textbox, button, link, heading), its name in quotes if it has one, its state\
-        (checked, disabled…), and a number (@12). You act on things by those numbers.
+        (checked, disabled…), and a number (@12). You act on things by those numbers.\
+        Where you see TABS — every tab the browser holds, each with its id (like tab-a1b2c3) —\
+        an act, a read, a goto or a wait can carry a "tab" with one of those ids, and the page\
+        shown after TABS is the one the browser is on now. What you're shown of a tab isn't\
+        all there is: the whole of it can be asked for (full), and read closely.
 
         Every reply you make is ONE line of JSON, nothing else — no markdown, no fence.\
         One of:
@@ -342,6 +367,12 @@ final class Loop {
     /// A held act let go, or not. Nothing has touched the page until now.
     func resume(_ allowed: Bool) {
         guard let bot, let held = bot.pending else { return }
+        // A held act goes to the tab it was held on — the one the line came
+        // for — or, when it came for none, the one the panel was open on:
+        // whatever tab the browser is on now.
+        let workTab = (held.tab.flatMap { id in TabsOfBrowser.all.first { $0.id == id } })
+            ?? bot.page
+        guard let workTab else { return }
         bot.pending = nil
         // A tool is an act beyond the page, held like any other; let go, it
         // is the server's to answer (see `useTool`).
@@ -357,7 +388,7 @@ final class Loop {
             return
         }
         if allowed {
-            perform(held.act.verb, held.act.target, held.act.text)
+            perform(held.act.verb, held.act.target, held.act.text, on: workTab)
         } else {
             var refused = held.act
             refused.outcome = "refused"
@@ -399,6 +430,9 @@ final class Loop {
             var seen = ""
             if first { seen += self.question + "\n\n" }
             if let note { seen += note + "\n\n" }
+            // Every tab it may work on, first — then the page the browser is
+            // on now, worked like any other (see Mode).
+            if bot.mode == .every { seen += "TABS\n\(TabsOfBrowser.line())\n\n" }
             // Where it is, what it's called: what a person reads before the
             // page itself, and what a model needs to know an address by.
             seen += "NOW \(Self.clock.string(from: Date()))\n"
@@ -482,7 +516,7 @@ final class Loop {
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         }
         if let whole = object(text) { return whole }
-        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer", "later", "tool", "skill"]
+        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer", "later", "tab", "tool", "skill"]
         for line in text.split(separator: "\n").map(String.init) {
             if let one = object(line), !known.isDisjoint(with: one.keys) { return one }
         }
@@ -497,6 +531,20 @@ final class Loop {
     /// drawn, answered; gone, waited for, acted on.
     private func route(_ line: [String: Any]) {
         guard let bot, let page else { return }
+        // A line for one tab of many (see Tabs): taken out, and what it held
+        // — a verb, an address, a target — goes to what follows, on that tab.
+        var line = line
+        let onTab: Tab
+        if let held = line.removeValue(forKey: "tab") as? String {
+            guard let found = TabsOfBrowser.byID(held) else {
+                observe(note: "There's no tab called \(held) — the tabs are listed for you with their ids (TABS). Say it again with one of those.", full: false, first: false)
+                return
+            }
+            onTab = found
+        } else {
+            onTab = page
+        }
+        let work = onTab
         if let say = line["say"] as? String, !say.isEmpty {
             bot.tell(Bot.Event(kind: .say, words: say, act: nil))
         }
@@ -537,7 +585,7 @@ final class Loop {
             var at = (later["at"] as? String).flatMap(Chores.read)
             if (at == nil || at! <= Date()), let every { at = Date().addingTimeInterval(every) }
             if let at, at > Date() {
-                Chores.shared.add(goal: goal, at: at, page: page.address?.absoluteString ?? "",
+                Chores.shared.add(goal: goal, at: at, page: work.address?.absoluteString ?? "",
                                   provider: provider.rawValue, model: model, every: every)
                 bot.tell(Bot.Event(kind: .say, words: "Noted for \(Chores.spoken(at))\(every.map { ", every \(Chores.gap($0))" } ?? ""): \(goal)", act: nil))
                 bot.messages = messages
@@ -550,12 +598,12 @@ final class Loop {
         if let address = line["goto"] as? String,
            let url = URL(string: address),
            let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
-            page.go(to: url)
+            work.go(to: url)
             observe(note: "You went to \(address).", full: false, first: false)
             return
         }
         if let target = line["wait"] as? String {
-            Agent.poll(page, until: Date().addingTimeInterval(15), ["op": "present", "target": target]) { [weak self] said in
+            Agent.poll(work, until: Date().addingTimeInterval(15), ["op": "present", "target": target]) { [weak self] said in
                 guard let self, let bot = self.bot else { return }
                 let came = said["ok"] as? Bool == true
                 self.observe(note: "You waited for \(target) and it \(came ? "came" : "never came").", full: false, first: false)
@@ -576,7 +624,7 @@ final class Loop {
             if bot.auto {
                 useTool(name, arguments: held)
             } else {
-                bot.pending = Bot.Pending(act: Bot.Act(verb: "tool", target: name, text: held))
+                bot.pending = Bot.Pending(act: Bot.Act(verb: "tool", target: name, text: held), tab: work.id)
             }
             return
         }
@@ -585,17 +633,30 @@ final class Loop {
             return
         }
         if let read = line["read"] as? String, !read.isEmpty {
-            perform("read", read, "")
+            perform("read", read, "", on: work)
             return
         }
         if let act = line["act"] as? [String: Any],
            let verb = act["verb"] as? String, !verb.isEmpty,
            let target = act["target"] as? String, !target.isEmpty {
             let text = act["text"] as? String ?? ""
-            if verb == "read" || bot.auto {
-                perform(verb, target, text)
+            // A "tab" inside the act goes to the same place one on its own
+            // goes: the act is for that tab, whatever tab the browser is on
+            // now — and a tab that isn't one is said so, nothing done.
+            let forTab: Tab
+            if let held = act["tab"] as? String, !held.isEmpty {
+                guard let found = TabsOfBrowser.byID(held) else {
+                    observe(note: "There's no tab called \(held) — the tabs are listed for you with their ids (TABS). Say it again with one of those.", full: false, first: false)
+                    return
+                }
+                forTab = found
             } else {
-                bot.pending = Bot.Pending(act: Bot.Act(verb: verb, target: target, text: text))
+                forTab = work
+            }
+            if verb == "read" || bot.auto {
+                perform(verb, target, text, on: forTab)
+            } else {
+                bot.pending = Bot.Pending(act: Bot.Act(verb: verb, target: target, text: text), tab: forTab.id)
             }
             return
         }
@@ -604,7 +665,7 @@ final class Loop {
             observe(note: nil, full: false, first: false)
             return
         }
-        observe(note: "That reply had nothing to do — say, act, read, ui, goto, wait, full, answer, tool or skill.", full: false, first: false)
+        observe(note: "That reply had nothing to do — say, act, read, ui, goto, wait, full, answer, tab, tool or skill.", full: false, first: false)
     }
 
     /// A tool called and answered: what it said comes back with the next
@@ -651,15 +712,14 @@ final class Loop {
 
     /// An act done on the page, and told: what came of it goes back with the
     /// next showing.
-    private func perform(_ verb: String, _ target: String, _ text: String) {
-        guard let page else { return }
+    private func perform(_ verb: String, _ target: String, _ text: String, on work: Tab) {
         // Reading isn't an act on the page: it's the page asked for one
         // thing closely (see Agent.page).
         var op: [String: Any] = verb == "read"
             ? ["op": "read", "target": target]
             : ["op": "act", "verb": verb, "target": target]
         if !text.isEmpty { op["text"] = text }
-        Agent.ask(page, op) { [weak self] said in
+        Agent.ask(work, op) { [weak self] said in
             guard let self, let bot = self.bot else { return }
             var act = Bot.Act(verb: verb, target: target, text: text)
             if verb == "read" {
@@ -690,9 +750,50 @@ final class Loop {
     }
 }
 
+// MARK: - the tabs it may work on
+
+/// Every tab the browser holds, as one line for a model: the id of each,
+/// its address, its title — what the bot over every tab is shown with every
+/// page, and what a "tab" in its replies is taken by (see Bot.Mode).
+@MainActor
+enum TabsOfBrowser {
+    /// Every tab of the browser the bot is open on — the one whose window
+    /// is in front when there are more than one.
+    static var all: [Tab] { Front.shared.browser?.tabs ?? [] }
+
+    /// The page the browser is on now, whose snapshot rides with the tabs.
+    static var active: Tab? { Front.shared.browser?.active }
+
+    /// One tab by its id, the short way it's listed (tab-a1b2c3… — the
+    /// last of the uuid), or the one the browser is on now when the id says
+    /// only "this".
+    static func byID(_ id: String) -> Tab? {
+        if id == "this" { return active }
+        return all.first { "tab-\($0.id.uuidString.suffix(6))" == id }
+    }
+
+    /// The tabs, as one line for a model: "tab-a1b2c3 · https://… · A title",
+    /// the one the browser is on now marked.
+    static func line() -> String {
+        let shown = Front.shared.browser?.activeID
+        return all.map { tab in
+            let mark = tab.id == shown ? " (the page you're shown)" : ""
+            return "tab-\(tab.id.uuidString.suffix(6)) · \(tab.address?.absoluteString ?? "") · \(tab.title)\(mark)"
+        }
+        .joined(separator: "\n")
+    }
+}
+
 // MARK: - opening it
 
 extension Browser {
+    /// Where the bot works: this page, or every tab. The switch is kept, so
+    /// a bot asked for again comes back where it was left (see BotPanel).
+    var botEverywhere: Bool {
+        get { Store.settings.bool(forKey: "bot.every") }
+        set { Store.settings.set(newValue, forKey: "bot.every") }
+    }
+
     func openBot() {
         guard let tab = active, !tab.isBlank else { return }
         guard prefs.bot, let provider = prefs.aiProvider else {
@@ -733,15 +834,16 @@ extension Browser {
             announce("No key for \(provider.name) yet")
             return
         }
-        // Already open on this page: the same talk goes on.
-        if let open = botting, open.tab == tab.id, open.provider == provider { return }
+        // Already open over every tab, or on this one: the same talk goes on.
+        if let open = botting, open.provider == provider,
+           open.mode == (botEverywhere ? .every : .page), open.tab == tab.id { return }
         botting?.stop()
         // The tools and skills the person keeps are offered to the bot as
         // it comes in: the servers connected in the background, so their
         // tools are there to list by the time a task is asked (see
         // AIDescribed).
         MCPHub.shared.wake()
-        botting = Bot(tab: tab, provider: provider, model: model)
+        botting = Bot(tab: tab, provider: provider, model: model, mode: botEverywhere ? .every : .page)
     }
 
     func closeBot() {

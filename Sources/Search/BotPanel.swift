@@ -36,6 +36,23 @@ struct BotPanel: View {
             .padding(.top, 12)
             .padding(.bottom, 8)
 
+            // Where it works: this page, or every tab — the switch is small,
+            // and what it changes is the talk it carries on with.
+            HStack(spacing: 6) {
+                Text("Works on")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.faint)
+                Segmented(options: [(false, "This Page"), (true, "All Tabs")], selection: $browser.botEverywhere)
+                    .disabled(bot.busy)
+                if bot.mode == .every {
+                    Text("one talk, every tab")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.faint)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+
             // The notice in place of the talk: read it before anything
             // goes — the card itself, never buried inside the talk it
             // stands in for (it once was, and a person saw nothing at all).
