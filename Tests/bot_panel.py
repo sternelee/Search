@@ -29,6 +29,13 @@ test's own is the page. Checked here:
                page takes it up again — shown as it stood, told to the model
                as it stood — another page meets a fresh one, and clear
                empties the talk and holds nothing
+  the run      a command run on this Mac (see Bot.shell): held for Allow, the
+               command itself shown, and what it printed told back to the model
+  the where    where the person has been (see History): read for the asking,
+               and words a summary goes by put on the clipboard, held for Allow
+  the kept     a thought kept for every talk to come (see Bot.notes): held for
+               Allow, kept in the settings, told to every bot from the start —
+               and let go of with the trash on the panel
   the coming  the reply coming in (see Loop.wordsComing): plain words shown on
               the panel as they're said, and the say or answer inside a JSON
               line shown while the line is still arriving — carried once whole
@@ -544,6 +551,100 @@ def case_again(t):
     t.ok("…and holds nothing for the page", after["events"] == [], after["events"])
 
 
+def case_run(t):
+    """a command run on this Mac: held for Allow, its telling goes back"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    # A command asked for: it waits for the person's Allow, the command
+    # itself shown — never run in the dark.
+    script.clear(); seen.clear()
+    script.append('{"run": "echo shell-said-hi"}')
+    bt("ask", text="Say hi through the shell")
+    held = until(t, lambda s: s.get("pending", {}).get("verb") == "run")
+    t.ok("the command waits for Allow — the command itself shown",
+         held.get("pending", {}).get("text") == "echo shell-said-hi", held.get("pending"))
+    # (the answer queued before it's let go: the loop asks again the
+    # moment the command is done)
+    script.append('{"answer": "It said hi"}')
+    bt("allow")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "It said hi" for e in s.get("events", [])))
+    t.ok("what the command printed goes back to the model",
+         words(seen, "shell-said-hi", role="user") != "", seen[-1] if seen else {})
+
+
+def case_where(t):
+    """where the person has been: read for the asking, copied for the sharing"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    # Where the person has been, read for the asking — and the telling
+    # goes back to the model. (The listing itself is empty here: pages
+    # the bench opens stay out of the history by design — Browser's
+    # record is skipped for them — so it's the asking that's checked,
+    # not the pages.)
+    script.clear(); seen.clear()
+    script.append('{"history": 5}')
+    bt("ask", text="Where have I been?")
+    until(t, lambda s: words(seen, "Where the person has been", role="user") != "")
+    telling = words(seen, "Where the person has been", role="user")
+    t.ok("where the person has been is read for the asking, and told",
+         "most recent first" in telling, telling[:120])
+
+    # A summary shared out of the browser: words to the clipboard, held
+    # for the person's Allow.
+    script.append('{"copy": "been around, it says"}')
+    bt("ask", text="Copy that up")
+    until(t, lambda s: s.get("pending", {}).get("verb") == "copy")
+    bt("allow")
+    after = until(t, lambda s: s.get("clipboard") == "been around, it says")
+    t.ok("the words land on the clipboard", after.get("clipboard") == "been around, it says")
+
+
+def case_kept(t):
+    """a thought kept: every talk to come is told it, whatever page"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+    bt("forget")
+
+    # A thought kept: held for Allow first, like anything beyond the page.
+    script.clear(); seen.clear()
+    script.append('{"note": "The person prefers dark mode"}')
+    bt("ask", text="Keep this: I prefer dark mode")
+    until(t, lambda s: s.get("pending", {}).get("verb") == "note")
+    script.append('{"answer": "Kept"}')
+    bt("allow")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "Kept" for e in s.get("events", [])))
+    t.ok("what's kept is kept", bt("state").get("notes") == ["The person prefers dark mode"], bt("state").get("notes"))
+
+    # Another page, another talk: told from the start.
+    second = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(second["id"])
+    bt("open", id=second["id"])
+    mark = len(seen)
+    script.append('{"answer": "dark mode"}')
+    bt("ask", text="What do I prefer?")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "dark mode" for e in s.get("events", [])))
+    t.ok("every talk is told what's kept, from the start",
+         words(seen[mark:], "The person prefers dark mode", role="system") != "", seen[mark:] if seen[mark:] else {})
+
+    # And let go of with the trash on the panel, that's to say.
+    bt("clear")
+    t.ok("…and let go of with the trash", bt("state").get("notes") == [], bt("state").get("notes"))
+
+
 def case_wrapped(t):
     """a model that talks around its answer: still heard — and the loop said"""
     setup(); launch()
@@ -702,6 +803,9 @@ def case_every(t):
          any(e["kind"] == "act" and e["act"][1] == "css=#first" and e["act"][3] == "done"
             for e in answer["events"][before:]),
          answer["events"])
+    # The act is done before the page is shown again for it — poll for the
+    # telling itself, not the act, or the two can be read apart.
+    until(t, lambda s: words(seen, "Your fill on css=#first came out done") != "")
     fill = words(seen, "Your fill on css=#first came out done")
     t.ok("…and what came of it goes back with the next showing", bool(fill), fill[:120])
     answered = until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "filled in on the other tab, as asked"
@@ -805,7 +909,7 @@ def case_switched(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_coming, case_again, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_coming, case_again, case_run, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
         print(f"— {case.__doc__}")
         try:
             case(t)

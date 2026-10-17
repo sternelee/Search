@@ -1418,6 +1418,9 @@ final class Bench {
             case "clear":
                 browser.clearBot()
                 answer(["open": browser.botting != nil, "events": browser.botting?.events.count ?? 0])
+            case "forget":
+                Bot.forget()
+                answer(["notes": Bot.notes().map(\.words)])
             case "state":
                 guard let bot = browser.botting else { answer(["open": false]); return }
                 answer([
@@ -1425,6 +1428,8 @@ final class Bench {
                     "notice": bot.notice ?? "", "trouble": bot.trouble ?? "", "place": bot.place,
                     "status": bot.status ?? "", "every": bot.mode == .every,
                     "draft": bot.drafting?.words ?? "",
+                    "notes": Bot.notes().map(\.words),
+                    "clipboard": NSPasteboard.general.string(forType: .string) ?? "",
                     "pending": bot.pending.map { held in
                         ["verb": held.act.verb, "target": held.act.target, "text": held.act.text,
                          "tab": held.tab.map { "tab-\(String($0.uuidString.suffix(6)))" } ?? NSNull()] as [String: Any]
@@ -1439,7 +1444,7 @@ final class Bench {
                 browser.closeBot()
                 answer(["open": browser.botting != nil])
             default:
-                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | every | tap | clear | state | close"])
+                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | every | tap | clear | forget | state | close"])
             }
 
         case "ai":

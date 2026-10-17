@@ -349,6 +349,99 @@ final class Bot: ObservableObject, Identifiable {
     /// Longer than any one reply needs.
     static let longest = 8000
 
+    // MARK: - what it remembers
+
+    /// A thought kept for every talk to come, with when it was kept.
+    struct Thought: Codable {
+        let words: String
+        let at: Date
+    }
+
+    /// What the bot keeps of the person, from one talk to the next: a
+    /// hundred thoughts at most, the oldest let go when a new one comes
+    /// in, kept in the app's own settings. Told to every bot from the
+    /// start (see `remembered`); a "note" in a reply is held for the
+    /// person's Allow before anything is kept.
+    private static let kept = "bot.notes"
+
+    static func notes() -> [Thought] {
+        guard let held = Store.settings.string(forKey: kept),
+              let data = held.data(using: .utf8),
+              let read = try? JSONDecoder().decode([Thought].self, from: data) else { return [] }
+        return read
+    }
+
+    static func keep(_ words: String) {
+        var all = notes()
+        all.append(Thought(words: String(words.prefix(500)), at: Date()))
+        if all.count > 100 { all = Array(all.suffix(100)) }
+        if let data = try? JSONEncoder().encode(all) {
+            Store.settings.set(String(data: data, encoding: .utf8), forKey: kept)
+        }
+    }
+
+    static func forget() { Store.settings.removeObject(forKey: kept) }
+
+    /// The kept thoughts, as the model is told them: with every ask, from
+    /// the start, whatever page the talk is on — the last twenty, newest
+    /// last.
+    static var remembered: String {
+        let all = notes()
+        guard !all.isEmpty else { return "" }
+        return "\n\nWhat you remember about the person, kept from talks before:\n"
+            + all.suffix(20).map { "- \($0.words) (kept \(day.string(from: $0.at)))" }
+                .joined(separator: "\n")
+    }
+
+    /// A kept thought's when, as a person reads it.
+    static let day: DateFormatter = {
+        let made = DateFormatter()
+        made.dateStyle = .short
+        made.timeStyle = .short
+        return made
+    }()
+
+    /// A command's minute: longer than that, it's stopped (see `shell`).
+    static let runFor: TimeInterval = 60
+
+    /// A command run for the bot: zsh, in the person's home, given its
+    /// minute. What it printed — said out loud and gone wrong together —
+    /// comes back capped like any long reply is (see pageful). A command
+    /// that never ends is stopped, and what it had printed is what there
+    /// is. (The process is waited on away from the app's own thread; a
+    /// child it leaves holding the pipe is waited out, not hung on.)
+    nonisolated static func shell(_ command: String) -> (said: String, code: Int32, timedOut: Bool) {
+        let run = Process()
+        run.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        run.arguments = ["-c", command]
+        run.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+        let spoken = Pipe(), goneWrong = Pipe()
+        run.standardOutput = spoken
+        run.standardError = goneWrong
+        do { try run.run() } catch { return ("couldn't start: \(error.localizedDescription)", -1, false) }
+        var said = Data(), heard = Data()
+        let both = DispatchGroup()
+        both.enter()
+        DispatchQueue.global().async { said = spoken.fileHandleForReading.readDataToEndOfFile(); both.leave() }
+        both.enter()
+        DispatchQueue.global().async { heard = goneWrong.fileHandleForReading.readDataToEndOfFile(); both.leave() }
+        let deadline = Date().addingTimeInterval(runFor)
+        var timedOut = false
+        while both.wait(timeout: .now() + 0.1) == .timedOut, !timedOut {
+            if Date() > deadline {
+                timedOut = true
+                run.terminate()
+            }
+        }
+        // A child still holding the pipe: its sayings are let go of, not
+        // waited on.
+        _ = both.wait(timeout: .now() + 2)
+        run.waitUntilExit()
+        var text = String(decoding: said + heard, as: UTF8.self)
+        if text.count > Bot.pageful { text = String(text.prefix(Bot.pageful)) + "…" }
+        return (text, run.terminationStatus, timedOut)
+    }
+
     /// The talk's shape: what the model is told before anything.
     static let system = """
         You are the bot inside a web browser, working for the person who summoned you.\
@@ -373,6 +466,14 @@ final class Bot: ObservableObject, Identifiable {
         {"full": true}  — you were shown only what's in view; ask for the whole page
         {"answer": "…"}  — the task is done (or can't be done); the person reads this
         {"later": {"goal": "…", "at": "…", "every": 600}}  — note a task for a time to come, the goal your own\nsumming up of what's to be done, at as ISO 8601 (like 2026-10-15T08:00:00+08:00).\nEach page comes with NOW, the time it is — turn "tomorrow at eight" into a time\nto come, in the person's own timezone given with it. For a task that comes round\nagain ("every ten minutes"), give every as the gap in seconds (a minute at least)\nand at as the first time to come — at can be left out, and the first time is one\ngap from now. When the time comes, this page is opened again and you work it,\nAuto on, no one watching; a task with every comes round again until the person\ntakes it off.
+        {"run": "command"}  — run a command on this Mac (zsh): shown for the person's Allow\
+        like an act, and what it printed comes back with the next page
+        {"history": 20}  — where the person has been: that many pages, most recent first\
+        (a hundred at most)
+        {"copy": "…"}  — words put on the person's clipboard, shown for their Allow
+        {"note": "…"}  — keep a thought about the person — a preference, what they're after —\
+        for every talk to come, shown for their Allow. What you keep is told to you in every\
+        talk from the start, whatever page it's on. Few words, only what's worth keeping.
 
         Acts (the verb in an act): click, fill, press, select, check, uncheck, hover, scroll, clear.\
         fill takes text to type; select takes an option; press takes a key (Enter, Tab, Escape, ArrowDown).\
@@ -403,10 +504,11 @@ final class Bot: ObservableObject, Identifiable {
 
         A tap comes back to you as one line: {"tap":{"name":"send","context":{"name":"Grace"}}}.
 
-        What you know is the page you were shown and what the person said:\
-        never invent what a page holds, and never say a thing was done that you\
-        weren't told came out well. If the person refuses an act, find another\
-        way or answer with what you have. Few steps, plain words.
+        What you know is the page you were shown, what the person said, and the\
+        thoughts you keep: never invent what a page holds, and never say a thing\
+        was done that you weren't told came out well. If the person refuses an\
+        act, find another way or answer with what you have. Few steps, plain\
+        words.
         """
 }
 
@@ -475,6 +577,24 @@ final class Loop {
             }
             return
         }
+        // A command run on this Mac, words to the person's clipboard, a
+        // thought kept for talks to come (see `route`): let go, they go;
+        // turned away, said so.
+        if held.act.verb == "run" {
+            if allowed { runShell(held.act.text) }
+            else { turnedAway(held, why: "The person wouldn't have it run. Find another way.") }
+            return
+        }
+        if held.act.verb == "copy" {
+            if allowed { copyOut(held.act.text) }
+            else { turnedAway(held, why: "The person wouldn't have it copied. Find another way.") }
+            return
+        }
+        if held.act.verb == "note" {
+            if allowed { keepNote(held.act.text) }
+            else { turnedAway(held, why: "The person wouldn't have it kept. Carry on.") }
+            return
+        }
         if allowed {
             perform(held.act.verb, held.act.target, held.act.text, on: workTab)
         } else {
@@ -483,6 +603,15 @@ final class Loop {
             bot.tell(Bot.Event(kind: .act, words: "", act: refused))
             observe(note: "The person refused your \(held.act.verb) on \(held.act.target).", full: false, first: false)
         }
+    }
+
+    /// A held act turned away: told as one, and the talk goes on. (The
+    /// page's own acts have their own words for it, in `resume`.)
+    private func turnedAway(_ held: Bot.Pending, why: String) {
+        var refused = held.act
+        refused.outcome = "refused"
+        bot?.tell(Bot.Event(kind: .act, words: "", act: refused))
+        observe(note: why, full: false, first: false)
     }
 
     /// The page shown to the model: what it holds, numbered, and what came
@@ -546,7 +675,7 @@ final class Loop {
         bot.status = "asking \(provider.name)…"
         // Tools and skills of the person's, when there are any, ride along
         // with the same words every time (see AIDescribed).
-        let system = Bot.system + AIDescribed.forTheBot()
+        let system = Bot.system + Bot.remembered + AIDescribed.forTheBot()
         let stream = provider == .thisMac
             ? AIEngine.shared.stream(system: system, messages: messages)
             : AIClient.shared.stream(provider, model: model, system: system, messages: messages, key: key)
@@ -599,7 +728,7 @@ final class Loop {
             if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
             if !words.isEmpty { bot.tell(Bot.Event(kind: .say, words: words, act: nil)) }
             bot.status = "asking again — the last reply wasn't in shape"
-            observe(note: "Your last reply wasn't JSON with say, act, read, ui, goto, wait, full, answer, tool or skill — one object, alone or wrapped in words. Try again.", full: false, first: false)
+            observe(note: "Your last reply wasn't JSON with say, act, read, ui, goto, wait, full, answer, later, run, history, copy, note, tool or skill — one object, alone or wrapped in words. Try again.", full: false, first: false)
             return
         }
         bot.status = nil
@@ -622,7 +751,7 @@ final class Loop {
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         }
         if let whole = object(text) { return whole }
-        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer", "later", "tab", "tool", "skill"]
+        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer", "later", "run", "history", "copy", "note", "tab", "tool", "skill"]
         for line in text.split(separator: "\n").map(String.init) {
             if let one = object(line), !known.isDisjoint(with: one.keys) { return one }
         }
@@ -775,6 +904,30 @@ final class Loop {
             readSkill(skill)
             return
         }
+        // Beyond the page: a command run on this Mac, words to the
+        // clipboard, a thought kept for talks to come — none of them touch
+        // the page, and all three are shown to the person and wait for
+        // their Allow like any act (Auto lets them go). Where the person
+        // has been is only read.
+        if let command = line["run"] as? String, !command.isEmpty {
+            if bot.auto { runShell(command) }
+            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "run", target: "", text: command), tab: work.id) }
+            return
+        }
+        if let words = line["copy"] as? String, !words.isEmpty {
+            if bot.auto { copyOut(words) }
+            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "copy", target: "", text: words), tab: work.id) }
+            return
+        }
+        if let thought = line["note"] as? String, !thought.isEmpty {
+            if bot.auto { keepNote(thought) }
+            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "note", target: "", text: thought), tab: work.id) }
+            return
+        }
+        if let count = (line["history"] as? Int) ?? (line["history"] as? Double).map(Int.init) {
+            showHistory(count)
+            return
+        }
         if let read = line["read"] as? String, !read.isEmpty {
             perform("read", read, "", on: work)
             return
@@ -851,6 +1004,74 @@ final class Loop {
         var words = body
         if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
         observe(note: "The skill \(name), the person's own words:\n\n\(words)", full: false, first: false)
+    }
+
+    /// A command run on this Mac (see Bot.shell): what it printed goes
+    /// back with the next showing, told plainly — the command, and what
+    /// came of it, so the model can't claim a thing it wasn't shown.
+    private func runShell(_ command: String) {
+        guard let bot else { return }
+        bot.status = "running it…"
+        Task { @MainActor [weak self] in
+            guard let self, let bot = self.bot else { return }
+            let run = await withCheckedContinuation { carry in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    carry.resume(returning: Bot.shell(command))
+                }
+            }
+            var act = Bot.Act(verb: "run", target: "", text: command)
+            var note: String
+            let printed = "$ \(command)\n\(run.said.isEmpty ? "nothing" : run.said)"
+            if run.timedOut {
+                act.outcome = "stopped at a minute"
+                note = "Your command was stopped at a minute — what it had printed:\n\(printed)"
+            } else if run.code != 0 {
+                act.outcome = "ran, and finished with \(run.code)"
+                note = "Your command ran and finished with \(run.code) — what it printed:\n\(printed)"
+            } else {
+                act.outcome = "ran"
+                note = "Your command ran — what it printed:\n\(printed)"
+            }
+            bot.tell(Bot.Event(kind: .act, words: "", act: act))
+            self.observe(note: note, full: false, first: false)
+        }
+    }
+
+    /// Words put on the person's clipboard — the plainest way a summary
+    /// is shared out of the browser.
+    private func copyOut(_ words: String) {
+        guard let bot else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(words, forType: .string)
+        var act = Bot.Act(verb: "copy", target: "", text: words)
+        act.outcome = "copied"
+        bot.tell(Bot.Event(kind: .act, words: "", act: act))
+        observe(note: "You copied it — the words are on the person's clipboard.", full: false, first: false)
+    }
+
+    /// A thought kept for every talk to come (see Bot.notes): kept, and
+    /// told so.
+    private func keepNote(_ words: String) {
+        guard let bot else { return }
+        Bot.keep(words)
+        var act = Bot.Act(verb: "note", target: "", text: words)
+        act.outcome = "kept"
+        bot.tell(Bot.Event(kind: .act, words: "", act: act))
+        observe(note: "You kept it — it's told to you in every talk from the start, whatever page you're on.", full: false, first: false)
+    }
+
+    /// Where the person has been, as the model reads it: the history the
+    /// address field draws on (see History), most recent first, a hundred
+    /// pages at most. Only read — the model never goes there without the
+    /// person seeing an act for it.
+    private func showHistory(_ count: Int) {
+        let wanted = min(max(count, 1), 100)
+        let pages = Shared.history.everything().prefix(wanted)
+        var block = pages
+            .map { "· \($0.address) · \($0.title.isEmpty ? "no title" : $0.title) (\($0.count) time\($0.count == 1 ? "" : "s"), last \(Bot.day.string(from: $0.last)))" }
+            .joined(separator: "\n")
+        if block.count > Bot.pageful { block = String(block.prefix(Bot.pageful)) + "…" }
+        observe(note: "Where the person has been, the last \(pages.count) pages, most recent first:\n\(block)", full: false, first: false)
     }
 
     /// An act done on the page, and told: what came of it goes back with the
@@ -1027,11 +1248,13 @@ extension Browser {
     }
 
     /// The bot's talk, cleared: the panel emptied, the model's share of
-    /// it gone, and the held copy dropped — the next ask starts from
-    /// nothing, on this panel or the next one over the same page.
+    /// it gone, the held copy dropped — the next ask starts from
+    /// nothing, on this panel or the next one over the same page — and
+    /// what was kept of the person let go with it.
     func clearBot() {
         guard let bot = botting else { return }
         bot.clear()
+        Bot.forget()
         if bot.mode == .every { heldEvery = nil } else { heldTalks[bot.tab] = nil }
     }
 }
