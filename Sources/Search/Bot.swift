@@ -24,10 +24,17 @@ final class Bot: ObservableObject, Identifiable {
     /// saying, an act taken or refused, an answer, a card, a trouble.
     struct Event: Identifiable {
         enum Kind { case ask, say, act, answer, card, trouble }
-        let id = UUID()
+        let id: UUID
         let kind: Kind
         let words: String
         var act: Act?
+
+        init(id: UUID = UUID(), kind: Kind, words: String, act: Act?) {
+            self.id = id
+            self.kind = kind
+            self.words = words
+            self.act = act
+        }
     }
 
     /// An act on the page: what was done, where, and how it came out.
@@ -204,6 +211,7 @@ final class Bot: ObservableObject, Identifiable {
         working = false
         pending = nil
         status = nil
+        drafting = nil
     }
 
     /// The turn is over — an answer, or nothing more to try.
@@ -212,12 +220,40 @@ final class Bot: ObservableObject, Identifiable {
         loop = nil
         pending = nil
         status = nil
+        drafting = nil
         if let failed { trouble = failed }
         onOver?(failed)
     }
 
     fileprivate func tell(_ event: Event) {
         events.append(event)
+    }
+
+    // MARK: - the reply coming in
+
+    /// The reply as it comes: plain words shown as they're said, a saying
+    /// on the panel grown piece by piece (see Loop.think). Kept on the bot,
+    /// not the loop, so the saying stands even when the turn is stopped
+    /// mid-word.
+    @Published fileprivate(set) var drafting: (id: UUID, words: String)?
+
+    /// A saying begun: its id, steady while it grows (the panel holds one
+    /// view for it, its words redrawn as they come).
+    fileprivate func beginDraft() -> UUID {
+        let id = UUID()
+        drafting = (id, "")
+        return id
+    }
+
+    /// The saying grown: the words it's come to.
+    fileprivate func grow(_ id: UUID, _ words: String) {
+        drafting = (id, words)
+    }
+
+    /// The reply's all in: the saying that grew goes — what it stood as is
+    /// told by `carry` (plain words stand, a JSON line becomes what it is).
+    fileprivate func finishDraft() {
+        drafting = nil
     }
 
     /// The model's ui payload, drawn: decoded as A2UI messages, checked
@@ -470,17 +506,35 @@ final class Loop {
             ? AIEngine.shared.stream(system: system, messages: messages)
             : AIClient.shared.stream(provider, model: model, system: system, messages: messages, key: key)
         var whole = ""
+        // The reply coming in, shown as it comes: plain words as they're
+        // said, and the words a JSON line holds while it's still arriving.
+        // The saying the panel holds is begun here and grown piece by
+        // piece (see Bot.grow).
+        let draft = bot.beginDraft()
         task = Task { @MainActor [weak self] in
             do {
                 for try await piece in stream {
                     guard let self else { return }
                     whole += piece
+                    // The words said as they come: plain words plainly, and
+                    // the say or answer inside a JSON line while the line is
+                    // still arriving — the rest of the line waits for the
+                    // whole of it (see Loop.wordsComing). Not every piece holds
+                    // a piece: a line can be thinking, or empty.
+                    let head = whole.drop(while: { " \n\t\r".contains($0) })
+                    var grown = head.first == "{" ? (Loop.wordsComing(in: whole) ?? "") : String(head)
+                    if !piece.isEmpty, !grown.isEmpty {
+                        if grown.count > Bot.pageful { grown = String(grown.prefix(Bot.pageful)) + "…" }
+                        bot.grow(draft, grown)
+                    }
                     // A model talked into going on and on is stopped.
                     if whole.count > Bot.longest { break }
                 }
                 guard let self else { return }
+                bot.finishDraft()
                 self.carry(whole)
             } catch {
+                self?.bot?.finishDraft()
                 self?.failed(error.localizedDescription)
             }
         }
@@ -530,6 +584,43 @@ final class Loop {
         if let open = text.firstIndex(of: "{"), let shut = text.lastIndex(of: "}"), open < shut,
            let held = object(String(text[open...shut])), !known.isDisjoint(with: held.keys) {
             return held
+        }
+        return nil
+    }
+
+    /// The words a reply holds for the person, taken while it's still
+    /// coming: the value of its say or its answer, read plainly —
+    /// half-made JSON isn't parsed, the string inside it is simply taken
+    /// as it stands (\n as a line, \" as a quote). No such field, or a
+    /// value not yet begun, is nothing.
+    private static func wordsComing(in reply: String) -> String? {
+        guard let open = reply.firstIndex(of: "{") else { return nil }
+        let body = reply[open...]
+        for key in ["say", "answer"] {
+            guard let spot = body.range(of: "\"\(key)\"") else { continue }
+            // the colon, then the quote the value opens with
+            let rest = body[spot.upperBound...].drop(while: { " \n\t:".contains($0) })
+            guard rest.first == "\"" else { return "" }
+            var out = ""
+            var escape = false
+            for char in rest.dropFirst() {
+                if escape {
+                    switch char {
+                    case "n": out.append("\n")
+                    case "t": out.append("\t")
+                    case "r": out.append("\r")
+                    default: out.append(char)
+                    }
+                    escape = false
+                } else if char == "\\" {
+                    escape = true
+                } else if char == "\"" {
+                    break
+                } else {
+                    out.append(char)
+                }
+            }
+            return out
         }
         return nil
     }

@@ -1421,6 +1421,7 @@ final class Bench {
                     "open": true, "working": bot.working, "auto": bot.auto, "addressed": bot.addressed,
                     "notice": bot.notice ?? "", "trouble": bot.trouble ?? "", "place": bot.place,
                     "status": bot.status ?? "", "every": bot.mode == .every,
+                    "draft": bot.drafting?.words ?? "",
                     "pending": bot.pending.map { held in
                         ["verb": held.act.verb, "target": held.act.target, "text": held.act.text,
                          "tab": held.tab.map { "tab-\(String($0.uuidString.suffix(6)))" } ?? NSNull()] as [String: Any]

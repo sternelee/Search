@@ -111,6 +111,9 @@ struct BotPanel: View {
             .onChange(of: bot.events.last?.id) { _, _ in
                 if let last = bot.events.last { scroller.scrollTo(last.id, anchor: .bottom) }
             }
+            .onChange(of: bot.drafting?.words) { _, _ in
+                if let last = bot.drafting { scroller.scrollTo(last.id, anchor: .bottom) }
+            }
             .onChange(of: bot.pending) { _, _ in
                 if let last = bot.events.last { scroller.scrollTo(last.id, anchor: .bottom) }
             }
@@ -128,6 +131,15 @@ struct BotPanel: View {
             }
             ForEach(bot.events) { event in
                 EventView(event: event).id(event.id)
+            }
+            // The reply as it comes: a saying on the panel, grown piece
+            // by piece while the model is still saying it.
+            if let draft = bot.drafting, !draft.words.isEmpty {
+                Text(verbatim: draft.words)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .id(draft.id)
             }
             if !bot.surfaces.isEmpty, bot.notice == nil {
                 cards

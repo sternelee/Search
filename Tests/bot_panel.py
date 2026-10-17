@@ -25,6 +25,9 @@ test's own is the page. Checked here:
   the switch  the panel's switch turned mid-talk (see browser.botEverywhere):
                the open bot follows it, the talk kept, the tabs shown or not
                from the next ask on
+  the coming  the reply coming in (see Loop.wordsComing): plain words shown on
+              the panel as they're said, and the say or answer inside a JSON
+              line shown while the line is still arriving — carried once whole
 """
 
 import hashlib
@@ -91,6 +94,10 @@ seen = []
 def said(reply):
     body = json.dumps({"choices": [{"delta": {"content": reply}}]})
     return f"data: {body}\n\ndata: [DONE]\n\n".encode()
+def piece_event(reply):
+    # One event of a reply, not the whole of it (see `pieces` below).
+    body = json.dumps({"choices": [{"delta": {"content": reply}}]})
+    return f"data: {body}\n\n".encode()
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/form":
@@ -105,14 +112,30 @@ class H(BaseHTTPRequestHandler):
         # A dict in the script holds the reply back a while, to watch the
         # loop between replies: {"sleep": seconds, "say": line}.
         if isinstance(line, dict) and "sleep" in line: time.sleep(line.get("sleep", 0)); line = line["say"]
+        # A reply a piece at a time: {"pieces": ["…", …], "hold": seconds}
+        # — one event a piece, held between pieces, so a stream that shows
+        # its words as they come can be watched coming (see Bot.drafting).
+        if isinstance(line, dict) and "pieces" in line:
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked"); self.end_headers()
+            for piece in line["pieces"]:
+                time.sleep(line.get("hold", 0))
+                body = piece_event(piece)
+                self.wfile.write(f"{len(body):X}\r\n".encode() + body + b"\r\n"); self.wfile.flush()
+            time.sleep(line.get("hold", 0))
+            done = b"data: [DONE]\n\n"
+            self.wfile.write(f"{len(done):X}\r\n".encode() + done + b"\r\n"); self.wfile.flush()
+            self.wfile.write(b"0\r\n\r\n"); self.wfile.flush()
+            return
         # A dict can also stand a tab's real id in for a stand-in name, so a
         # reply can come for a tab the person isn't on: {"tab_from": url,
         # "say": line} — {tab} in the line becomes tab-a1b2c3, from the
         # TABS listing the model was last shown.
-        if isinstance(line, dict) and "tab_from" in line:
+        elif isinstance(line, dict) and "tab_from" in line:
             real = tab_of(words(seen, "TABS", role="user"), line["tab_from"]) or ""
-            line = line["say"].replace("{tab}", real)
-        body = said(line)
+            body = said(line["say"].replace("{tab}", real))
+        else:
+            body = said(line)
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def log_message(self, *a): pass
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -414,6 +437,53 @@ def case_card(t):
     sent = words(seen, '"tap"')
     t.ok("the tap was an event, never code", "Grace" in sent and "tap" in sent, sent)
 
+def case_coming(t):
+    """the reply coming in: words shown as they're said"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    # A saying a piece at a time, held a while between pieces: the draft
+    # grows on the panel while the turn is still working.
+    script.clear(); seen.clear()
+    script.extend([{"pieces": ["I'll look ", "at the page ", "and fill it in."],
+                    "hold": 0.3}])
+    bt("ask", text="Sign the form up for Ada")
+    mid = until(t, lambda s: s.get("draft") == "I'll look ", within=8,
+               doing="the saying grown as it came")
+    t.ok("words are shown as they're said", mid.get("draft") == "I'll look ", mid.get("draft"))
+    t.ok("…while the turn is still working", mid.get("working") is True, mid)
+    grown = until(t, lambda s: s.get("draft") == "I'll look at the page and fill it in.", within=8,
+                doing="the saying grown whole")
+    t.ok("the saying grows, it doesn't pile up",
+         grown.get("draft") == "I'll look at the page and fill it in.", grown.get("draft"))
+    # The whole line is one reply (the pieces joined), so the loop takes it
+    # as its saying — said once, not once a piece.
+    answer = until(t, lambda s: any(e["kind"] == "say" for e in s.get("events", [])))
+    t.ok("the saying stands once, whole",
+         [e["words"] for e in answer["events"] if e["kind"] == "say"] == ["I'll look at the page and fill it in."],
+         answer["events"])
+    t.ok("…and the draft is gone with it", answer.get("draft") == "", answer.get("draft"))
+
+    # A JSON line a piece at a time: the say inside it is shown as it
+    # comes — half a line isn't shown, but its words are — and the whole
+    # of it is carried once, standing in the talk as one saying.
+    script.clear(); seen.clear()
+    script.extend([{"pieces": ['{"say":', '"On it"}'], "hold": 0.3}])
+    bt("ask", text="Go on then")
+    mid = until(t, lambda s: s.get("draft") == "On it", within=8,
+               doing="the words inside the line, shown as they came")
+    t.ok("the say inside a JSON line is shown as it comes", mid.get("draft") == "On it", mid.get("draft"))
+    t.ok("…while the turn is still working", mid.get("working") is True, mid)
+    held = until(t, lambda s: any(e["kind"] == "say" and e["words"] == "On it" for e in s.get("events", [])))
+    said = [e["words"] for e in held["events"][held["events"].index(next(e for e in held["events"] if e["kind"] == "ask" and e["words"] == "Go on then")):]
+            if e["kind"] == "say"]
+    t.ok("…and the line, carried whole, is said once", said == ["On it"], held["events"])
+
+
 def case_wrapped(t):
     """a model that talks around its answer: still heard — and the loop said"""
     setup(); launch()
@@ -675,7 +745,7 @@ def case_switched(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_coming, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
         print(f"— {case.__doc__}")
         try:
             case(t)
