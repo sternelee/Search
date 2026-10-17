@@ -341,6 +341,12 @@ final class Browser: NSObject, ObservableObject {
     @Published var assisting: Assistant?
     /// The bot's talk about the page, while it is open (see Bot).
     @Published var botting: Bot?
+    /// Talks held while their bot panels are away (see closeBot, in
+    /// Bot.swift): the talk a page was having, and the one over every
+    /// tab, taken up again when a panel comes back to the same page.
+    /// Gone with the tab, or cleared by hand.
+    var heldTalks: [Tab.ID: Bot.Held] = [:]
+    var heldEvery: Bot.Held?
     /// The Settings page it opens on next. The AI page is the bot's as
     /// well as the add-on's, and the bot ships with the app, so the page is
     /// always there to open.
@@ -2713,6 +2719,7 @@ final class Browser: NSObject, ObservableObject {
                 tab.close()
                 adopt(fresh)
                 tabs = [fresh]
+                heldTalks.removeValue(forKey: tab.id)
                 activeID = fresh.id
                 typed = ""
                 removeEmptyGroup(tab.groupID)
@@ -2723,6 +2730,9 @@ final class Browser: NSObject, ObservableObject {
         remember(tab, at: index, partner: partner?.id, onLeft: pair?.left == tab.id)
         tab.close()
         tabs.remove(at: index)
+        // The talk held for the page goes with it: a new tab there is a
+        // new page, whatever its address.
+        heldTalks.removeValue(forKey: tab.id)
         removeEmptyGroup(tab.groupID)
         if activeID == tab.id {
             // The neighbour on the right, or the last one if there is no

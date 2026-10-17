@@ -55,6 +55,16 @@ final class Bot: ObservableObject, Identifiable {
         var tab: Tab.ID?
     }
 
+    /// The talk, set down while its panel is away: what the panel showed
+    /// and what the model was told, taken up again when the panel comes
+    /// back to the same page (see Browser.openBot).
+    struct Held {
+        let provider: AIProvider
+        let model: String
+        let events: [Event]
+        let messages: [AIMessage]
+    }
+
     let id = UUID()
     let tab: Tab.ID
     let provider: AIProvider
@@ -199,6 +209,41 @@ final class Bot: ObservableObject, Identifiable {
     /// and from here it is for this page only, or for every tab.
     func setMode(_ mode: Mode) {
         self.mode = mode
+    }
+
+    /// The talk so far, set down for keeping — the panel's half and the
+    /// model's, so the same page can take it up again (see Held).
+    func hold() -> Held {
+        Held(provider: provider, model: model, events: events, messages: messages)
+    }
+
+    /// A talk taken up again: the panel shows what was said, and the
+    /// model is told what it was told — it goes on where it left off.
+    func takeUp(_ held: Held) {
+        events = held.events
+        messages = held.messages
+    }
+
+    /// The talk, wiped: the panel emptied, the model's share of it gone,
+    /// a working turn stopped where it stands — the next ask starts from
+    /// nothing. The copy held for the page went with it (see
+    /// Browser.clearBot).
+    func clear() {
+        if working { onOver?("the talk was cleared") }
+        loop?.halt()
+        loop = nil
+        working = false
+        pending = nil
+        status = nil
+        drafting = nil
+        events.removeAll()
+        messages.removeAll()
+        surfaces.removeAll()
+        cards.removeAll()
+        waiting = nil
+        trouble = nil
+        notice = nil
+        auto = false
     }
 
     /// Stop everything, quietly: the panel closing, a new ask coming.
@@ -899,7 +944,11 @@ extension Browser {
         }
     }
 
-    func openBot() {
+    /// The panel asked for. A talk this page was having — held while its
+    /// panel was away — is taken up again, so it goes on where it left
+    /// off (a scheduled task starts from nothing each time it comes
+    /// round: takeUp false, see Chores).
+    func openBot(takeUp held: Bool = true) {
         guard let tab = active, !tab.isBlank else { return }
         guard prefs.bot, let provider = prefs.aiProvider else {
             settingsPage = .ai
@@ -942,17 +991,47 @@ extension Browser {
         // Already open over every tab, or on this one: the same talk goes on.
         if let open = botting, open.provider == provider,
            open.mode == (botEverywhere ? .every : .page), open.tab == tab.id { return }
+        // The talk the open panel was having, set down for its own page:
+        // a panel over another page takes its place, and that page's talk
+        // waits for it.
+        if let open = botting { setDown(open) }
         botting?.stop()
         // The tools and skills the person keeps are offered to the bot as
         // it comes in: the servers connected in the background, so their
         // tools are there to list by the time a task is asked (see
         // AIDescribed).
         MCPHub.shared.wake()
-        botting = Bot(tab: tab, provider: provider, model: model, mode: botEverywhere ? .every : .page)
+        // The talk this page was having, set down when its panel went:
+        // taken up again — the words the panel showed, and the words the
+        // model was told, with the AI it was talking to.
+        var talk: Bot.Held?
+        if held { talk = botEverywhere ? heldEvery : heldTalks[tab.id] }
+        let bot = Bot(tab: tab, provider: talk?.provider ?? provider, model: talk?.model ?? model,
+                      mode: botEverywhere ? .every : .page)
+        if let talk { bot.takeUp(talk) }
+        botting = bot
     }
 
-    func closeBot() {
+    func closeBot(hold: Bool = true) {
+        if hold, let bot = botting { setDown(bot) }
         botting?.stop()
         botting = nil
+    }
+
+    /// The talk, set down for the page it was on: the same page takes it
+    /// up again when a panel comes back over it (see openBot, closeBot).
+    /// A talk that said nothing holds nothing.
+    private func setDown(_ bot: Bot) {
+        guard !bot.events.isEmpty else { return }
+        if bot.mode == .every { heldEvery = bot.hold() } else { heldTalks[bot.tab] = bot.hold() }
+    }
+
+    /// The bot's talk, cleared: the panel emptied, the model's share of
+    /// it gone, and the held copy dropped — the next ask starts from
+    /// nothing, on this panel or the next one over the same page.
+    func clearBot() {
+        guard let bot = botting else { return }
+        bot.clear()
+        if bot.mode == .every { heldEvery = nil } else { heldTalks[bot.tab] = nil }
     }
 }

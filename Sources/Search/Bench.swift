@@ -1415,6 +1415,9 @@ final class Bench {
                 let context = given.mapValues { AnyCodable.string("\($0)") }
                 bot.tapped(ResolvedAction(name: name, sourceComponentId: "", context: context))
                 answer(["tapped": name, "working": bot.working])
+            case "clear":
+                browser.clearBot()
+                answer(["open": browser.botting != nil, "events": browser.botting?.events.count ?? 0])
             case "state":
                 guard let bot = browser.botting else { answer(["open": false]); return }
                 answer([
@@ -1436,7 +1439,7 @@ final class Bench {
                 browser.closeBot()
                 answer(["open": browser.botting != nil])
             default:
-                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | every | tap | state | close"])
+                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | every | tap | clear | state | close"])
             }
 
         case "ai":

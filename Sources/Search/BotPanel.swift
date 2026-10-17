@@ -30,6 +30,7 @@ struct BotPanel: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.faint)
                 }
+                Door(icon: "trash", help: "Clear this talk") { browser.clearBot() }
                 Door(icon: "xmark", help: "Close   esc") { browser.closeBot() }
             }
             .padding(.horizontal, 16)

@@ -25,6 +25,10 @@ test's own is the page. Checked here:
   the switch  the panel's switch turned mid-talk (see browser.botEverywhere):
                the open bot follows it, the talk kept, the tabs shown or not
                from the next ask on
+  the again    the talk held while the panel's away (see Bot.Held): the same
+               page takes it up again — shown as it stood, told to the model
+               as it stood — another page meets a fresh one, and clear
+               empties the talk and holds nothing
   the coming  the reply coming in (see Loop.wordsComing): plain words shown on
               the panel as they're said, and the say or answer inside a JSON
               line shown while the line is still arriving — carried once whole
@@ -484,6 +488,62 @@ def case_coming(t):
     t.ok("…and the line, carried whole, is said once", said == ["On it"], held["events"])
 
 
+def case_again(t):
+    """the talk held while the panel's away: the same page meets it again"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    # A word said, the panel closed — then asked for again over the same
+    # page: the talk is taken up, not a fresh one.
+    script.clear(); seen.clear()
+    script.append('{"say":"The page is up"}')
+    bt("ask", text="Is the page up?")
+    until(t, lambda s: any(e["kind"] == "say" and e["words"] == "The page is up" for e in s.get("events", [])))
+    shut = bt("close")
+    t.ok("the panel closes", shut.get("open") is False, shut)
+    bt("open", id=opened["id"])
+    back = bt("state")
+    # (The loop asked on after its saying, and the empty script answered —
+    # the talk stands as it stood, that asking included.)
+    t.ok("the talk is taken up again — shown as it stood",
+         [(e["kind"], e["words"]) for e in back["events"][:2]] == [("ask", "Is the page up?"), ("say", "The page is up")],
+         back["events"])
+
+    # And the model is told what it was told: the ask that follows carries
+    # the talk that went before it.
+    mark = len(seen)
+    script.append('{"say":"And so it is"}')
+    bt("ask", text="Say it again")
+    until(t, lambda s: any(e["kind"] == "say" and e["words"] == "And so it is" for e in s.get("events", [])))
+    t.ok("the model is told what it was told — the talk goes on",
+         words(seen[mark:], "The page is up", role="assistant") != "", seen[mark:])
+
+    # Another page meets a fresh talk — and the first page's waits for it.
+    second = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(second["id"])
+    bt("open", id=second["id"])
+    fresh = bt("state")
+    t.ok("another page, another talk: nothing held for it", fresh["events"] == [], fresh["events"])
+    cmd({"do": "select", "id": opened["id"]})
+    bt("open", id=opened["id"])
+    waiting = bt("state")
+    t.ok("the first page's talk waited for it",
+         any(e["kind"] == "say" and e["words"] == "And so it is" for e in waiting["events"]), waiting["events"])
+
+    # Cleared by hand: the panel empties, and nothing is held for the
+    # page — the next panel over it starts from nothing.
+    gone = bt("clear")
+    t.ok("clear empties the talk, the panel staying", gone.get("events") == 0 and gone.get("open") is True, gone)
+    bt("close")
+    bt("open", id=opened["id"])
+    after = bt("state")
+    t.ok("…and holds nothing for the page", after["events"] == [], after["events"])
+
+
 def case_wrapped(t):
     """a model that talks around its answer: still heard — and the loop said"""
     setup(); launch()
@@ -745,7 +805,7 @@ def case_switched(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_coming, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_coming, case_again, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
         print(f"— {case.__doc__}")
         try:
             case(t)

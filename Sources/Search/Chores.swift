@@ -201,7 +201,9 @@ extension Browser {
                 return
             }
             select(tab)
-            openBot()
+            // Each round stands on its own: no talk taken up from the
+            // page's last one, which would grow round over round.
+            openBot(takeUp: false)
             guard let bot = botting, bot.tab == tab.id else {
                 Chores.shared.finished(chore.id, state: .failed, words: "the bot couldn't open over its page")
                 return
