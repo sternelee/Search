@@ -518,6 +518,18 @@ final class Terminal: ObservableObject, Identifiable {
         }
     }
 
+    /// The screen and the scrollback wiped at a stroke — ⇧⌘K's clear,
+    /// typed by hand (TerminalView.clearBuffer). ED 3 takes what has
+    /// scrolled off and ED 2 what is showing; a shell's own `clear` only
+    /// ever reaches for the screen.
+    func clear() {
+        guard let lane else { return }
+        lane.queue.async {
+            lane.screen.eraseDisplay(3)
+            lane.screen.eraseDisplay(2)
+        }
+    }
+
     /// End the program: the hangup a closing terminal has always sent,
     /// the polite way first and the sure one shortly after.
     func stop() {

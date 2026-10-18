@@ -521,6 +521,10 @@ final class TerminalSplits: NSView, ObservableObject {
     func closeFind() { focusedView?.closeFind() }
     func jumpToPrompt(forward: Bool) { focusedView?.jumpToPrompt(forward: forward) }
 
+    /// ⇧⌘K clears the pane the keys are in, as everything else here is the
+    /// focused pane's.
+    func clearBuffer() { focusedView?.clearBuffer() }
+
     /// End every program the tab is running — the closing tab's hangup,
     /// sent to each pane as it was ever sent to the one. The panes are let
     /// go before it is, so the exits this brings about are not heard:
@@ -618,6 +622,16 @@ final class TerminalSplits: NSView, ObservableObject {
     func moveFocus(_ direction: TerminalDirection) {
         guard let next = tree.neighbour(of: focused, toward: direction, in: placed ?? placement()) else { return }
         focus(next)
+    }
+
+    /// Gives the keys to the pane a step along the reading order — left
+    /// to right, top to bottom — wrapping at the ends, as ⌘[ and ⌘] walk
+    /// a room whose shape has no direction to name (MetalTerm's previous
+    /// and next split). A room of one pane has nowhere to go.
+    func cycleFocus(_ step: Int) {
+        let walking = tree.panes
+        guard walking.count > 1, let here = walking.firstIndex(of: focused) else { return }
+        focus(walking[(here + step + walking.count) % walking.count])
     }
 
     /// Gives the keys to a pane: the title and the directory are said

@@ -918,4 +918,17 @@ final class TerminalView: NSView, NSTextInputClient {
         pick = nil                        // a selection means nothing once the scene moves
         present()
     }
+
+    /// ⇧⌘K: the screen and the scrollback gone at a stroke (Terminal.clear).
+    /// The wipe is done on the lane, where nothing the reader path does will
+    /// account for it, so the frame is told to say everything again — the
+    /// same debt a new look runs up (see lookChanged) — and the view is
+    /// settled back on the living line, there being nothing left to lift to.
+    func clearBuffer() {
+        terminal.clear()
+        lift = 0
+        pick = nil
+        paint?.repaint()
+        present()
+    }
 }

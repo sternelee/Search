@@ -52,7 +52,7 @@
 | `TerminalLook.swift` (161) | 设置项的运行时镜像（`TerminalLook.font/size/theme/…`），`changed` 通知 |
 | `TerminalShell.swift` (131) | shell 集成片段的生成与注入（zsh/bash） |
 | `TerminalFind.swift` (177) | ⌘F 滚动缓冲查找、覆盖层输入框、上下一个 |
-| `TerminalSplits.swift` (1056) | 窗格分割：`TerminalTree`（**索引竞技场**的递归二叉分割树，纯算术可单测）+ `TerminalSplits` 容器（分格/焦点/zoom/均分、title 镜像、⌘W 的逐格收缩）+ `TerminalDivider`（轴向感知分割线）。见 3.7 |
+| `TerminalSplits.swift` (1070) | 窗格分割：`TerminalTree`（**索引竞技场**的递归二叉分割树，纯算术可单测）+ `TerminalSplits` 容器（分格/焦点/zoom/均分/轮换、title 镜像、⌘W 的逐格收缩）+ `TerminalDivider`（轴向感知分割线）。见 3.7 |
 
 着色器**不是**单独文件：MSL 以 Swift 字符串内联在 `TerminalDraw.swift` 里，运行时 `device.makeLibrary(source:)` 编译（`default.metallib` 若在 bundle 里则优先用它）。这样免掉一个构建步骤，也让 Swift 侧的 `Frame`/`Record` 和 MSL 侧的定义躺在同一个文件里 —— 它们必须同步改，放在一起才改得动。
 
@@ -136,13 +136,19 @@
 |---|---|---|
 | ⌘D | Split Terminal Right | 与 Duplicate Tab 同键、按标签类型分流：菜单两条都标 ⌘D、互斥禁用（Safari 式惯例）；分流的判断只写在 `Browser.duplicate()` 一处，take() 的硬编码 ⌘D 与 Command 闭包都汇到它 |
 | ⇧⌘D | Split Terminal Down | 空闲（MetalTerm 实证键） |
+| ⌘[ / ⌘] | Focus Previous / Next Pane | 与 Back/Forward 同键、按标签分流，判断只写在 `Browser.back()`/`forward()` 一处；`tabs.focusTerminalPrevious/Next` 命令带同键做菜单双显（⌘D 同款）。沿阅读序（`tree.panes`）环绕 |
+| ⌘+ / ⌘− / ⌘0 | Zoom In / Zoom Out / Actual Size | 与页面缩放同键、按标签分流，判断只写在 `Browser.zoom(by:)`/`resetZoom()` 一处：终端标签写 `prefs.terminalSize`（一点一步、9–24 夹住、⌘0 回 `TerminalLook.home`），与设置面板同源持久 |
 | ⌥⌘←/→/↑/↓ | Focus Terminal Left/Right/Above/Below | 空闲；⌘↑↓（命令跳转）、⌘[⌘]（前后）都不带 ⌥ |
 | ⌃⌘←/→/↑/↓ | Nudge Divider Left/Right/Up/Down（一次一格 cell，钳到最小格） | ⌃←/→（页面分栏焦点）不带 ⌘，不撞 |
 | ⇧⌘⏎ | Zoom Terminal Pane | 空闲 |
 | ⌥⌘= | Even Terminal Panes | `KeyCombo` 读**无修饰**字符，"=" 归一成 "+"，⌥ 打出的 "≠" 不进门 |
+| ⇧⌘K | Clear Buffer | ⌘K 是 Search Tabs 的招牌键，终端的 clear 移一位；清屏 + 回滚一起（ED 3 + ED 2），焦点格的 |
 
 - **⌘W 的分界**：`closeFront()` 问 `Tab.closeFocusedPane()` 的返回值 —— 有格先关格（活 shell 弹确认），最后一格才轮到标签；菜单与键盘同源，分界只此一处（pane 数的判断归容器，Browser 不再镜像）。
 - **handBack 顺手修正**：终端标签页的键盘归还走 `Tab.keySeat`（终端 = 焦点格 view，其余 = 页面），不再白建一个没人看的 PageView。
+- **字号键（⌘+/⌘−/⌘0）**：终端分支写 `prefs.terminalSize`（±1 点，⌘0 回 `TerminalLook.home`）—— Prefs 的 didSet 落盘并 `terminalLookChanged()` + announce，每格 `lookChanged()` 重切图集、整帧重说、重排 → 重测 cell → TIOCSWINSZ，**与设置面板同一条链路、同一个源**（MetalTerm 的 `font_size` 语义：全局、持久）。View 菜单的 Zoom 三项与 take() 硬编码零改动即活；捏合缩放（`Tab.magnify`）对终端仍拒绝。
+- **窗格轮换（⌘[/⌘]）**：`Browser.back()`/`forward()` 的终端分支 → `TerminalSplits.cycleFocus(_:)`：沿 `tree.panes`（阅读序）±1 环绕，复用 `focus(_:)`（换格同步重发 title/cwd）。命令 `tabs.focusTerminalPrevious/Next` 与 `tabs.back/forward` 同键，菜单双显、按标签互斥禁用 —— ⌘D 已验证的机制原样照抄。
+- **Clear Buffer（⇧⌘K）**：`Browser.clearTerminal()` → 容器转发成员 → `TerminalView.clearBuffer()` → `Terminal.clear()` 在 lane 上 ED 3（回滚）+ ED 2（屏幕）。lane 侧改动不经 reader 的 damage 记账，视图侧 `lift = 0` + `repaint()` + `present()` 整帧重说是兜底（`lookChanged` 同款）。⌘K 仍是 Search Tabs。
 
 ## 四、协议覆盖
 
@@ -188,5 +194,7 @@
 - **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、彩色 emoji 图集、平滑滚动动画。
 - **Metalterm 的标志性 UX**：底部输入坞、命令块折叠、状态栏 + git、光标动效。
 - **多显示器拖拽**会引起 `contentsScale` 变化 → 整个图集换代 → 闪一下。缓解是按缩放双图集缓存，先记着不建。
-- **窗格**：pane 树随会话恢复（终端标签页本就不进会话，无落点）；`splitLeft`/`splitUp` 命令（从另一侧分右边那格即可做到）；⌘[⌘] 前后格（被 Back/Forward 占用）；跨窗格共享字形图集（每格约 4–6 MB，隐藏格帧时钟自停，代价是内存不是帧）；MetalTerm 式 `confirm_close` 设置项（关格确认目前无条件开，设置项后加）。
+- **窗格**：pane 树随会话恢复（终端标签页本就不进会话，无落点）；`splitLeft`/`splitUp` 命令（从另一侧分右边那格即可做到）；跨窗格共享字形图集（每格约 4–6 MB，隐藏格帧时钟自停，代价是内存不是帧）；MetalTerm 式 `confirm_close` 设置项（关格确认目前无条件开，设置项后加）。
+- **终端字号**：捏合手势调字号（键盘与菜单已够，捏合在触控板上与滚动易混）；每标签/每窗格字号（面板与 Prefs 都是全局模型，全局即 MetalTerm 的 `font_size`）。
+- **MetalTerm 调研清单余项**：⌘E/⌘J 用选中文本进查找并跳到它（两键都空闲，做的话走 TerminalFind 的 `selection(in:)`）；命令时长显示（`command_duration_threshold`，UI 落点未定）。
 - **架构**：不引入 Rust 核心，不引入 libghostty。

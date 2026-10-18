@@ -51,6 +51,34 @@ final class TerminalPTYTests: XCTestCase {
         XCTAssertTrue(saw.contains("back:yo"))
     }
 
+    /// The clear ⌘K has in a terminal, asked by hand (TerminalView's
+    /// clearBuffer is the view's way of it): the screen and the
+    /// scrollback wiped at a stroke — ED 3 then ED 2 — where a shell's
+    /// own `clear` only ever reaches for the screen.
+    func testClearTakesTheScrollbackWithTheScreen() {
+        let filled = XCTestExpectation(description: "the program's lines went past the screen")
+        let terminal = Terminal(
+            command: TerminalCommand(
+                argv: ["/bin/sh", "-c", "i=0; while [ $i -lt 60 ]; do echo line; i=$((i+1)); done; sleep 30"]))
+        terminal.onDraw = { [weak terminal] _, _ in
+            guard let terminal else { return }
+            let kept = terminal.look(scroll: 0) { screen, _ in screen.back.count } ?? 0
+            guard kept > 20 else { return }
+            filled.fulfill()
+        }
+        wait(for: [filled], timeout: 10)
+        terminal.onDraw = nil
+
+        terminal.clear()
+        let after = terminal.look(scroll: 0) { screen, _ in
+            (screen.back.count, screen.rows.map(\.text))
+        }
+        XCTAssertEqual(after?.0, 0, "the scrollback went with the screen")
+        XCTAssertTrue(after?.1.allSatisfy(\.isEmpty) ?? false, "and the screen is blank again")
+
+        terminal.stop()
+    }
+
     /// The shell's own marks (OSC 133) come back as the frame's blocks: a
     /// command that failed leaves its span in the gutter, red (see
     /// TerminalDraw, TerminalGrid).

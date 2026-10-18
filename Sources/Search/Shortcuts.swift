@@ -190,14 +190,21 @@ struct Command: Identifiable {
         // down, the keys moved between them (see TerminalSplits). Every key
         // here holds ⌥ or ⌃ on top of ⌘, which the key taker leaves for the
         // menus (App.swift's take), so these reach the panes whatever has
-        // the keyboard — ⌘D and ⇧⌘D excepted, plain enough to be taken.
+        // the keyboard — ⌘D and ⇧⌘D excepted, plain enough to be taken;
+        // ⌘[ and ⌘] likewise, but told apart from a page's history by the
+        // tab in Browser.back and forward, as ⌘D is by duplicate.
         Command("tabs.splitTerminalRight", "Split Terminal Right", .tabs, KeyCombo("d")) { $0.splitTerminal(across: .horizontal) },
         Command("tabs.splitTerminalDown", "Split Terminal Down", .tabs, KeyCombo("d", shift: true)) { $0.splitTerminal(across: .vertical) },
+        Command("tabs.focusTerminalPrevious", "Focus Previous Pane", .tabs, KeyCombo("[")) { $0.cycleTerminalFocus(-1) },
+        Command("tabs.focusTerminalNext", "Focus Next Pane", .tabs, KeyCombo("]")) { $0.cycleTerminalFocus(1) },
         Command("tabs.focusTerminalLeft", "Focus Terminal Left", .tabs, KeyCombo("left", option: true)) { $0.moveTerminalFocus(.left) },
         Command("tabs.focusTerminalRight", "Focus Terminal Right", .tabs, KeyCombo("right", option: true)) { $0.moveTerminalFocus(.right) },
         Command("tabs.focusTerminalAbove", "Focus Terminal Above", .tabs, KeyCombo("up", option: true)) { $0.moveTerminalFocus(.up) },
         Command("tabs.focusTerminalBelow", "Focus Terminal Below", .tabs, KeyCombo("down", option: true)) { $0.moveTerminalFocus(.down) },
         Command("tabs.zoomTerminalPane", "Zoom Terminal Pane", .tabs, KeyCombo("return", shift: true)) { $0.zoomTerminalPane() },
+        // ⇧⌘K, the terminal's clear moved off ⌘K — which here searches the
+        // tabs (see TerminalView.clearBuffer).
+        Command("tabs.clearTerminal", "Clear Buffer", .tabs, KeyCombo("k", shift: true)) { $0.clearTerminal() },
         // ⌥⌘=: the equal key as the keyboard names it with nothing held,
         // not the "≠" ⌥ turns it into (see KeyCombo's event reading).
         Command("tabs.evenTerminalPanes", "Even Terminal Panes", .tabs, KeyCombo("+", option: true)) { $0.evenTerminalPanes() },

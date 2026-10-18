@@ -185,6 +185,14 @@ struct SearchApp: App {
                 Button("Split Terminal Down") { browser.splitTerminal(across: .vertical) }
                     .shortcut("tabs.splitTerminalDown")
                     .disabled(browser.active?.isTerminal != true)
+                // ⌘[ and ⌘] again — Back and Forward on a page — walking the
+                // panes in reading order, wrapping at the ends.
+                Button("Focus Previous Pane") { browser.cycleTerminalFocus(-1) }
+                    .shortcut("tabs.focusTerminalPrevious")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Next Pane") { browser.cycleTerminalFocus(1) }
+                    .shortcut("tabs.focusTerminalNext")
+                    .disabled(browser.terminalPanes < 2)
                 Button("Focus Terminal Left") { browser.moveTerminalFocus(.left) }
                     .shortcut("tabs.focusTerminalLeft")
                     .disabled(browser.terminalPanes < 2)
@@ -215,6 +223,10 @@ struct SearchApp: App {
                 Button("Nudge Divider Down") { browser.nudgeTerminalDivider(.down) }
                     .shortcut("tabs.nudgeTerminalDividerDown")
                     .disabled(browser.terminalPanes < 2)
+                // ⇧⌘K: the focused pane's screen and scrollback, wiped.
+                Button("Clear Buffer") { browser.clearTerminal() }
+                    .shortcut("tabs.clearTerminal")
+                    .disabled(browser.active?.isTerminal != true)
                 Divider()
                 if browser.prefs.splitView {
                     Button("Split Current Page") { browser.startSplit() }

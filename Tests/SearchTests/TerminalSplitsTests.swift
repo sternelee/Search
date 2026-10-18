@@ -336,6 +336,43 @@ final class TerminalSplitsWindowTests: XCTestCase {
         XCTAssertEqual(container.focusedView, top)
     }
 
+    /// ⌘[ and ⌘] walk the panes in reading order — the tall pane, then the
+    /// two stacked — wrapping at the ends, where a room's shape has no
+    /// arrow to name the way.
+    func testCyclingWalksTheReadingOrderAndWraps() {
+        let (container, window) = room(1000, 500)
+        defer { container.close(); window.orderOut(nil) }
+
+        container.split(across: .horizontal)
+        container.split(across: .vertical)
+        XCTAssertEqual(container.focused, 2, "the pane the L grew with")
+
+        container.cycleFocus(1)
+        XCTAssertEqual(container.focused, 0, "⌘] off the end starts again at the tall pane")
+        container.cycleFocus(1)
+        XCTAssertEqual(container.focused, 1)
+        container.cycleFocus(1)
+        XCTAssertEqual(container.focused, 2, "and the round trip lands where it began")
+
+        container.cycleFocus(-1)
+        XCTAssertEqual(container.focused, 1, "⌘[ steps back the way ⌘] came")
+        container.cycleFocus(-1)
+        XCTAssertEqual(container.focused, 0)
+        container.cycleFocus(-1)
+        XCTAssertEqual(container.focused, 2, "⌘[ off the start ends at the last pane")
+    }
+
+    /// A room of one pane has nowhere to go: the walk leaves the keys
+    /// where they are, as the arrow keys do at a wall.
+    func testAOnePaneRoomHasNothingToCycle() {
+        let (container, window) = room(1000, 500)
+        defer { container.close(); window.orderOut(nil) }
+
+        container.cycleFocus(1)
+        container.cycleFocus(-1)
+        XCTAssertEqual(container.focused, 0)
+    }
+
     /// The tab's title says the pane the keys are in — the terminal's own
     /// name while it has set none of its own — and says the next pane's
     /// the moment the keys move.

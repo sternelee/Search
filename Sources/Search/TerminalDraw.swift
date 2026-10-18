@@ -116,7 +116,8 @@ final class TerminalDraw {
     /// appearance, and a terminal that is being scrolled does that a
     /// hundred and twenty times a second for an answer that has not
     /// moved. `repaint` is what re-asks, and it is what both of the ways a
-    /// theme can change go through.
+    /// theme can change go through — and what a cleared screen says
+    /// everything afresh with (see TerminalView.clearBuffer).
     private var theme = Theme.current(TerminalLook.theme)
 
     // The ring of cell buffers. A frame reads its cells by instance id
