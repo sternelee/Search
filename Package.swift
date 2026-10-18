@@ -26,6 +26,15 @@ let package = Package(
             // here but ceremony.
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        // The bridge beside the app: Search as an MCP server over stdio,
+        // so an agent CLI (Claude Code, Codex) can drive the browser's
+        // bench pages. Speaks the bench socket, nothing else — no second
+        // implementation of the hands (see Agent.swift).
+        .executableTarget(
+            name: "search-mcp",
+            path: "Sources/SearchMCP",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .testTarget(
             name: "SearchTests",
             dependencies: ["Search"],

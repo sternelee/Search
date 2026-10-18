@@ -59,6 +59,13 @@ final class Preferences: ObservableObject {
     /// The setting said on at launch with no mark from the switch behind it,
     /// and was put back to off.
     private(set) var benchRefused = false
+    /// The agents' pages out of sight (Settings › Browser Use): their tabs
+    /// work on as ever — the socket, the bridge, the verbs — but nothing of
+    /// them is drawn in the row, and the keys count only what the person
+    /// can see. Off unless asked for.
+    @Published var benchQuiet: Bool {
+        didSet { store.set(benchQuiet, forKey: "bench.quiet") }
+    }
     /// Light, dark, or the Mac's own.
     @Published var look: Look {
         didSet {
@@ -391,6 +398,7 @@ final class Preferences: ObservableObject {
             benchRefused = true
             store.set(false, forKey: "bench")
         }
+        benchQuiet = store.bool(forKey: "bench.quiet")
         let chosen = store.string(forKey: "look").flatMap(Look.init) ?? .system
         look = chosen
         // Before the first window, and not deferred: the window that is about

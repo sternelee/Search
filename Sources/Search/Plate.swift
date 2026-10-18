@@ -146,6 +146,21 @@ struct Caption: View {
     }
 }
 
+/// A word of warning, plain: the triangle, the words, nothing else.
+struct Caution: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle").font(.system(size: 10, weight: .medium))
+            Text(verbatim: text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(Palette.muted)
+        .padding(8)
+        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
 /// The field for narrowing a list. The wash, the glass, the caret.
 struct Hunt: View {
     @Binding var text: String

@@ -80,6 +80,7 @@
                                        check · hover · clear — a TARGET is a number from the snapshot, text=Words
                                        on the thing, css=…, xpath=… or loc=role:button[name='Sign in']
     ./bench agent read ID TARGET      the words at a target, its value, where a link goes
+    ./bench agent close ID            one of the agent's pages, closed — by label or id
     ./bench agent wait ID [SECONDS] | target T | text T | url U
                                        until the page has loaded, or a target is there, or words appear, or an address
     ./bench agent run [ID] [--provider P] [--model M] [--steps N] TASK
@@ -132,7 +133,7 @@
                                        where a flick, a pull at a side, a dock or a click on the sliver
                                        leaves it, and how far it swings on the way
     ./bench ui KEY VALUE               settings/passwords/welcome/history/downloads/bookmarks/hidden on|off,
-                                       import on|off|extensions|BROWSER,
+                                       import on|off|extensions|BROWSER, quiet on|off (agents' pages out of sight),
                                        look light|dark|system, sidebar on|off, side left|right, spaces on|off, hides on|off,
                                        folded on|off, peek on|off, peeklink keep|close, pages120 on|off
 
@@ -528,7 +529,7 @@ def main(argv):
         else: sys.exit(usage)
     elif verb == "agent":
         usage = ("usage: bench agent pages | open URL [AS] | label ID AS | snapshot ID [full] | "
-                 "act ID VERB TARGET [TEXT] | read ID TARGET | "
+                 "act ID VERB TARGET [TEXT] | read ID TARGET | close ID | "
                  "wait ID [SECONDS | target T | text T | url U] | run [ID] [--provider P] [--model M] [--steps N] TASK")
         if not args: sys.exit(usage)
         request["action"] = args[0]
@@ -538,6 +539,8 @@ def main(argv):
             if len(args) == 3: request["as"] = args[2]
         elif args[0] == "label" and len(args) == 3:
             request["id"], request["as"] = args[1], args[2]
+        elif args[0] == "close" and len(args) == 2:
+            request["id"] = args[1]
         elif args[0] == "snapshot" and len(args) in (2, 3):
             request["id"] = args[1]
             if len(args) == 3:

@@ -655,6 +655,12 @@ final class Bench {
                 // What the keyboard goes to in the key window, or the browser's: a find field,
                 // a page, or a button it shouldn't be.
                 "responder": (NSApp.keyWindow ?? Links.window)?.firstResponder.map { "\(type(of: $0))" } ?? "",
+                // The tabs as the person sees them: drawn in the row, and
+                // counted by the number keys — the agents' pages out of
+                // sight are in neither (see displayedTabs).
+                "rowTabs": browser.displayedTabs.map { Bench.short($0) },
+                "keyTabs": browser.shownTabs.map { Bench.short($0) },
+                "quiet": browser.prefs.benchQuiet,
             ]
             out["windows"] = NSApp.windows.map { window -> [String: Any] in
                 [
@@ -2651,6 +2657,9 @@ final class Bench {
                     : ["on", "true", "1", "yes", "extensions"].contains(text) ? "" : text
             }
             if let on = request["hidden"] as? Bool { browser.reviewing = on }
+            // The agents' pages out of sight (Settings › Browser Use): the
+            // switch itself, for a test to turn.
+            if let on = request["quiet"] as? Bool { browser.prefs.benchQuiet = on }
             if let look = (request["look"] as? String).flatMap(Look.init) { browser.prefs.look = look }
             if let side = request["side"] as? String {
                 guard let position = SidebarPosition(rawValue: side) else {

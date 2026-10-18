@@ -128,7 +128,7 @@ struct BotPanel: View {
                 Text(trouble).font(.system(size: 12.5)).foregroundStyle(Palette.muted)
             }
             if bot.addressed, bot.notice == nil {
-                caution("This page has text written for an AI to follow. The bot may be steered by it.")
+                Caution("This page has text written for an AI to follow. The bot may be steered by it.")
             }
             ForEach(bot.events) { event in
                 EventView(event: event).id(event.id)
@@ -209,16 +209,6 @@ struct BotPanel: View {
         }
         .padding(12)
         .background(Palette.wash.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func caution(_ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: "exclamationmark.triangle").font(.system(size: 10, weight: .medium))
-            Text(verbatim: text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
-        }
-        .foregroundStyle(Palette.muted)
-        .padding(8)
-        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private struct EventView: View {

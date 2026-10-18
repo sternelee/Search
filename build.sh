@@ -74,6 +74,11 @@ BINARY="$(swift build "${SWIFTFLAGS[@]}" --show-bin-path)/Search"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/$NAME"
+# The MCP bridge beside the browser: what an agent CLI (Claude Code, Codex)
+# is pointed at, in its own Settings page for it (BrowserUse.swift).
+BRIDGE="$(swift build "${SWIFTFLAGS[@]}" --show-bin-path)/search-mcp"
+[ -x "$BRIDGE" ] || { echo "search-mcp didn't build" >&2; exit 1; }
+cp "$BRIDGE" "$APP/Contents/MacOS/search-mcp"
 # The AppleScript dictionary (Scripting.swift): read-only, tabs' addresses
 # and titles. The plist below points to it.
 cp Search.sdef "$APP/Contents/Resources/"
@@ -88,6 +93,7 @@ if [ "$CONFIG" = "release" ]; then
   rm -rf "$APP.dSYM"
   dsymutil "$BINARY" -o "$APP.dSYM" 2>/dev/null || echo "no dSYM this time" >&2
   strip -x "$APP/Contents/MacOS/$NAME"
+  strip -x "$APP/Contents/MacOS/search-mcp"
 fi
 
 # The icon, drawn fresh each time — it is thirty lines of Swift, not an asset

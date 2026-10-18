@@ -108,8 +108,14 @@ final class Browser: NSObject, ObservableObject {
     }
 
     var displayedTabs: [Tab] {
-        guard prefs.splitView else { return tabs }
-        return tabs.filter { tab in !splits.contains { $0.contains(tab.id) && $0.left != tab.id } }
+        // The agents' pages out of sight (Settings › Browser Use): they are
+        // still here, still worked by the socket and the bridge — only the
+        // row doesn't draw them, and the keys that count the row (⌘1–9,
+        // ⌃Tab, see shownTabs) count what the person can see. Everything
+        // else — the session, the verbs, closing them — goes by `tabs`.
+        let standing = prefs.benchQuiet ? tabs.filter { !$0.bench } : tabs
+        guard prefs.splitView else { return standing }
+        return standing.filter { tab in !splits.contains { $0.contains(tab.id) && $0.left != tab.id } }
     }
 
     var visibleTabIDs: Set<Tab.ID> {

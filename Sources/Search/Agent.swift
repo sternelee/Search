@@ -19,6 +19,7 @@ import WebKit
 //   act        click @12 · fill @3 me@here.com · press @3 Enter · select @7 October
 //   read       the words at a ref, its value, where a link goes
 //   wait       until something is there, or the page has loaded, or an address
+//   close      one of its own, gone (by label or id, like every verb here)
 //   run        a task in plain words, carried out by the model the AI add-on
 //              is set to (or a provider named in the request), one act at a
 //              time, each answered with the next snapshot
@@ -44,6 +45,10 @@ enum Agent {
     static func handle(
         _ request: [String: Any], browser: Browser, pick picking: @escaping () -> Tab?, answer: @escaping ([String: Any]) -> Void
     ) {
+        // The labels of pages since gone — closed by the bench's own close,
+        // by the socket stopping, by the app ending a run — don't outlive
+        // the pages they named.
+        labels = labels.filter { entry in browser.tabs.contains { $0.id == entry.key } }
         // A tab by the label this surface gave it, or the way the bench
         // names one — the first characters of its id.
         let pick = { seek(request, in: browser, pick: picking) }
@@ -134,11 +139,18 @@ enum Agent {
                 }
             }
 
+        case "close":
+            guard let tab = pick() else { answer(["error": "no such tab"]); return }
+            browser.close(tab)
+            // The label went with the page it named.
+            labels[tab.id] = nil
+            answer(["closed": 1])
+
         case "run":
             run(request, browser: browser, tab: pick(), answer: answer)
 
         default:
-            answer(["error": "agent needs an action: pages, open, label, snapshot, act, read, wait or run"])
+            answer(["error": "agent needs an action: pages, open, label, snapshot, act, read, wait, close or run"])
         }
     }
 
