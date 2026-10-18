@@ -73,13 +73,51 @@ final class TerminalTabTests: XCTestCase {
         window.contentView = stage
         stage.show([tab], split: nil, focused: tab.id)
         stage.layoutSubtreeIfNeeded()
-        // The console lands in a slot (StageView), as a page does.
+        // The console lands in a slot (StageView), as a page does — and it
+        // is the room the panes are in now, one level deeper than the
+        // terminal itself: the slot holds the room, the room holds panes.
         let console = try XCTUnwrap(
-            stage.subviews.flatMap { $0.subviews }.compactMap { $0 as? TerminalView }.first)
+            stage.subviews.flatMap { $0.subviews }.compactMap { $0 as? TerminalSplits }.first)
         XCTAssertTrue(console.superview is StageView, "the console is held by a slot, as a page is")
         XCTAssertTrue(console.superview?.superview === stage)
+        let pane = try XCTUnwrap(console.focusedView)
+        XCTAssertTrue(pane.superview === console, "the terminal is a pane in the room")
         XCTAssertNil(tab.built)
         tab.close()
+    }
+
+    /// A window around a room, as a real one holds it: the frame to lay
+    /// out in and the responder chain to arrive in.
+    private func window(holding room: NSView) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = room
+        window.orderFrontRegardless()
+        room.layoutSubtreeIfNeeded()
+        return window
+    }
+
+    /// The tab's shell is the pane the keys are in: splitting makes a new
+    /// one and the keys go to it, and moving the keys moves what the tab
+    /// calls its shell. Closing the tab closes whatever panes it holds.
+    func testTheTabsShellIsThePaneTheKeysAreIn() throws {
+        let tab = Tab(bench: true, terminal: true)
+        let console = try XCTUnwrap(tab.console)
+        // A room to split: the console is a view, and it needs its frame.
+        let window = window(holding: console)
+
+        let first = try XCTUnwrap(tab.shell)
+        XCTAssertTrue(console.split(across: .horizontal))
+        XCTAssertEqual(console.paneCount, 2)
+        XCTAssertFalse(tab.shell === first, "the pane that was made took the keys")
+
+        console.moveFocus(.left)
+        XCTAssertTrue(tab.shell === first, "and the keys moved back to the pane that was there")
+
+        tab.close()
+        XCTAssertNil(tab.madeShell, "the room and every shell in it went with the tab")
+        window.orderOut(nil)
     }
 
     /// The session holds a shell wherever it stood: written with the
@@ -132,5 +170,99 @@ final class TerminalTabTests: XCTestCase {
         XCTAssertEqual(kept?["body"], "build finished")
 
         tab.close()
+    }
+
+    /// A shell that ends takes its pane with it: the room closes over the
+    /// pane whose shell exited, on its own and with no asking (there is
+    /// nothing left to end), and the tab is kept for its last pane — which
+    /// ⌘W then takes, as a one-pane terminal always did.
+    func testAShellThatEndsTakesItsPaneAndThenTheTab() throws {
+        let browser = Browser(record: WindowRecord())
+        browser.newTerminal()
+        let tab = try XCTUnwrap(browser.active)
+        let console = try XCTUnwrap(tab.console)
+        let window = window(holding: console)
+
+        browser.splitTerminal(across: .horizontal)
+        XCTAssertEqual(browser.terminalPanes, 2, "⌘D grew the room to two panes")
+
+        tab.shell?.stop()
+        let gone = expectation(description: "the pane's shell reaped")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { gone.fulfill() }
+        wait(for: [gone], timeout: 5)
+
+        XCTAssertEqual(browser.terminalPanes, 1, "the pane whose shell ended closed, and the room closed over it")
+        XCTAssertTrue(browser.tabs.contains { $0 === tab }, "the tab is kept for its last pane")
+
+        browser.closeFront()
+        XCTAssertFalse(browser.tabs.contains { $0 === tab }, "the last pane went with the tab")
+        window.orderOut(nil)
+    }
+
+    /// A terminal of one pane goes when its shell does — an `exit` typed
+    /// is the terminal closed, as a terminal window closes with its shell.
+    func testTheTabGoesWhenItsOnlyShellDoes() throws {
+        let browser = Browser(record: WindowRecord())
+        browser.newTerminal()
+        let tab = try XCTUnwrap(browser.active)
+        _ = try XCTUnwrap(tab.console)
+
+        tab.shell?.stop()
+        let gone = expectation(description: "the shell left, and the tab with it")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { gone.fulfill() }
+        wait(for: [gone], timeout: 5)
+
+        XCTAssertFalse(browser.tabs.contains { $0 === tab }, "the tab closed with its shell")
+    }
+
+    /// A terminal of one pane closes like any tab: the room never had
+    /// sides, so ⌘W takes the whole thing.
+    func testCloseFrontClosesAOnePaneTerminalOutright() throws {
+        let browser = Browser(record: WindowRecord())
+        browser.newTerminal()
+        let tab = try XCTUnwrap(browser.active)
+        _ = try XCTUnwrap(tab.console)
+        XCTAssertEqual(browser.terminalPanes, 1)
+
+        browser.closeFront()
+        XCTAssertFalse(browser.tabs.contains { $0 === tab }, "with no second pane, the tab itself went")
+    }
+
+    /// The room's commands are offered only where there is a room: on a
+    /// page they decline — and build nothing to decline with.
+    func testTheRoomsCommandsLeaveAPageAlone() {
+        let browser = Browser(record: WindowRecord())
+        browser.newTab()
+        XCTAssertEqual(browser.active?.isTerminal, false)
+
+        browser.splitTerminal(across: .horizontal)
+        browser.splitTerminal(across: .vertical)
+        browser.moveTerminalFocus(.left)
+        browser.nudgeTerminalDivider(.up)
+        browser.zoomTerminalPane()
+        browser.evenTerminalPanes()
+
+        XCTAssertEqual(browser.terminalPanes, 0)
+        XCTAssertNil(browser.active?.built, "no page was built to decline with")
+        XCTAssertEqual(browser.tabs.count, 1)
+    }
+
+    /// ⌘D, two meanings told apart by the tab: the Duplicate command itself
+    /// grows the room on a terminal — the menu equivalent and the key taker
+    /// come back to Browser.duplicate with it.
+    func testTheDuplicateCommandSplitsATerminalInstead() throws {
+        let browser = Browser(record: WindowRecord())
+        browser.newTerminal()
+        let tab = try XCTUnwrap(browser.active)
+        let console = try XCTUnwrap(tab.console)
+        let window = window(holding: console)
+
+        let duplicate = try XCTUnwrap(Command.all.first { $0.id == "tabs.duplicate" })
+        duplicate.run(browser)
+        XCTAssertEqual(browser.terminalPanes, 2, "⌘D on a terminal grows the room, not a copy of the tab")
+        XCTAssertNil(tab.built, "and still no page was built")
+
+        tab.close()
+        window.orderOut(nil)
     }
 }

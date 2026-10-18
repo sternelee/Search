@@ -22,6 +22,17 @@ final class TerminalView: NSView, NSTextInputClient {
     /// view draws through.
     private var paint: TerminalDraw?
 
+    /// The cell a frame is drawn in, measured from the face — the size the
+    /// renderer was last given, or the face's own before a layout. Whoever
+    /// divides the room a terminal sits in asks this, to keep from making
+    /// a pane too narrow for its own cells.
+    var cell: CGSize { paint?.cell ?? TerminalDraw.measure(TerminalLook.face()) }
+
+    /// The keyboard arrived here. Said once per arrival, from the same
+    /// place the caret is settled — whoever divides the room listens, to
+    /// know which pane the keys are in (see TerminalSplits).
+    var onFocused: (() -> Void)?
+
     /// When the next frame is drawn, and why. The only clock in here — the
     /// caret's blink is the pacer's to keep time for, not a timer's, and
     /// the timer there used to be ran on for every terminal merely on
@@ -184,6 +195,7 @@ final class TerminalView: NSView, NSTextInputClient {
         pacer.settleCaret()
         settleFocusSoon()
         present()
+        if took { onFocused?() }
         return took
     }
 

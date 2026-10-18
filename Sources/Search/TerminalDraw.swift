@@ -92,6 +92,18 @@ final class TerminalDraw {
     /// for afresh every time: a terminal is never made to remember it.
     static var inset: CGFloat { CGFloat(TerminalLook.padding) }
 
+    /// The ground as a colour the chrome around a terminal can be painted
+    /// with: the gutter between panes is the terminal's own background, so
+    /// a dark theme's panes are not divided by a bright strip. Asked for
+    /// afresh, as the inset is — a theme can change under a live gutter.
+    static var groundColor: NSColor {
+        let ground = Theme.current(TerminalLook.theme).ground
+        return NSColor(
+            srgbRed: CGFloat(ground.x), green: CGFloat(ground.y),
+            blue: CGFloat(ground.z), alpha: CGFloat(ground.w)
+        )
+    }
+
     /// The glyphs, and the slots in it that cells name: cut away from the
     /// frame that asks for one, so that no frame waits on CoreText (see
     /// TerminalAtlas). The renderer asks it what a character's slot is and
@@ -168,8 +180,10 @@ final class TerminalDraw {
 
     /// The cell a font sets: the advance of its widest character across,
     /// its full line height down. Both integral, so the same glyphs sit
-    /// on the same pixels from one frame to the next.
-    private static func measure(_ font: NSFont) -> CGSize {
+    /// on the same pixels from one frame to the next. Asked of by whoever
+    /// divides a room of terminals, to keep a pane from being made too
+    /// narrow for a cell of its own.
+    static func measure(_ font: NSFont) -> CGSize {
         let wide = ("MM" as NSString).size(withAttributes: [.font: font]).width / 2
         let tall = font.ascender - font.descender + font.leading
         return CGSize(width: max(1, wide.rounded(.up)), height: max(1, tall.rounded(.up)))

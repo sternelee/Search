@@ -175,6 +175,47 @@ struct SearchApp: App {
                     .shortcut("tabs.previousCommand")
                     .disabled(browser.active?.isTerminal != true)
                 Divider()
+                // The terminal's own room, in the same Tabs menu (see
+                // TerminalSplits). ⌘D is the room's on a terminal — so
+                // Duplicate stands aside below — and everything that needs
+                // sides is offered once there are some.
+                Button("Split Terminal Right") { browser.splitTerminal(across: .horizontal) }
+                    .shortcut("tabs.splitTerminalRight")
+                    .disabled(browser.active?.isTerminal != true)
+                Button("Split Terminal Down") { browser.splitTerminal(across: .vertical) }
+                    .shortcut("tabs.splitTerminalDown")
+                    .disabled(browser.active?.isTerminal != true)
+                Button("Focus Terminal Left") { browser.moveTerminalFocus(.left) }
+                    .shortcut("tabs.focusTerminalLeft")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Terminal Right") { browser.moveTerminalFocus(.right) }
+                    .shortcut("tabs.focusTerminalRight")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Terminal Above") { browser.moveTerminalFocus(.up) }
+                    .shortcut("tabs.focusTerminalAbove")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Terminal Below") { browser.moveTerminalFocus(.down) }
+                    .shortcut("tabs.focusTerminalBelow")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Zoom Terminal Pane") { browser.zoomTerminalPane() }
+                    .shortcut("tabs.zoomTerminalPane")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Even Terminal Panes") { browser.evenTerminalPanes() }
+                    .shortcut("tabs.evenTerminalPanes")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Nudge Divider Left") { browser.nudgeTerminalDivider(.left) }
+                    .shortcut("tabs.nudgeTerminalDividerLeft")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Nudge Divider Right") { browser.nudgeTerminalDivider(.right) }
+                    .shortcut("tabs.nudgeTerminalDividerRight")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Nudge Divider Up") { browser.nudgeTerminalDivider(.up) }
+                    .shortcut("tabs.nudgeTerminalDividerUp")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Nudge Divider Down") { browser.nudgeTerminalDivider(.down) }
+                    .shortcut("tabs.nudgeTerminalDividerDown")
+                    .disabled(browser.terminalPanes < 2)
+                Divider()
                 if browser.prefs.splitView {
                     Button("Split Current Page") { browser.startSplit() }
                         .shortcut("tabs.split")
@@ -221,6 +262,9 @@ struct SearchApp: App {
                     .disabled(browser.active == nil)
                 Button("Duplicate Tab") { browser.duplicate() }
                     .shortcut("tabs.duplicate")
+                    // ⌘D belongs to the room on a terminal; the same key on
+                    // Split Terminal Right above takes over there.
+                    .disabled(browser.active?.isTerminal == true)
                     .disabled(browser.active?.hasPage != true)
                 Button("Copy Address") { browser.copyAddress() }
                     .shortcut("tabs.copyAddress")
@@ -712,10 +756,15 @@ struct ContentView: View {
         guard !browser.fieldShowing, browser.editingTab == nil else { return }
         DispatchQueue.main.async {
             guard !browser.fieldShowing, browser.editingTab == nil else { return }
-            guard let web = browser.active?.web, let window = web.window else { return }
+            guard let tab = browser.active else { return }
+            // The keys go back to wherever they live in this tab — the
+            // focused pane of a terminal, the page of anything else
+            // (Tab.keySeat). Asking a terminal tab for its page would
+            // build one nobody ever shows.
+            guard let seat = tab.keySeat, let window = seat.window else { return }
             if let responder = window.firstResponder as? NSView,
-               responder === web || responder.isDescendant(of: web) { return }
-            window.makeFirstResponder(web)
+               responder === seat || responder.isDescendant(of: seat) { return }
+            window.makeFirstResponder(seat)
         }
     }
 

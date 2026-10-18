@@ -253,46 +253,61 @@ final class Tab: ObservableObject, Identifiable {
     /// running, not twenty processes fighting the first frame at launch.
     private let runsShell: Bool
 
-    /// The shell this tab runs, once it has been started. Everything
-    /// around the page — the bar, the spaces, the groups, the switcher,
-    /// the session — holds such a tab exactly as it holds any other.
-    private(set) var shell: Terminal?
+    /// The shell this tab runs, once it has been started: the one the keys
+    /// are in, of however many panes the tab's room holds (see console).
+    /// Everything around the page — the bar, the spaces, the groups, the
+    /// switcher, the session — holds such a tab exactly as it holds any
+    /// other.
+    var shell: Terminal? { madeShell?.focusedTerminal }
 
     /// True when the tab runs a shell rather than a page.
     var isTerminal: Bool { runsShell }
+
+    /// Where the keys live in this tab: the focused pane of a terminal's
+    /// room, the page of anything else. The window hands the keyboard back
+    /// to it (see App's handBack) — asking a terminal tab for its page
+    /// would build one nobody ever shows.
+    var keySeat: NSView? { isTerminal ? madeShell?.focusedView : web }
 
     /// Reports the tab's own notices (see Terminal: OSC 9 / OSC 777 —
     /// who the shell says it is, where it lives, its bells).
     var onNotice: ((Notice) -> Void)?
 
+    /// The tab's last shell has exited on its own — an `exit` typed, a
+    /// command run out — and a terminal with nothing left in it is not a
+    /// tab worth keeping. Wired by Browser.prepare to the close ⌘W takes.
+    var onGone: ((Tab) -> Void)?
+
     /// True when anything can be found in the tab: a page, or a shell's
     /// whole scrollback (⌘F — see TerminalFind).
     var searchable: Bool { isTerminal || hasPage }
 
-    /// The shell's view, which is the shell itself started: made the first
-    /// time anyone asks for it, as the page is made.
-    private(set) var madeShell: TerminalView?
-    var console: TerminalView? {
+    /// The shell's room, which is the shells themselves started: made the
+    /// first time anyone asks for it, as the page is made. One pane to
+    /// begin with, and however many it is split into after — what it says
+    /// about itself (its title, its directory, what ⌘F searches) is the
+    /// focused pane's, and the panes are the container's.
+    private(set) var madeShell: TerminalSplits?
+    var console: TerminalSplits? {
         guard runsShell else { return nil }
         if let madeShell { return madeShell }
-        let made = Terminal()
-        shell = made
-        title = made.named
+        let made = TerminalSplits()
+        title = made.title
         made.$title
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self, let shell = self.shell else { return }
-                self.title = shell.title.isEmpty ? shell.named : shell.title
-            }
+            .sink { [weak self] said in self?.title = said }
             .store(in: &shellEars)
         made.$cwd
             .receive(on: RunLoop.main)
             .sink { [weak self] place in self?.address = place }
             .store(in: &shellEars)
-        let view = TerminalView(terminal: made)
         made.onNotice = { [weak self] notice in self?.onNotice?(notice) }
-        madeShell = view
-        return view
+        made.onEmptied = { [weak self] in
+            guard let self else { return }
+            onGone?(self)
+        }
+        madeShell = made
+        return made
     }
 
     /// What the shell says is listened to with, as the page is watched with
@@ -1377,6 +1392,17 @@ final class Tab: ObservableObject, Identifiable {
     func back() { guard !isTerminal else { return }; web.goBack() }
     func forward() { guard !isTerminal else { return }; web.goForward() }
 
+    /// ⌘W in a terminal with panes: the pane the keys are in goes, and the
+    /// room closes over it — the tab is kept for its last pane, with the
+    /// asking about a shell still running the room's own way of closing
+    /// (TerminalSplits.closeFocusedPane), the same one the divider's menu
+    /// goes through. Whether the key was spent on a pane: false is the
+    /// room's way of saying it never had sides, and the tab itself goes.
+    @discardableResult
+    func closeFocusedPane() -> Bool {
+        madeShell?.closeFocusedPane() ?? false
+    }
+
     /// Called when the tab is thrown away. Without it the view keeps running
     /// whatever the page left behind — timers, video, sockets.
     func close() {
@@ -1387,10 +1413,10 @@ final class Tab: ObservableObject, Identifiable {
         onSignIn = nil
         onField = nil
         onCredentials = nil
-        // The shell is a process of its own: closed with the tab, it is sent
-        // on its way — gently first (see Terminal.stop) — and nothing of it
-        // is listened to any more.
-        shell?.stop()
+        // The shells are processes of their own: closed with the tab, each
+        // is sent on its way — gently first (see Terminal.stop) — and
+        // nothing of them is listened to any more.
+        madeShell?.close()
         madeShell = nil
         shellEars = []
         discard()

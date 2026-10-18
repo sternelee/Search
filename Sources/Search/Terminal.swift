@@ -232,7 +232,7 @@ final class Terminal: ObservableObject, Identifiable {
 
     // MARK: Starting
 
-    init(command: TerminalCommand? = nil, width: Int = 80, height: Int = 24) {
+    init(command: TerminalCommand? = nil, width: Int = 80, height: Int = 24, directory: String? = nil) {
         self.command = command
         let screen = Screen(width: width, height: height)
         screen.backLimit = TerminalLook.scrollback
@@ -256,7 +256,7 @@ final class Terminal: ObservableObject, Identifiable {
         }
         let made = Terminal.spawn(
             argv, environment: environment, width: width, height: height,
-            directory: TerminalLook.startDirectory()
+            directory: directory ?? TerminalLook.startDirectory()
         )
         pid = made?.pid ?? 0
         lane = made.map {

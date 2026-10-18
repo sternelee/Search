@@ -2632,6 +2632,31 @@ final class Browser: NSObject, ObservableObject {
         rememberSession()
     }
 
+    /// The panes in the terminal tab in front, for the menu's own telling:
+    /// zooming and evening out want a room with sides, and a room never
+    /// built is one pane.
+    var terminalPanes: Int { active?.madeShell?.paneCount ?? 0 }
+
+    /// The room in a terminal tab grows a pane — to the right with ⌘D
+    /// (Duplicate on a page: one key, two meanings, told apart by the tab),
+    /// down with ⇧⌘D. The new pane takes the keys and the working directory
+    /// of the one it split (TerminalSplits.split).
+    func splitTerminal(across axis: TerminalAxis) { active?.console?.split(across: axis) }
+
+    /// ⌥⌘-arrows: the keys move to the neighbouring pane, if there is one.
+    func moveTerminalFocus(_ direction: TerminalDirection) { active?.console?.moveFocus(direction) }
+
+    /// ⌃⌘-arrows: the divider on that side of the focused pane walks one
+    /// cell at a time, and stops where a pane would get too small to read.
+    func nudgeTerminalDivider(_ direction: TerminalDirection) { active?.console?.nudge(direction) }
+
+    /// ⇧⌘⏎: the focused pane takes the whole room; the same again gives
+    /// it back.
+    func zoomTerminalPane() { active?.console?.toggleZoom() }
+
+    /// ⌥⌘=, or a double-click on a divider: every pane the same size.
+    func evenTerminalPanes() { active?.console?.equalize() }
+
     /// A blank tab given an extension's new tab page: the page needs a view
     /// built from that extension's configuration, so it is a new tab in the
     /// blank one's place.
@@ -2696,9 +2721,14 @@ final class Browser: NSObject, ObservableObject {
     /// panels are tabs, and ⌘W on one closes it; closing the page behind it
     /// instead took the one thing you couldn't see. Escape puts things away
     /// in the same order, so the two keys agree on what is in front.
+    ///
+    /// A terminal with panes loses them one at a time — the room shrinks
+    /// before the tab does, and it is the room that knows whether it had
+    /// sides (Tab.closeFocusedPane) — with the same key as ever.
     func closeFront() {
         if peekTab != nil { closePeek() }
         else if closePanel() { return }
+        else if let tab = active, tab.closeFocusedPane() { return }
         else if let tab = active { close(tab) }
     }
 
@@ -3546,9 +3576,18 @@ final class Browser: NSObject, ObservableObject {
         announce("A tab that keeps nothing")
     }
 
-    /// ⌘D. The same page, beside itself.
+    /// ⌘D. The same page, beside itself — and on a terminal, the room
+    /// growing a pane to the right: one key, two meanings, told apart by
+    /// the tab. This is the one place the telling happens; the menu's two
+    /// ⌘D items are each disabled where the other rules (Safari's habit
+    /// with a borrowed key), and both of them come back here.
     func duplicate() {
-        guard let tab = active, tab.hasPage, let url = tab.address else { return }
+        guard let tab = active else { return }
+        if tab.isTerminal {
+            tab.console?.split(across: .horizontal)
+            return
+        }
+        guard tab.hasPage, let url = tab.address else { return }
         open(url, foreground: true, from: tab)
     }
 
@@ -3798,6 +3837,11 @@ final class Browser: NSObject, ObservableObject {
         tab.onKeys = { [weak self] tab in
             guard let self, let pair = activeSplit, pair.contains(tab.id), activeID != tab.id else { return }
             focusPane(tab)
+        }
+        // A terminal whose last shell exited on its own — `exit` typed, a
+        // command run out — goes the way ⌘W takes it: the tab closes.
+        tab.onGone = { [weak self] tab in
+            self?.close(tab)
         }
         tab.onLink = { [weak self] tab, address in
             guard let self, prefs.showsLinks, visibleTabIDs.contains(tab.id) else { return }

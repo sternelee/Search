@@ -186,6 +186,25 @@ struct Command: Identifiable {
         },
         Command("tabs.nextCommand", "Next Command", .tabs, KeyCombo("down")) { $0.jumpPrompt(forward: true) },
         Command("tabs.previousCommand", "Previous Command", .tabs, KeyCombo("up")) { $0.jumpPrompt(forward: false) },
+        // The terminal's own room: panes in the tab, split to the right or
+        // down, the keys moved between them (see TerminalSplits). Every key
+        // here holds ⌥ or ⌃ on top of ⌘, which the key taker leaves for the
+        // menus (App.swift's take), so these reach the panes whatever has
+        // the keyboard — ⌘D and ⇧⌘D excepted, plain enough to be taken.
+        Command("tabs.splitTerminalRight", "Split Terminal Right", .tabs, KeyCombo("d")) { $0.splitTerminal(across: .horizontal) },
+        Command("tabs.splitTerminalDown", "Split Terminal Down", .tabs, KeyCombo("d", shift: true)) { $0.splitTerminal(across: .vertical) },
+        Command("tabs.focusTerminalLeft", "Focus Terminal Left", .tabs, KeyCombo("left", option: true)) { $0.moveTerminalFocus(.left) },
+        Command("tabs.focusTerminalRight", "Focus Terminal Right", .tabs, KeyCombo("right", option: true)) { $0.moveTerminalFocus(.right) },
+        Command("tabs.focusTerminalAbove", "Focus Terminal Above", .tabs, KeyCombo("up", option: true)) { $0.moveTerminalFocus(.up) },
+        Command("tabs.focusTerminalBelow", "Focus Terminal Below", .tabs, KeyCombo("down", option: true)) { $0.moveTerminalFocus(.down) },
+        Command("tabs.zoomTerminalPane", "Zoom Terminal Pane", .tabs, KeyCombo("return", shift: true)) { $0.zoomTerminalPane() },
+        // ⌥⌘=: the equal key as the keyboard names it with nothing held,
+        // not the "≠" ⌥ turns it into (see KeyCombo's event reading).
+        Command("tabs.evenTerminalPanes", "Even Terminal Panes", .tabs, KeyCombo("+", option: true)) { $0.evenTerminalPanes() },
+        Command("tabs.nudgeTerminalDividerLeft", "Nudge Divider Left", .tabs, KeyCombo("left", control: true)) { $0.nudgeTerminalDivider(.left) },
+        Command("tabs.nudgeTerminalDividerRight", "Nudge Divider Right", .tabs, KeyCombo("right", control: true)) { $0.nudgeTerminalDivider(.right) },
+        Command("tabs.nudgeTerminalDividerUp", "Nudge Divider Up", .tabs, KeyCombo("up", control: true)) { $0.nudgeTerminalDivider(.up) },
+        Command("tabs.nudgeTerminalDividerDown", "Nudge Divider Down", .tabs, KeyCombo("down", control: true)) { $0.nudgeTerminalDivider(.down) },
         // ⌥⌘N, Chrome's on the Mac: ⌃⌘S is the Mac's own Show Sidebar, and
         // sits beside ⌘S, which folds the tabs away.
         Command("tabs.split", "Split Current Page", .tabs, KeyCombo("n", option: true)) { browser in
@@ -215,6 +234,11 @@ struct Command: Identifiable {
         Command("tabs.rename", "Rename Tab", .tabs, nil) { browser in
             if let tab = browser.active { browser.beginTabRename(tab) }
         },
+        // ⌘D's two meanings are told apart by the tab in Browser.duplicate
+        // — a page beside itself, or a terminal's room growing right — and
+        // the menu shows ⌘D on this and on Split Terminal Right, each
+        // disabled where the other rules, Safari's own habit with a
+        // borrowed key.
         Command("tabs.duplicate", "Duplicate Tab", .tabs, KeyCombo("d")) { $0.duplicate() },
         Command("tabs.copyAddress", "Copy Address", .tabs, KeyCombo("c", shift: true)) { $0.copyAddress() },
         Command("tabs.copyMarkdown", "Copy as Markdown Link", .tabs, nil) { $0.copyMarkdownLink() },

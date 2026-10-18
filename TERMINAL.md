@@ -2,7 +2,7 @@
 
 > 目标：在 Search 里加一个终端标签页，文字由 Metal 直接绘制。做法参考 [metalterm.dev](https://metalterm.dev/) —— 它的源码闭源，但本机装着 0.2.1，二进制、`default.metallib`、termcap 与作者的公开表述能互相印证，所以**学的是查实的机制，不是宣传数字**。代码全部自写，除 Apple 自带框架外零依赖。
 >
-> **状态：已落地。** 十二个源文件、十四个测试文件（216 个测试全绿），`./build.sh` release 通过。下面写的是**它现在的样子**，不是打算做成什么样。还没做的集中在第七节。
+> **状态：已落地。** 十三个源文件、十五个测试文件（241 个测试全绿），`./build.sh` release 通过。下面写的是**它现在的样子**，不是打算做成什么样。还没做的集中在第七节。
 
 ---
 
@@ -40,18 +40,19 @@
 
 | 文件 | 职责 |
 |---|---|
-| `Terminal.swift` (574) | PTY 生命周期（`openpty` + `posix_spawn`）、读写调度、`TIOCSWINSZ`、lane（单条串行队列，解析与取景同序）、`Scene`/`look` 两个取景口、`Modes` 快照 |
+| `Terminal.swift` (612) | PTY 生命周期（`openpty` + `posix_spawn`）、读写调度、`TIOCSWINSZ`、lane（单条串行队列，解析与取景同序）、`Scene`/`look` 两个取景口、`Modes` 快照 |
 | `TerminalGrid.swift` (765) | 屏幕模型：`Cell`/`Row`、滚动缓冲（`trim()` 裁到 `scrollback`）、alt screen、滚区域、命令块区间表、超链接内联表、光标色、`Damage` |
 | `TerminalParse.swift` (681) | VT 解析器。纯逻辑，可单测 |
 | `TerminalCells.swift` (168) | **3 槽的格子环**：以 `Screen.place(row)` 为键的逐行缓存，`owed` 集合，滚动走 memmove |
 | `TerminalAtlas.swift` (509) | **异步字形图集**：整数 `GlyphKey`、reserve-then-fill、后台串行切割、`generation` 换代 |
-| `TerminalDraw.swift` (1006) | Metal 渲染器：设备/队列/四个管线、一个 pass 的编码、MSL 内联、`Frame`/`Record` |
+| `TerminalDraw.swift` (1051) | Metal 渲染器：设备/队列/四个管线、一个 pass 的编码、MSL 内联、`Frame`/`Record`、`groundColor`（窗格沟的底色） |
 | `TerminalPacer.swift` (184) | 帧节奏：`NSView.displayLink`、理由集（damage/caret/once/hold）、闪烁与 hold 的相位 |
-| `TerminalView.swift` (908) | `NSView` + `CAMetalLayer`：键盘（含 IME 提交路径、DECCKM/DECKPAM）、鼠标上报与选区、滚轮、尺寸换算、焦点上报、⌘-click、命令块跳转 |
+| `TerminalView.swift` (921) | `NSView` + `CAMetalLayer`：键盘（含 IME 提交路径、DECCKM/DECKPAM）、鼠标上报与选区、滚轮、尺寸换算、焦点上报（`onFocused` 缝，窗格容器挂它）、⌘-click、命令块跳转 |
 | `TerminalMouse.swift` (162) | 四种鼠标编码的字节与坐标换算。纯逻辑，可单测 |
 | `TerminalLook.swift` (161) | 设置项的运行时镜像（`TerminalLook.font/size/theme/…`），`changed` 通知 |
 | `TerminalShell.swift` (131) | shell 集成片段的生成与注入（zsh/bash） |
 | `TerminalFind.swift` (177) | ⌘F 滚动缓冲查找、覆盖层输入框、上下一个 |
+| `TerminalSplits.swift` (1056) | 窗格分割：`TerminalTree`（**索引竞技场**的递归二叉分割树，纯算术可单测）+ `TerminalSplits` 容器（分格/焦点/zoom/均分、title 镜像、⌘W 的逐格收缩）+ `TerminalDivider`（轴向感知分割线）。见 3.7 |
 
 着色器**不是**单独文件：MSL 以 Swift 字符串内联在 `TerminalDraw.swift` 里，运行时 `device.makeLibrary(source:)` 编译（`default.metallib` 若在 bundle 里则优先用它）。这样免掉一个构建步骤，也让 Swift 侧的 `Frame`/`Record` 和 MSL 侧的定义躺在同一个文件里 —— 它们必须同步改，放在一起才改得动。
 
@@ -103,14 +104,14 @@
 
 | 系统 | 处理 |
 |---|---|
-| **TabBar** | 标题 = OSC 0/2；终端标签页按 `isTerminal` 走自己的图标；pin 照常 |
+| **TabBar** | 标题 = OSC 0/2；shell 没设过标题时**报焦点格 cwd 的目录名**（末段；home 记作 "~"，OSC 7 到达前暂用 argv 名）；终端标签页按 `isTerminal` 走自己的图标；pin 照常 |
 | **地址栏** | 显示 OSC 7 的 cwd（写进 `Tab.address`） |
 | **Session** | `Entry.terminal: Bool?`，nil 即网页；恢复 = 重建 shell |
 | **Sleep** | 不睡。`awake(because:)` 报 `"a live shell"` |
 | **Split View** | 直接可用（`PaneStage` 收 `NSView`） |
 | **⌘K 切换器 / TabGroup / Spaces** | 走 `Tab` 统一接口，零改动 |
 | **通知** | OSC 9 / 777 → `Notifications.swift` |
-| **菜单** | 文件 ▸ New Terminal（`⌥⌘T`，`file.newTerminal`）；标签 ▸ Next/Previous Command（`⌘↑`/`⌘↓`，仅在 `browser.active?.isTerminal == true` 时可用） |
+| **菜单** | 文件 ▸ New Terminal（`⌥⌘T`，`file.newTerminal`）；标签 ▸ Next/Previous Command（`⌘↑`/`⌘↓`，仅在 `browser.active?.isTerminal == true` 时可用）；标签 ▸ Split/Focus/Nudge/Zoom/Even Terminal…（见 3.7 键位表，仅终端标签页） |
 | **AppleScript** | `address` 报 cwd，`title` 照报 |
 
 ### 3.6 验收基准（原定目标，实际见下）
@@ -121,6 +122,27 @@
 - vim/htop/ssh/tmux 功能正确（alt screen、鼠标、键序）。
 
 性能数字以 Instruments 实测为准，本节保留为回归线，不当作已量到的结论。
+
+### 3.7 窗格分割（同一终端标签页内的多个终端）
+
+一个终端标签页是一个"房间"，⌘D / ⇧⌘D 向右、向下分出窗格，递归嵌套（右格再向下分），拖分割线、点格或按方向键换焦点，关格收缩布局。参考 MetalTerm 0.2.1 的做法（⇧⌘D 是它实证的分割键；递归二叉树 + "closed a pane but could not collapse its split" 的收缩路径）。
+
+- **树模型**（`TerminalTree`，纯算术、无视图可单测）：递归二叉分割，但用**索引竞技场**而不是 indirect enum —— `nodes: [Node]` 数组 + `root` 索引，`Node = .pane(Int) | .split(axis, first, second, fraction)`。收缩 = 把幸存子树拷进父槽、原槽立墓碑（`.pane(-1)`），数组里永远搜不到垃圾副本；父节点查找只从根向下走。方向词在枚举处写死：`horizontal` = 左右并排**分宽**，`vertical` = 上下叠放**分高**。邻格与"该方向上的分割线"查找遇并列候选取**读序**（树叶序）第一个，不是字典序 —— 结果可复现。最小窗格用点数（`inset×2 + 8 列 / 3 行`），模型不认识渲染器。
+- **容器**（`TerminalSplits: NSView`，flipped、底色 = 主题 ground，暗色主题下格间不亮条）：出生即一格；分格时新格拿键盘与焦点、**继承焦点格的 cwd**（`Terminal(directory:)`）；房间放不下两个最小格就拒绝。关格走 `closeFocusedPane()`（返回 Bool：false 即房间从没有过格，⌘W 该去关标签）：shell 还活着先问（`Ask.sure`，MetalTerm 同款文案），已退出的直接关；⌘W 与分割线右键菜单都汇到这一处。**shell 自己退出**（`exit` 输入、命令跑完）时窗格自行收缩、无需询问 —— 没有进程可结束了；最后一格也退出时 `onEmptied` 上报，Browser 经 `Tab.onGone` 关掉标签页，终端窗口随 shell 关闭的老规矩。容器的 `close()` 先放走 panes 再停 shell，免得关标签页停出的退出被自己听见。焦点换格**同步**重发 title/cwd —— tab 永远说持有键盘那个格的话，不残留已关格的标题。标题的规则：shell 自己设过（OSC 0/2）作数；没设过就报焦点格所在目录的名字（`~` 即家），这是标签页的本分 —— 我们的集成只发 OSC 133 和 OSC 7、从不替用户设标题。zoom = 焦点格独占 bounds、其余 `isHidden = true`，pacer 见隐藏祖先自停（3.3 的停表条件，零新代码）；进出各一次 SIGWINCH，接受。`openFind`/`jumpToPrompt` 等转发成员让 Browser 的三处调用零改动。
+- **分割线**（`TerminalDivider`）：借页面分栏 `PaneDivider` 的机制（CALayer 发丝 1→3pt、0.1s 悬停、`acceptsFirstMouse`），但**轴向感知**（光标 `resizeLeftRight`/`resizeUpDown`）且以闭包与容器解耦（`onDrag`/`onEven`/`onZoom`/`onClose`/`onStep`）。拖拽是活布局（`needsLayout; layoutSubtreeIfNeeded()`，窗格跟着手走；每跨一格一次 `TIOCSWINSZ`，与窗口连续 resize 同价），中点 3pt 内吸附 + 对齐触感一次；双击均分。VoiceOver 当 `.splitter`，值是百分比，步进 ±5%。右键菜单 Even Out / Zoom Pane / Close Pane。
+- **键位**（标签 ▸ 菜单；⌥⌘/⌃⌘ 组合 take() 让给菜单键等效（App.swift:1299），`TerminalView.keyDown` 吞不掉它们）：
+
+| 键 | 命令 | 冲突与取舍 |
+|---|---|---|
+| ⌘D | Split Terminal Right | 与 Duplicate Tab 同键、按标签类型分流：菜单两条都标 ⌘D、互斥禁用（Safari 式惯例）；分流的判断只写在 `Browser.duplicate()` 一处，take() 的硬编码 ⌘D 与 Command 闭包都汇到它 |
+| ⇧⌘D | Split Terminal Down | 空闲（MetalTerm 实证键） |
+| ⌥⌘←/→/↑/↓ | Focus Terminal Left/Right/Above/Below | 空闲；⌘↑↓（命令跳转）、⌘[⌘]（前后）都不带 ⌥ |
+| ⌃⌘←/→/↑/↓ | Nudge Divider Left/Right/Up/Down（一次一格 cell，钳到最小格） | ⌃←/→（页面分栏焦点）不带 ⌘，不撞 |
+| ⇧⌘⏎ | Zoom Terminal Pane | 空闲 |
+| ⌥⌘= | Even Terminal Panes | `KeyCombo` 读**无修饰**字符，"=" 归一成 "+"，⌥ 打出的 "≠" 不进门 |
+
+- **⌘W 的分界**：`closeFront()` 问 `Tab.closeFocusedPane()` 的返回值 —— 有格先关格（活 shell 弹确认），最后一格才轮到标签；菜单与键盘同源，分界只此一处（pane 数的判断归容器，Browser 不再镜像）。
+- **handBack 顺手修正**：终端标签页的键盘归还走 `Tab.keySeat`（终端 = 焦点格 view，其余 = 页面），不再白建一个没人看的 PageView。
 
 ## 四、协议覆盖
 
@@ -166,4 +188,5 @@
 - **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、彩色 emoji 图集、平滑滚动动画。
 - **Metalterm 的标志性 UX**：底部输入坞、命令块折叠、状态栏 + git、光标动效。
 - **多显示器拖拽**会引起 `contentsScale` 变化 → 整个图集换代 → 闪一下。缓解是按缩放双图集缓存，先记着不建。
+- **窗格**：pane 树随会话恢复（终端标签页本就不进会话，无落点）；`splitLeft`/`splitUp` 命令（从另一侧分右边那格即可做到）；⌘[⌘] 前后格（被 Back/Forward 占用）；跨窗格共享字形图集（每格约 4–6 MB，隐藏格帧时钟自停，代价是内存不是帧）；MetalTerm 式 `confirm_close` 设置项（关格确认目前无条件开，设置项后加）。
 - **架构**：不引入 Rust 核心，不引入 libghostty。
