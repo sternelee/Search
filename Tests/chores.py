@@ -378,6 +378,25 @@ def case_run(t):
     t.ok("…and what it read of the page came back to it",
          bool(words(seen, "Signed up Ada <ada@lovelace.dev> for October, agreed")), "")
 
+    # The person comes back to the panel the task left open and asks for
+    # themselves: someone is at the keys again, and what goes beyond the
+    # page asks instead of being refused. (Auto turned off first — with it
+    # on, the asking stays stopped, as ever.)
+    bt("auto", on=False)
+    script.clear(); seen.clear()
+    script.extend([
+        '{"run": "echo someone is here now"}',
+        '{"answer": "it asked this time"}',
+    ])
+    bt("ask", text="Run that for me")
+    back = until(t, lambda s: (s.get("pending") or {}).get("verb") == "run",
+                 doing="the command held, someone back at the keys")
+    t.ok("the person's own ask makes someone be at the keys",
+         back.get("unattended") is False, back.get("unattended"))
+    bt("refuse")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "it asked this time"
+                           for e in s.get("events", [])))
+
 def case_missing(t):
     """a time that passes with Search closed: missed, not run"""
     setup(); launch()

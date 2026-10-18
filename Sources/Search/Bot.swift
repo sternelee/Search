@@ -127,11 +127,6 @@ final class Bot: ObservableObject, Identifiable {
 
     var busy: Bool { working || pending != nil }
 
-    /// Whether a beyond-the-page act may go ahead now: Auto lets it, an
-    /// Always doesn't (it covers the page's own acts), and no one at the
-    /// keys — a task come due — allows nothing beyond the page at all.
-    var beyondAllowed: Bool { auto && !unattended }
-
     /// Where it works: one page, or every one of them — which shapes what
     /// the model is shown (see Loop) and what the person meets (BotPanel).
     enum Mode: String {
@@ -156,6 +151,10 @@ final class Bot: ObservableObject, Identifiable {
     func submit() {
         let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !busy, notice == nil else { return }
+        // The person's own hand at the keys: whatever ran unattended here
+        // before (a task come due, working its round) has someone to ask
+        // from now on.
+        unattended = false
         draft = ""
         ask(question, shown: question)
     }
@@ -609,6 +608,10 @@ final class Loop {
                 setChore(task.goal, at: task.at, every: task.every, on: work)
             } else if !allowed {
                 turnedAway(held, why: "The person wouldn't have it set. Find another way, or answer with what you have.")
+            } else {
+                // Allowed, but the page it was set over is gone: said so,
+                // rather than the talk standing still on nothing.
+                observe(note: "The page that task was set over is gone — there is nothing to keep it for. Ask the person, or answer with what you have.", full: false, first: false)
             }
             chore = nil
             return

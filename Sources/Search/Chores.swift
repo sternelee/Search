@@ -209,7 +209,6 @@ extension Browser {
                 Chores.shared.finished(chore.id, state: .failed, words: "the bot couldn't open over its page")
                 return
             }
-            bot.unattended = true
             bot.auto = true
             var draft = "The task the person set for this time: \(chore.goal). No one may be watching — don't draw a card, it waits for a tap that may never come, and nothing beyond the page goes (no commands, no clipboard, no tools, no history): there is no one there to allow it. Work the page, and when it's done, or when you need the person, answer with what you have."
             if let every = chore.every {
@@ -233,6 +232,9 @@ extension Browser {
             }
             bot.draft = draft
             bot.submit()
+            // The ask is in — and from here, no one is at the keys: submit
+            // itself would say otherwise (the person's own hand at them).
+            bot.unattended = true
         }
     }
 }

@@ -756,6 +756,10 @@ def case_always(t):
     until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "it still asks" for e in s.get("events", [])))
 
 
+def tab_here(id):
+    """Whether a tab stands in the row, by its bench id."""
+    return any(tab["id"] == id for tab in cmd({"do": "tabs"}).get("tabs", []))
+
 def case_close(t):
     """a tab closed at the model's asking: held for the person — always,
     even under Auto, for a tab is the person's own to close"""
@@ -776,8 +780,7 @@ def case_close(t):
     until(t, lambda s: (s.get("pending") or {}).get("verb") == "close", doing="the close held for allowing")
     bt("refuse")
     until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "kept it, then" for e in s.get("events", [])))
-    t.ok("refused, the tab stays",
-         any(tab["id"] == opened["id"] for tab in cmd({"do": "tabs"}).get("tabs", [])))
+    t.ok("refused, the tab stays", tab_here(opened["id"]))
 
     # Auto on: still held — the one act Auto doesn't skip.
     bt("auto", on=True)
@@ -789,10 +792,8 @@ def case_close(t):
     bt("allow")
     # Closing its own page takes the panel with it — the tab itself is
     # what there is to see.
-    until(t, lambda s: not any(tab["id"] == opened["id"] for tab in cmd({"do": "tabs"}).get("tabs", [])),
-          doing="the tab to close")
-    t.ok("allowed, the tab closes",
-         not any(tab["id"] == opened["id"] for tab in cmd({"do": "tabs"}).get("tabs", [])))
+    until(t, lambda s: not tab_here(opened["id"]), doing="the tab to close")
+    t.ok("allowed, the tab closes", not tab_here(opened["id"]))
 
 
 def tab_of(listing, url):
