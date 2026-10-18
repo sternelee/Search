@@ -14,7 +14,7 @@ final class TerminalPTYTests: XCTestCase {
         terminal.onEnded = { _, _ in ended.fulfill() }
         terminal.onDraw = { [weak terminal] _, _ in
             guard let scene = terminal?.scene(scroll: 0) else { return }
-            saw = scene.lines.map(\.text).joined(separator: "\n")
+            saw = scene.text
         }
         wait(for: [ended], timeout: timeout)
         return (terminal, saw)
@@ -43,7 +43,7 @@ final class TerminalPTYTests: XCTestCase {
             command: TerminalCommand(argv: ["/bin/sh", "-c", "read line; printf 'back:%s' \"$line\"; exit 0"]))
         terminal.onDraw = { [weak terminal] _, _ in
             guard let scene = terminal?.scene(scroll: 0) else { return }
-            saw = scene.lines.map(\.text).joined(separator: "\n")
+            saw = scene.text
             if saw.contains("back:") { replied.fulfill() }
         }
         terminal.send("yo\n")
@@ -82,7 +82,7 @@ final class TerminalPTYTests: XCTestCase {
         // traps up, and the escalation has something stubborn to beat.
         terminal.onDraw = { [weak terminal] _, _ in
             guard let scene = terminal?.scene(scroll: 0) else { return }
-            if scene.lines.map(\.text).joined(separator: "\n").contains("started") {
+            if scene.text.contains("started") {
                 started.fulfill()
             }
         }
@@ -95,6 +95,67 @@ final class TerminalPTYTests: XCTestCase {
         terminal.stop()
         wait(for: [ended], timeout: 10)
         XCTAssertEqual(terminal.exit, -9)
+    }
+
+    /// Whether a process is running, asked of the system rather than of the
+    /// screen: what the interrupt did to the command is a fact about it.
+    private func isRunning(_ needle: String) -> Bool {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-ax", "-o", "command="]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        try? task.run()
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        task.waitUntilExit()
+        return out.split(separator: "\n").contains { $0.contains(needle) }
+    }
+
+    /// Waits for a fact rather than for a duration: a poll until `check` holds,
+    /// so the wait is as long as the thing waited for and no longer.
+    private func wait(until check: () -> Bool, seconds: TimeInterval = 4) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if check() { return true }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return check()
+    }
+
+    /// ^C has somewhere to go only when the session owns a controlling
+    /// terminal: with none, there is no foreground group for the kernel to
+    /// signal, and the interrupt reaches the tty and stops there. A shell that
+    /// never asks for the terminal itself — zsh does not, sh and bash do —
+    /// still gets one (see Terminal.spawn), so its commands can be stopped.
+    func testInterruptStopsACommandInAShellThatNeverAsksForTheTerminal() {
+        // A duration nothing else in this suite wears, so "still running" is
+        // about this command and nothing else.
+        let marker = "sleep 313.37"
+        let terminal = Terminal(command: TerminalCommand(argv: ["/bin/zsh", "-f", "-i"]))
+        let up = XCTestExpectation(description: "the shell echoed the command")
+        var echoed = false
+        terminal.onDraw = { [weak terminal] _, _ in
+            guard !echoed, let scene = terminal?.scene(scroll: 0) else { return }
+            if scene.text.contains(marker) {
+                echoed = true
+                up.fulfill()
+            }
+        }
+        terminal.send(marker + "\n")
+        wait(for: [up], timeout: 10)
+        // The echo is the tty's; the command itself starts once the shell has
+        // read the line, forked it, and handed it the terminal.
+        XCTAssertTrue(wait { isRunning(marker) }, "the command started")
+        // And the handover of the terminal comes after the fork: interrupting
+        // inside that window is a race, not the thing being tested.
+        Thread.sleep(forTimeInterval: 0.5)
+
+        terminal.send("\u{03}")
+        // The signal is the kernel's; the command's death follows it.
+        XCTAssertTrue(
+            wait { !isRunning(marker) },
+            "^C stopped the command: the session has a foreground group to signal")
+        terminal.stop()
     }
 
     func testSpawnFailureReportsMinusOne() {

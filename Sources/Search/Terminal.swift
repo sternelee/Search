@@ -22,9 +22,11 @@ import Foundation
 // The start of the process is the same one AIEngine uses (posix_spawn,
 // with the file actions doing the wiring), with one difference that makes
 // a terminal a terminal: POSIX_SPAWN_SETSID makes the program a session
-// leader, and the slave device opened *by the program itself* then becomes
-// its controlling terminal — the property of a session leader opening a
-// tty — without Search ever forking, which a threaded process must not do.
+// leader, and the slave device, opened on its three standard places, is
+// then the session's controlling terminal — without Search ever forking,
+// which a threaded process must not do. The program is reached through
+// /bin/sh, which claims that terminal and execs itself away; why that is
+// needed, and what it buys an interrupt, is at spawn.
 
 /// The command behind a terminal, when it is not the shell the Mac uses.
 struct TerminalCommand: Equatable {
@@ -282,6 +284,10 @@ final class Terminal: ObservableObject, Identifiable {
     private static func spawn(
         _ argv: [String], environment: [String], width: Int, height: Int, directory: String?
     ) -> (master: Int32, pid: pid_t)? {
+        // A program that is not there is not a terminal at all. posix_spawn
+        // would say so itself, but the shell below starts it now, and a shell
+        // reports a program it cannot run as an exit of its own.
+        guard let program = argv.first, runnable(program) else { return nil }
         var master: Int32 = 0
         var slave: Int32 = 0
         var win = winsize(ws_row: UInt16(max(1, height)), ws_col: UInt16(max(1, width)), ws_xpixel: 0, ws_ypixel: 0)
@@ -324,12 +330,21 @@ final class Terminal: ObservableObject, Identifiable {
         // A session of its own, and nothing else Search has open.
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
 
-        var cargv: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
+        // The program is reached through /bin/sh, which takes the session's
+        // controlling terminal as it starts. A session leader with a tty open
+        // does not own it: making it the controlling one is a call the program
+        // makes for itself, and not every program makes it — sh and bash ask,
+        // zsh does not. With no controlling terminal there is no foreground
+        // group, so ^C reaches the tty and stops there. The exec replaces the
+        // shell before it runs a line, so the program is still the process
+        // that was spawned, under its own pid, in the session the shell began.
+        let carrier = ["/bin/sh", "-c", "exec \"$@\"", "sh"] + argv
+        var cargv: [UnsafeMutablePointer<CChar>?] = carrier.map { strdup($0) } + [nil]
         defer { cargv.forEach { free($0) } }
         var cenv: [UnsafeMutablePointer<CChar>?] = environment.map { strdup($0) } + [nil]
         defer { cenv.forEach { free($0) } }
         var child: pid_t = 0
-        let made = posix_spawn(&child, argv[0], &actions, &attributes, &cargv, &cenv)
+        let made = posix_spawn(&child, carrier[0], &actions, &attributes, &cargv, &cenv)
         close(slave)
         guard made == 0, child > 0 else {
             close(master)
@@ -338,6 +353,17 @@ final class Terminal: ObservableObject, Identifiable {
         // A program that dies must not take Search with it.
         _ = fcntl(master, F_SETNOSIGPIPE, 1)
         return (master, child)
+    }
+
+    /// Whether a program can be started at all: a file, and one the system
+    /// will run. posix_spawn's own answer, asked before the shell in between
+    /// could give a different one.
+    private static func runnable(_ path: String) -> Bool {
+        var status = stat()
+        guard stat(path, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG else {
+            return false
+        }
+        return (status.st_mode & 0o111) != 0
     }
 
     // MARK: Being talked to, on the main thread
@@ -399,6 +425,13 @@ final class Terminal: ObservableObject, Identifiable {
         /// The colour the program gave the caret (OSC 12), or `.plain`
         /// for the theme's own.
         var cursorInk: Paint = .plain
+
+        /// The whole frame read as text, one row under the last: for the
+        /// caller that wants what a program printed rather than its squares.
+        /// Each row trims its own padding, as a row's text does.
+        var text: String {
+            lines.map(\.text).joined(separator: "\n")
+        }
     }
 
     /// The scene a frame would show, `scroll` lines above the bottom: what
