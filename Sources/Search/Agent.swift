@@ -294,6 +294,10 @@ enum Agent {
         }
         let model = request["model"] as? String ?? provider.defaultModel
         let key = AIKeys.key(for: provider) ?? ""
+        guard provider.isLocal || !key.isEmpty else {
+            answer(["error": "no key for \(provider.name) — Settings › AI"]) 
+            return
+        }
         let steps = min(max(request["steps"] as? Int ?? 12, 1), 40)
 
         // A tab of the bench's: the one asked for, or a fresh blank page.

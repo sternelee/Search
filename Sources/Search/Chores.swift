@@ -179,8 +179,10 @@ final class Chores: ObservableObject {
 extension Browser {
     /// A chore come due: its page opened again, the bot let loose on it
     /// with Auto on — its acts go ahead, no one at the keys to allow them.
-    /// The person may be nowhere about; the panel is there if they are, to
-    /// watch it work or to stop it.
+    /// The page opens behind whatever the person is doing and takes no
+    /// focus from it: the panel is there if they are, to watch it work or
+    /// to stop it. Beyond the page nothing goes — no commands, no tools,
+    /// no history — for there is no one there to allow them.
     func runChore(_ chore: Chores.Chore) {
         announce("A task come due: \(chore.goal)")
         guard let url = URL(string: chore.page),
@@ -188,7 +190,7 @@ extension Browser {
             Chores.shared.finished(chore.id, state: .failed, words: "its page is no address the bot can work")
             return
         }
-        let tab = open(url, foreground: true)
+        let tab = open(url, foreground: false)
         // The page has to come in before the bot can look at it: the bot
         // works over a page, not a blank.
         Task { @MainActor [weak tab] in
@@ -200,16 +202,16 @@ extension Browser {
                 Chores.shared.finished(chore.id, state: .failed, words: "its page never came in")
                 return
             }
-            select(tab)
             // Each round stands on its own: no talk taken up from the
             // page's last one, which would grow round over round.
-            openBot(takeUp: false)
+            openBot(over: tab, takeUp: false)
             guard let bot = botting, bot.tab == tab.id else {
                 Chores.shared.finished(chore.id, state: .failed, words: "the bot couldn't open over its page")
                 return
             }
+            bot.unattended = true
             bot.auto = true
-            var draft = "The task the person set for this time: \(chore.goal). No one may be watching — don't draw a card, it waits for a tap that may never come. Work the page, and when it's done, or when you need the person, answer with what you have."
+            var draft = "The task the person set for this time: \(chore.goal). No one may be watching — don't draw a card, it waits for a tap that may never come, and nothing beyond the page goes (no commands, no clipboard, no tools, no history): there is no one there to allow it. Work the page, and when it's done, or when you need the person, answer with what you have."
             if let every = chore.every {
                 draft += " This task comes round every \(Chores.gap(every)); this round's answer is kept for the person, and the next round is already set — answer with what this one round brought, and don't try to do the next round's work."
             }

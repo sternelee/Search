@@ -273,6 +273,13 @@ def case_note(t):
     asked = bt("ask", text="Tomorrow at eight in the morning, sign the form up for Ada")
     t.ok("a question in words goes in", asked.get("open") is True, asked)
 
+    # A task set is a task that will run with no one watching: the setting
+    # of it is held for the person's Allow, like anything beyond the page.
+    held = until(t, lambda s: (s.get("pending") or {}).get("verb") == "later", doing="the task held for allowing")
+    t.ok("the task is held for the person's Allow",
+         (held.get("pending") or {}).get("text") == "Sign the form up for Ada", held.get("pending"))
+    bt("allow")
+
     noted = until(t, lambda s: any(e["kind"] == "say" and e["words"].startswith("Noted for")
                                   for e in s.get("events", [])))
     t.ok("the task is noted in the bot's own words",
@@ -332,6 +339,7 @@ def case_run(t):
     script.clear(); seen.clear()
     script.extend([
         '{"say":"I\'ll fill the form in for you"}',
+        '{"run": "echo no one is there to allow this"}',
         '{"act":{"verb":"fill","target":"css=#first","text":"Ada"}}',
         '{"act":{"verb":"fill","target":"css=#email","text":"ada@lovelace.dev"}}',
         '{"act":{"verb":"select","target":"css=#month","text":"October"}}',
@@ -342,6 +350,12 @@ def case_run(t):
     ])
     ticked = chores("tick")
     t.ok("the clock sees it due", any(s.get("state") == "running" for s in ticked.get("tasks", [])), ticked)
+
+    # The task's page opens behind whatever is in front: the person's front
+    # page stays theirs, taken from them by nothing that runs on its own.
+    front = [tab for tab in cmd({"do": "tabs"}).get("tabs", []) if tab.get("active")]
+    t.ok("the task's page works behind the front page",
+         bool(front) and "/form" not in front[0].get("url", ""), front)
 
     answer = until(t, lambda s: any(e["kind"] == "answer" for e in s.get("events", [])), within=60,
                    doing="the task the clock set the bot on")
@@ -359,6 +373,8 @@ def case_run(t):
     asking = words(seen, "The task the person set for this time")
     t.ok("the model asked the goal, told no one was watching",
          "Sign the form up for Ada" in asking and "No one may be watching" in asking, asking[:160])
+    t.ok("…and a command beyond the page was refused, no one there to allow it",
+         bool(words(seen, "No one is at the keys to allow a command on this Mac")), "")
     t.ok("…and what it read of the page came back to it",
          bool(words(seen, "Signed up Ada <ada@lovelace.dev> for October, agreed")), "")
 
@@ -391,6 +407,9 @@ def case_round(t):
         '{"later":{"goal":"Pull the feed and pick out the AI news","every":600}}',
     ])
     bt("ask", text="Every ten minutes, pull the feed and pick out the AI news")
+    # Held for the person's Allow, like any task that will run unseen.
+    until(t, lambda s: (s.get("pending") or {}).get("verb") == "later", doing="the task held for allowing")
+    bt("allow")
     noted = until(t, lambda s: any(e["kind"] == "say" and e["words"].startswith("Noted for")
                                   for e in s.get("events", [])))
     t.ok("a task with a gap is noted like any other",

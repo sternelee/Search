@@ -172,10 +172,13 @@ struct BotPanel: View {
                 .foregroundStyle(Palette.ink)
                 .lineLimit(2)
             if !pending.act.text.isEmpty {
+                // Whole, never folded to a couple of lines: a command to
+                // run, a thought to keep, a task's goal — the person
+                // allows what they can read all of.
                 Text(verbatim: pending.act.text)
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.muted)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
                 Pill("Allow", filled: true) { bot.resolve(true) }

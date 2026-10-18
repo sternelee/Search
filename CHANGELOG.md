@@ -13,6 +13,12 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Added
 
+- The bot can close a tab — a `{"close": "tab-id"}` line in its reply, `this` for the page it's on — and it is the one act that asks even under Auto: a tab is the person's own to close, so every close waits for their Allow, Auto on or off. A task come due may put its own page away, and no other. `python3 Tests/bot_panel.py` checks both sides of it — refused and the tab stays, Auto doesn't skip it, allowed and it closes
+
+### Changed
+
+- What goes beyond the page waits for the person more strictly than it did. A task for a time to come (a later line) is held for their Allow before it is kept — it will run with no one watching, so the setting of it is theirs to agree to. Where the person has been (a history read) is held for their Allow the same way, and the first-use notice says so now. An Always on a held act covers the page's own acts only: commands, the clipboard, kept thoughts, tools, history and tasks still ask, Auto aside. And a task come due — no one at the keys — allows nothing beyond the page at all: no commands, no clipboard, no notes, no tools, no history, no new tasks; it works its page and answers. Its page opens behind whatever the person is doing now, instead of taking the front from them, and the panel is there to watch it all the same
+
 - Agents' pages out of sight, in Settings › Browser Use: with the switch on, the tabs an agent opens work on exactly as ever — the socket, the bridge, every verb — but nothing of them is drawn in the row, no flask and no titles, and ⌘K and the number keys count only what the person can see. The page says how many are at work, unseen, and turning the switch off brings them back to the row. Off unless asked for
 
 - Browser Use, a page in Settings for the agent CLIs: the bench's switch (the same consent as Settings › General, with the socket's path shown beside it), the config that registers Search with Claude Code — `.mcp.json`, or a `claude mcp add` line — or Codex (`config.toml`, or a `codex mcp add` line), each copyable with the path filled in from wherever this app is, the skills folder with its shelf, one button of which links the enabled skills into `~/.claude/skills` so the same SKILL.md folders serve the browser's bot and Claude Code alike, the MCP servers the bot itself keeps (shown, not shared), and the words that explain what holds. The page opens nothing by itself; copying and linking are yours to do

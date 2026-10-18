@@ -239,6 +239,10 @@ enum AIAssist {
         var text = "When you ask, Search sends this page's text, its address and your question to \(provider.host)"
         text += provider == .openRouter ? ", which passes them to the model's provider." : "."
         text += " Their terms and privacy policy apply. Nothing is sent until you ask, never from a private tab, and Search keeps no copy."
+        // The bot's reads beyond the page go to the provider too, each
+        // held for an Allow first — the person should know from the start
+        // that allowing one is sending it.
+        text += " When the bot asks to read your history or run beyond the page and you allow it, that goes with it."
         switch provider {
         case .gemini:
             text += "\n\nOn Gemini's free tier, outside the EEA, Switzerland and the UK, Google may use this to improve its products, and people may read it. Don't use it on sensitive pages."

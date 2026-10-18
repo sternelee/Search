@@ -1401,7 +1401,7 @@ final class Bench {
                 answer(["pending": browser.botting?.pending != nil])
             case "always":
                 browser.botting?.always()
-                answer(["pending": browser.botting?.pending != nil, "auto": browser.botting?.auto ?? false])
+                answer(["pending": browser.botting?.pending != nil, "always": browser.botting?.alwaysPage ?? false])
             case "refuse":
                 browser.botting?.resolve(false)
                 answer(["pending": browser.botting?.pending != nil])
@@ -1430,7 +1430,8 @@ final class Bench {
             case "state":
                 guard let bot = browser.botting else { answer(["open": false]); return }
                 answer([
-                    "open": true, "working": bot.working, "auto": bot.auto, "addressed": bot.addressed,
+                    "open": true, "working": bot.working, "auto": bot.auto,
+                    "always": bot.alwaysPage, "unattended": bot.unattended, "addressed": bot.addressed,
                     "notice": bot.notice ?? "", "trouble": bot.trouble ?? "", "place": bot.place,
                     "status": bot.status ?? "", "every": bot.mode == .every,
                     "draft": bot.drafting?.words ?? "",

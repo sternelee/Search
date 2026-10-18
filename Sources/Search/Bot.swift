@@ -89,6 +89,14 @@ final class Bot: ObservableObject, Identifiable {
     @Published private(set) var addressed = false
     /// Asked for, the asking stops: acts go ahead on their own.
     @Published var auto = false
+    /// An Always on a held act: the page's own acts go ahead from here, but
+    /// nothing beyond the page does — that still asks (see Loop.route).
+    /// Auto, the switch on the panel, is the whole asking stopped.
+    @Published private(set) var alwaysPage = false
+    /// A run with no one at the keys — a task come due (see Chores): the
+    /// page is worked as ever, but nothing beyond the page goes, for there
+    /// is no hand there to allow it.
+    var unattended = false
     @Published var draft = ""
     /// Told when a turn is over — an answer, a card, a trouble, or the panel
     /// closed on it — with the trouble's words, or nothing. The scheduled
@@ -118,6 +126,11 @@ final class Bot: ObservableObject, Identifiable {
     }
 
     var busy: Bool { working || pending != nil }
+
+    /// Whether a beyond-the-page act may go ahead now: Auto lets it, an
+    /// Always doesn't (it covers the page's own acts), and no one at the
+    /// keys — a task come due — allows nothing beyond the page at all.
+    var beyondAllowed: Bool { auto && !unattended }
 
     /// Where it works: one page, or every one of them — which shapes what
     /// the model is shown (see Loop) and what the person meets (BotPanel).
@@ -198,10 +211,11 @@ final class Bot: ObservableObject, Identifiable {
         loop?.resume(allowed)
     }
 
-    /// Allowed, and asked not to be asked again: from here every act in
-    /// this conversation goes ahead on its own (see auto).
+    /// Allowed, and asked not to be asked again — for the page's own acts:
+    /// what goes beyond the page (a command, the clipboard, a tool, the
+    /// person's history, a task for a time to come) still asks, Auto aside.
     func always() {
-        auto = true
+        alwaysPage = true
         resolve(true)
     }
 
@@ -244,6 +258,7 @@ final class Bot: ObservableObject, Identifiable {
         trouble = nil
         notice = nil
         auto = false
+        alwaysPage = false
     }
 
     /// Stop everything, quietly: the panel closing, a new ask coming.
@@ -434,8 +449,10 @@ final class Bot: ObservableObject, Identifiable {
             }
         }
         // A child still holding the pipe: its sayings are let go of, not
-        // waited on.
+        // waited on. And a command that won't take its stopping is killed,
+        // not waited on forever.
         _ = both.wait(timeout: .now() + 2)
+        if timedOut, run.isRunning { kill(run.processIdentifier, SIGKILL) }
         run.waitUntilExit()
         var text = String(decoding: said + heard, as: UTF8.self)
         if text.count > Bot.pageful { text = String(text.prefix(Bot.pageful)) + "…" }
@@ -465,11 +482,13 @@ final class Bot: ObservableObject, Identifiable {
         {"wait": "target"}  — wait for something to be on the page
         {"full": true}  — you were shown only what's in view; ask for the whole page
         {"answer": "…"}  — the task is done (or can't be done); the person reads this
-        {"later": {"goal": "…", "at": "…", "every": 600}}  — note a task for a time to come, the goal your own\nsumming up of what's to be done, at as ISO 8601 (like 2026-10-15T08:00:00+08:00).\nEach page comes with NOW, the time it is — turn "tomorrow at eight" into a time\nto come, in the person's own timezone given with it. For a task that comes round\nagain ("every ten minutes"), give every as the gap in seconds (a minute at least)\nand at as the first time to come — at can be left out, and the first time is one\ngap from now. When the time comes, this page is opened again and you work it,\nAuto on, no one watching; a task with every comes round again until the person\ntakes it off.
+        {"later": {"goal": "…", "at": "…", "every": 600}}  — note a task for a time to come, the goal your own\nsumming up of what's to be done, at as ISO 8601 (like 2026-10-15T08:00:00+08:00).\nEach page comes with NOW, the time it is — turn "tomorrow at eight" into a time\nto come, in the person's own timezone given with it. For a task that comes round\nagain ("every ten minutes"), give every as the gap in seconds (a minute at least)\nand at as the first time to come — at can be left out, and the first time is one\ngap from now. When the time comes, this page is opened again and you work it,\nAuto on, no one watching; a task with every comes round again until the person\ntakes it off. A task for a time to come runs with no one watching, so setting\none is shown to the person for their Allow (Auto aside).
         {"run": "command"}  — run a command on this Mac (zsh): shown for the person's Allow\
         like an act, and what it printed comes back with the next page
         {"history": 20}  — where the person has been: that many pages, most recent first\
-        (a hundred at most)
+        (a hundred at most), shown to the person for their Allow
+        {"close": "tab-a1b2c3"}  — close a tab, this for the page you're on: the one\
+        act always shown to the person for their Allow, Auto aside
         {"copy": "…"}  — words put on the person's clipboard, shown for their Allow
         {"note": "…"}  — keep a thought about the person — a preference, what they're after —\
         for every talk to come, shown for their Allow. What you keep is told to you in every\
@@ -528,6 +547,10 @@ final class Loop {
     private var messages: [AIMessage]
     private var question: String
     private var task: Task<Void, Never>?
+    /// A task for a time to come, held for the person's Allow: what the
+    /// model's later line said, kept here until the person answers (see
+    /// `route` and `resume`).
+    private var chore: (goal: String, at: Date, every: TimeInterval?, page: Tab.ID)?
     /// The page's patience: a snapshot asked for and never answered is let
     /// go of, said so (see `observe`).
     private var patience: DispatchWorkItem?
@@ -575,6 +598,33 @@ final class Loop {
                 bot.tell(Bot.Event(kind: .act, words: "", act: refused))
                 observe(note: "The person refused your tool \(held.act.target).", full: false, first: false)
             }
+            return
+        }
+        // A task for a time to come, held for the person (see `route`): let
+        // go, it is kept — it will run with no one watching, so the setting
+        // of it was theirs to agree to; turned away, said so.
+        if held.act.verb == "later" {
+            if allowed, let task = chore,
+               let work = TabsOfBrowser.all.first(where: { $0.id == task.page }) ?? bot.page {
+                setChore(task.goal, at: task.at, every: task.every, on: work)
+            } else if !allowed {
+                turnedAway(held, why: "The person wouldn't have it set. Find another way, or answer with what you have.")
+            }
+            chore = nil
+            return
+        }
+        // A tab closed at the model's asking: let go, it closes — the one
+        // act that asks even under Auto, for a tab is the person's own.
+        if held.act.verb == "close" {
+            if allowed { closeTab(held) }
+            else { turnedAway(held, why: "The person kept the tab. Find another way, or answer with what you have.") }
+            return
+        }
+        // Where the person has been, held for their Allow like any read
+        // that goes beyond the page.
+        if held.act.verb == "history" {
+            if allowed { showHistory(Int(held.act.text) ?? 20) }
+            else { turnedAway(held, why: "The person wouldn't have their history read. Answer without it.") }
             return
         }
         // A command run on this Mac, words to the person's clipboard, a
@@ -857,11 +907,26 @@ final class Loop {
             var at = (later["at"] as? String).flatMap(Chores.read)
             if (at == nil || at! <= Date()), let every { at = Date().addingTimeInterval(every) }
             if let at, at > Date() {
-                Chores.shared.add(goal: goal, at: at, page: work.address?.absoluteString ?? "",
-                                  provider: provider.rawValue, model: model, every: every)
-                bot.tell(Bot.Event(kind: .say, words: "Noted for \(Chores.spoken(at))\(every.map { ", every \(Chores.gap($0))" } ?? ""): \(goal)", act: nil))
-                bot.messages = messages
-                bot.over(nil)
+                // A task set is a task that will run with no one watching,
+                // so the setting of it is the person's to agree to — and
+                // with no one at the keys at all (a task come due, working
+                // its own round), never: one task cannot beget another in
+                // the small hours.
+                if bot.unattended {
+                    observe(note: "No one is at the keys to allow a task for a time to come — this run works its page and answers. Ask the person when they're back.", full: false, first: false)
+                    return
+                }
+                if bot.auto {
+                    setChore(goal, at: at, every: every, on: work)
+                } else {
+                    chore = (goal, at, every, work.id)
+                    bot.pending = Bot.Pending(
+                        act: Bot.Act(verb: "later",
+                                     target: "at \(Chores.spoken(at))\(every.map { ", every \(Chores.gap($0))" } ?? "")",
+                                     text: goal),
+                        tab: work.id
+                    )
+                }
             } else {
                 observe(note: "That time couldn't be read, or it has already come — NOW it is \(Self.clock.string(from: Date())). Say the task again, with a time to come, ISO 8601.", full: false, first: false)
             }
@@ -887,13 +952,16 @@ final class Loop {
             return
         }
         // A tool of the person's called — an act beyond the page, so it
-        // waits for the person's Allow like any act (Auto lets it go).
+        // waits for the person's Allow like any act (Auto lets it go; no
+        // one at the keys allows nothing).
         if let tool = line["tool"] as? [String: Any],
            let name = tool["name"] as? String, !name.isEmpty {
             let arguments = tool["arguments"] as? [String: Any] ?? [:]
             let held = (try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-            if bot.auto {
+            if bot.unattended {
+                observe(note: "No one is at the keys to allow a tool of the person's — this task works its page only. Answer with what you have.", full: false, first: false)
+            } else if bot.auto {
                 useTool(name, arguments: held)
             } else {
                 bot.pending = Bot.Pending(act: Bot.Act(verb: "tool", target: name, text: held), tab: work.id)
@@ -907,25 +975,59 @@ final class Loop {
         // Beyond the page: a command run on this Mac, words to the
         // clipboard, a thought kept for talks to come — none of them touch
         // the page, and all three are shown to the person and wait for
-        // their Allow like any act (Auto lets them go). Where the person
-        // has been is only read.
+        // their Allow like any act (Auto lets them go; no one at the keys
+        // allows nothing beyond the page at all). Where the person has been
+        // is a read, but a read of the person's own going-about, and so it
+        // is shown for their Allow too.
         if let command = line["run"] as? String, !command.isEmpty {
-            if bot.auto { runShell(command) }
+            if bot.unattended {
+                observe(note: "No one is at the keys to allow a command on this Mac — this task works its page only. Answer with what you have.", full: false, first: false)
+            } else if bot.auto { runShell(command) }
             else { bot.pending = Bot.Pending(act: Bot.Act(verb: "run", target: "", text: command), tab: work.id) }
             return
         }
         if let words = line["copy"] as? String, !words.isEmpty {
-            if bot.auto { copyOut(words) }
+            if bot.unattended {
+                observe(note: "No one is at the keys to allow words on the clipboard — this task works its page only. Answer with what you have.", full: false, first: false)
+            } else if bot.auto { copyOut(words) }
             else { bot.pending = Bot.Pending(act: Bot.Act(verb: "copy", target: "", text: words), tab: work.id) }
             return
         }
         if let thought = line["note"] as? String, !thought.isEmpty {
-            if bot.auto { keepNote(thought) }
+            if bot.unattended {
+                observe(note: "No one is at the keys to allow a thought kept about the person — this task works its page only. Answer with what you have.", full: false, first: false)
+            } else if bot.auto { keepNote(thought) }
             else { bot.pending = Bot.Pending(act: Bot.Act(verb: "note", target: "", text: thought), tab: work.id) }
             return
         }
         if let count = (line["history"] as? Int) ?? (line["history"] as? Double).map(Int.init) {
-            showHistory(count)
+            if bot.unattended {
+                observe(note: "No one is at the keys to allow the person's history being read — this task works its page only. Answer with what you have.", full: false, first: false)
+            } else if bot.auto { showHistory(count) }
+            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "history", target: "", text: String(max(1, count))), tab: work.id) }
+            return
+        }
+        // A tab closed at the model's asking — the one act that asks even
+        // under Auto, for a tab is the person's own to close. A run with no
+        // one at the keys may put its own page away, and no other.
+        if let close = line["close"] as? String, !close.isEmpty {
+            let target = close == "this" ? work : TabsOfBrowser.byID(close)
+            guard let target else {
+                observe(note: "There's no tab called \(close) — the tabs are listed for you with their ids (TABS). Say it again with one of those, or this.", full: false, first: false)
+                return
+            }
+            if bot.unattended {
+                guard target.id == bot.tab else {
+                    observe(note: "No one is at the keys to allow closing the person's tabs — this task may close its own page only.", full: false, first: false)
+                    return
+                }
+                closeTab(Bot.Pending(act: Bot.Act(verb: "close", target: "this tab", text: target.title), tab: target.id))
+                return
+            }
+            bot.pending = Bot.Pending(
+                act: Bot.Act(verb: "close", target: close == "this" ? "this tab" : close, text: target.title),
+                tab: target.id
+            )
             return
         }
         if let read = line["read"] as? String, !read.isEmpty {
@@ -949,7 +1051,7 @@ final class Loop {
             } else {
                 forTab = work
             }
-            if verb == "read" || bot.auto {
+            if verb == "read" || bot.auto || bot.alwaysPage {
                 perform(verb, target, text, on: forTab)
             } else {
                 bot.pending = Bot.Pending(act: Bot.Act(verb: verb, target: target, text: text), tab: forTab.id)
@@ -962,6 +1064,43 @@ final class Loop {
             return
         }
         observe(note: "That reply had nothing to do — say, act, read, ui, goto, wait, full, answer, tab, tool or skill.", full: false, first: false)
+    }
+
+    /// A task for a time to come, kept (see Chores): said so, and the turn
+    /// is over — the time will bring it back.
+    private func setChore(_ goal: String, at: Date, every: TimeInterval?, on work: Tab) {
+        guard let bot else { return }
+        Chores.shared.add(goal: goal, at: at, page: work.address?.absoluteString ?? "",
+                          provider: provider.rawValue, model: model, every: every)
+        bot.tell(Bot.Event(kind: .say, words: "Noted for \(Chores.spoken(at))\(every.map { ", every \(Chores.gap($0))" } ?? ""): \(goal)", act: nil))
+        bot.messages = messages
+        bot.over(nil)
+    }
+
+    /// A tab closed at the model's asking, allowed by the person: closed,
+    /// and told. Its own page closing ends the talk — there is nothing
+    /// left to work over.
+    private func closeTab(_ held: Bot.Pending) {
+        guard let bot else { return }
+        guard let tab = TabsOfBrowser.all.first(where: { $0.id == held.tab }) else {
+            var gone = held.act
+            gone.outcome = "already gone"
+            bot.tell(Bot.Event(kind: .act, words: "", act: gone))
+            observe(note: "That tab was already gone.", full: false, first: false)
+            return
+        }
+        let title = tab.title
+        Front.shared.browser?.close(tab)
+        var act = held.act
+        act.outcome = "closed"
+        bot.tell(Bot.Event(kind: .act, words: "", act: act))
+        if tab.id == bot.tab {
+            bot.tell(Bot.Event(kind: .say, words: "Closed \(title.isEmpty ? "the page" : title).", act: nil))
+            bot.messages = messages
+            bot.over(nil)
+        } else {
+            observe(note: "You closed \(title.isEmpty ? "a tab" : title).", full: false, first: false)
+        }
     }
 
     /// A tool called and answered: what it said comes back with the next
@@ -1122,8 +1261,13 @@ final class Loop {
 @MainActor
 enum TabsOfBrowser {
     /// Every tab of the browser the bot is open on — the one whose window
-    /// is in front when there are more than one.
-    static var all: [Tab] { Front.shared.browser?.tabs ?? [] }
+    /// is in front when there are more than one — but never the bench's
+    /// own pages: those belong to the scripts and agent CLIs that opened
+    /// them, and their content is not the person's to have worked over.
+    /// (A test run's pages are the bench's own, and are the bot's to work:
+    /// the tests would have nothing else. See Agent.seek for the same
+    /// exemption.)
+    static var all: [Tab] { Front.shared.browser?.tabs.filter { Store.testing || !$0.bench } ?? [] }
 
     /// The page the browser is on now, whose snapshot rides with the tabs.
     static var active: Tab? { Front.shared.browser?.active }
@@ -1168,9 +1312,10 @@ extension Browser {
     /// The panel asked for. A talk this page was having — held while its
     /// panel was away — is taken up again, so it goes on where it left
     /// off (a scheduled task starts from nothing each time it comes
-    /// round: takeUp false, see Chores).
-    func openBot(takeUp held: Bool = true) {
-        guard let tab = active, !tab.isBlank else { return }
+    /// round: takeUp false, see Chores). A task come due names the page
+    /// it works (over:), for its page is not the one in front.
+    func openBot(over given: Tab? = nil, takeUp held: Bool = true) {
+        guard let tab = given ?? active, !tab.isBlank else { return }
         guard prefs.bot, let provider = prefs.aiProvider else {
             settingsPage = .ai
             tuning = true

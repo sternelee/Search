@@ -586,7 +586,8 @@ def case_where(t):
     bt("use", provider="ollama")
     bt("open", id=opened["id"])
 
-    # Where the person has been, read for the asking — and the telling
+    # Where the person has been: a read of the person's own going-about,
+    # held for their Allow like anything beyond the page — and the telling
     # goes back to the model. (The listing itself is empty here: pages
     # the bench opens stay out of the history by design — Browser's
     # record is skipped for them — so it's the asking that's checked,
@@ -594,10 +595,15 @@ def case_where(t):
     script.clear(); seen.clear()
     script.append('{"history": 5}')
     bt("ask", text="Where have I been?")
+    until(t, lambda s: (s.get("pending") or {}).get("verb") == "history", doing="the history held for allowing")
+    bt("allow")
     until(t, lambda s: words(seen, "Where the person has been", role="user") != "")
     telling = words(seen, "Where the person has been", role="user")
-    t.ok("where the person has been is read for the asking, and told",
+    t.ok("where the person has been is read with the person's Allow, and told",
          "most recent first" in telling, telling[:120])
+    # The turn runs on to its answer after the telling; the next ask waits
+    # for it, or the ask is dropped on a busy loop.
+    until(t, lambda s: not s.get("working"))
 
     # A summary shared out of the browser: words to the clipboard, held
     # for the person's Allow.
@@ -727,14 +733,66 @@ def case_always(t):
     bt("ask", text="Sign up for Ada")
     until(t, lambda s: s.get("pending"))
     allowed = bt("always")
-    t.ok("allowed, and asked no more",
-         allowed.get("pending") is False and allowed.get("auto") is True, allowed)
+    t.ok("allowed, and the page's acts asked no more",
+         allowed.get("pending") is False and allowed.get("always") is True, allowed)
     answer = until(t, lambda s: any(e["kind"] == "answer" for e in s.get("events", [])), within=60)
     t.ok("the task ran to its answer",
          any(e["kind"] == "answer" and e["words"] == "sent" for e in answer["events"]), answer["events"])
     acts = [e for e in answer["events"] if e["kind"] == "act"]
     t.ok("…and nothing after it was held",
          not answer.get("pending") and len(acts) == 3 and all(a["act"][3] in ("done", "read") for a in acts), answer["events"])
+
+    # An Always covers the page's own acts, and nothing beyond it: a
+    # command still asks, Always or no.
+    script.clear(); seen.clear()
+    script.extend([
+        '{"run": "echo still asking"}',
+        '{"answer": "it still asks"}',
+    ])
+    bt("ask", text="Run that again")
+    until(t, lambda s: (s.get("pending") or {}).get("verb") == "run", doing="the command still held after an Always")
+    refused = bt("refuse")
+    t.ok("a command beyond the page still asks after an Always", refused.get("pending") is False, refused)
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "it still asks" for e in s.get("events", [])))
+
+
+def case_close(t):
+    """a tab closed at the model's asking: held for the person — always,
+    even under Auto, for a tab is the person's own to close"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    # Refused: the tab stays.
+    script.clear(); seen.clear()
+    script.extend([
+        '{"close": "this"}',
+        '{"answer": "kept it, then"}',
+    ])
+    bt("ask", text="Close this tab")
+    until(t, lambda s: (s.get("pending") or {}).get("verb") == "close", doing="the close held for allowing")
+    bt("refuse")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "kept it, then" for e in s.get("events", [])))
+    t.ok("refused, the tab stays",
+         any(tab["id"] == opened["id"] for tab in cmd({"do": "tabs"}).get("tabs", [])))
+
+    # Auto on: still held — the one act Auto doesn't skip.
+    bt("auto", on=True)
+    script.clear(); seen.clear()
+    script.append('{"close": "this"}')
+    bt("ask", text="Close it now")
+    still = until(t, lambda s: (s.get("pending") or {}).get("verb") == "close", doing="the close held under Auto")
+    t.ok("Auto doesn't skip a close", (still.get("pending") or {}).get("verb") == "close", still.get("pending"))
+    bt("allow")
+    # Closing its own page takes the panel with it — the tab itself is
+    # what there is to see.
+    until(t, lambda s: not any(tab["id"] == opened["id"] for tab in cmd({"do": "tabs"}).get("tabs", [])),
+          doing="the tab to close")
+    t.ok("allowed, the tab closes",
+         not any(tab["id"] == opened["id"] for tab in cmd({"do": "tabs"}).get("tabs", [])))
 
 
 def tab_of(listing, url):
@@ -909,7 +967,7 @@ def case_switched(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_card, case_coming, case_again, case_run, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_close, case_card, case_coming, case_again, case_run, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
         print(f"— {case.__doc__}")
         try:
             case(t)
