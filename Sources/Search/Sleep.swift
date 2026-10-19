@@ -66,6 +66,7 @@ extension Browser {
     func awake(because tab: Tab) -> String? {
         if visibleTabIDs.contains(tab.id) { return "on screen" }
         if tab.pin != nil { return "pinned" }
+        if tab.isTerminal { return "a live shell" }
         if tab.bench { return "a bench tab" }
         if tab.isBlank { return "blank" }
         if tab.asleep { return "already asleep" }
