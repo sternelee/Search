@@ -69,6 +69,10 @@ final class Bot: ObservableObject, Identifiable {
     let tab: Tab.ID
     let provider: AIProvider
     let model: String
+    /// A bot that is a tab of its own — the Agent Chat tab (see
+    /// ChatTab.swift): no page under it, every tab its reach, and the page
+    /// in front its page of the moment.
+    let chat: Bool
     /// Where it works: this page, or every tab (see Mode). The switch on
     /// the panel can turn it on the talk it's already carrying on.
     @Published private(set) var mode: Mode
@@ -116,6 +120,7 @@ final class Bot: ObservableObject, Identifiable {
     init(tab: Tab, provider: AIProvider, model: String, mode: Mode = .page) {
         self.tab = tab.id
         self.page = tab
+        self.chat = false
         self.mode = mode
         self.provider = provider
         self.model = model
@@ -123,6 +128,16 @@ final class Bot: ObservableObject, Identifiable {
             guard let self, let tab else { return }
             self.addressed = (await AIPage.read(tab))?.addressed ?? false
         }
+    }
+
+    /// The Agent Chat tab's own bot: no page under it, every tab its reach.
+    init(chat tab: Tab, provider: AIProvider, model: String) {
+        self.tab = tab.id
+        self.page = nil
+        self.chat = true
+        self.mode = .every
+        self.provider = provider
+        self.model = model
     }
 
     var busy: Bool { working || pending != nil }
@@ -179,7 +194,8 @@ final class Bot: ObservableObject, Identifiable {
     }
 
     private func send(_ words: String) {
-        guard let page else { return }
+        // The chat tab has no page under it — its asks go all the same.
+        guard page != nil || chat else { return }
         // A live turn let go for a new ask: whoever was listening on its
         // end (a scheduled run, see Chores) is told it was taken back.
         if loop != nil { onOver?("the person took the panel back") }
@@ -189,6 +205,8 @@ final class Bot: ObservableObject, Identifiable {
         surfaces.removeAll()
         working = true
         trouble = nil
+        // The chat tab's loop carries no page of its own (see Loop.observe:
+        // the page in front stands in, when one is).
         loop = Loop(bot: self, page: page, question: words, messages: messages)
         loop?.start()
     }
@@ -359,9 +377,9 @@ final class Bot: ObservableObject, Identifiable {
     static let steps = 12
     /// More of the page than this is a page the model shouldn't be shown
     /// whole: it can ask for the rest.
-    static let pageful = 6000
+    nonisolated static let pageful = 6000
     /// Longer than any one reply needs.
-    static let longest = 8000
+    nonisolated static let longest = 8000
 
     // MARK: - what it remembers
 
@@ -416,7 +434,7 @@ final class Bot: ObservableObject, Identifiable {
     }()
 
     /// A command's minute: longer than that, it's stopped (see `shell`).
-    static let runFor: TimeInterval = 60
+    nonisolated static let runFor: TimeInterval = 60
 
     /// A command run for the bot: zsh, in the person's home, given its
     /// minute. What it printed — said out loud and gone wrong together —
@@ -554,7 +572,7 @@ final class Loop {
     /// go of, said so (see `observe`).
     private var patience: DispatchWorkItem?
 
-    init(bot: Bot, page: Tab, question: String, messages: [AIMessage]) {
+    init(bot: Bot, page: Tab?, question: String, messages: [AIMessage]) {
         self.bot = bot
         self.page = page
         self.provider = bot.provider
@@ -579,12 +597,6 @@ final class Loop {
     /// A held act let go, or not. Nothing has touched the page until now.
     func resume(_ allowed: Bool) {
         guard let bot, let held = bot.pending else { return }
-        // A held act goes to the tab it was held on — the one the line came
-        // for — or, when it came for none, the one the panel was open on:
-        // whatever tab the browser is on now.
-        let workTab = (held.tab.flatMap { id in TabsOfBrowser.all.first { $0.id == id } })
-            ?? bot.page
-        guard let workTab else { return }
         bot.pending = nil
         // A tool is an act beyond the page, held like any other; let go, it
         // is the server's to answer (see `useTool`).
@@ -648,7 +660,20 @@ final class Loop {
             else { turnedAway(held, why: "The person wouldn't have it kept. Carry on.") }
             return
         }
+        // A page act goes to the tab it was held on — the one the line came
+        // for — or, when it came for none, the one the panel was open on.
+        // The chat tab's beyond-page acts came for no tab at all, and need
+        // none: only here is one asked for.
+        let workTab = (held.tab.flatMap { id in TabsOfBrowser.all.first { $0.id == id } })
+            ?? bot.page
         if allowed {
+            guard let workTab else {
+                var gone = held.act
+                gone.outcome = "the tab is gone"
+                bot.tell(Bot.Event(kind: .act, words: "", act: gone))
+                observe(note: "The tab that act was for is gone — the tabs are listed for you with their ids (TABS). Say it again with one of those.", full: false, first: false)
+                return
+            }
             perform(held.act.verb, held.act.target, held.act.text, on: workTab)
         } else {
             var refused = held.act
@@ -678,8 +703,24 @@ final class Loop {
     }()
 
     private func observe(note: String?, full: Bool, first: Bool) {
-        guard let bot, let page else { return }
-        bot.status = "looking at the page…"
+        guard let bot else { return }
+        // The page worked: the bot's own, or — for the chat tab, which has
+        // no page under it — whichever page is in front, if one is.
+        let work = bot.chat ? TabsOfBrowser.active : page
+        bot.status = work == nil ? "looking at the tabs…" : "looking at the page…"
+        guard let work else {
+            // Nothing in front to work: the tabs alone, said so plainly —
+            // every act from here names its tab.
+            var seen = ""
+            if first { seen += self.question + "\n\n" }
+            if let note { seen += note + "\n\n" }
+            if bot.mode == .every { seen += "TABS\n\(TabsOfBrowser.line())\n\n" }
+            seen += "NOW \(Self.clock.string(from: Date()))\n"
+            seen += "No page is in front — every act, read, goto or wait carries its tab.\n"
+            self.messages.append(AIMessage(role: .user, text: seen))
+            self.think()
+            return
+        }
         // A page that never answers: said so, rather than waiting on it
         // forever with a bare "working…" for company.
         var dead = false
@@ -690,7 +731,7 @@ final class Loop {
         }
         patience = tired
         DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: tired)
-        Agent.ask(page, ["op": "snapshot", "full": full]) { [weak self] said in
+        Agent.ask(work, ["op": "snapshot", "full": full]) { [weak self] said in
             tired.cancel()
             guard !dead, let self, let bot = self.bot else { return }
             if let error = said["error"] as? String {
@@ -706,7 +747,7 @@ final class Loop {
             // Where it is, what it's called: what a person reads before the
             // page itself, and what a model needs to know an address by.
             seen += "NOW \(Self.clock.string(from: Date()))\n"
-            seen += "PAGE \(page.address?.absoluteString ?? "")\nTITLE \(page.title)\n\n"
+            seen += "PAGE \(work.address?.absoluteString ?? "")\nTITLE \(work.title)\n\n"
             var tree = said["tree"] as? String ?? ""
             if tree.count > Bot.pageful {
                 tree = String(tree.prefix(Bot.pageful)) + "\n… the page holds more; ask for the whole of it"
@@ -738,10 +779,9 @@ final class Loop {
         // The saying the panel holds is begun here and grown piece by
         // piece (see Bot.grow).
         let draft = bot.beginDraft()
-        task = Task { @MainActor [weak self] in
+        task = Task { @MainActor [self] in
             do {
                 for try await piece in stream {
-                    guard let self else { return }
                     whole += piece
                     // The words said as they come: plain words plainly, and
                     // the say or answer inside a JSON line while the line is
@@ -757,12 +797,11 @@ final class Loop {
                     // A model talked into going on and on is stopped.
                     if whole.count > Bot.longest { break }
                 }
-                guard let self else { return }
                 bot.finishDraft()
                 self.carry(whole)
             } catch {
-                self?.bot?.finishDraft()
-                self?.failed(error.localizedDescription)
+                self.bot?.finishDraft()
+                self.failed(error.localizedDescription)
             }
         }
     }
@@ -855,11 +894,17 @@ final class Loop {
     /// What the line asked for, in the order the person meets it: said,
     /// drawn, answered; gone, waited for, acted on.
     private func route(_ line: [String: Any]) {
-        guard let bot, let page else { return }
+        // The chat tab's loop carries no page; what a line without a tab of
+        // its own means is settled just below.
+        guard let bot else { return }
         // A line for one tab of many (see Tabs): taken out, and what it held
         // — a verb, an address, a target — goes to what follows, on that tab.
+        // What a line without a tab of its own means: the bot's own page,
+        // or — for the chat tab — the page in front, if one is. Lines that
+        // need no page (a saying, an answer, a card) never ask for it; the
+        // ones that do say so when there is none.
         var line = line
-        let onTab: Tab
+        let onTab: Tab?
         if let held = line.removeValue(forKey: "tab") as? String {
             guard let found = TabsOfBrowser.byID(held) else {
                 observe(note: "There's no tab called \(held) — the tabs are listed for you with their ids (TABS). Say it again with one of those.", full: false, first: false)
@@ -867,7 +912,7 @@ final class Loop {
             }
             onTab = found
         } else {
-            onTab = page
+            onTab = bot.chat ? TabsOfBrowser.active : page
         }
         let work = onTab
         if let say = line["say"] as? String, !say.isEmpty {
@@ -920,8 +965,8 @@ final class Loop {
                     return
                 }
                 if bot.auto {
-                    setChore(goal, at: at, every: every, on: work)
-                } else {
+                    if let work { setChore(goal, at: at, every: every, on: work) }
+                } else if let work {
                     chore = (goal, at, every, work.id)
                     bot.pending = Bot.Pending(
                         act: Bot.Act(verb: "later",
@@ -938,13 +983,21 @@ final class Loop {
         if let address = line["goto"] as? String,
            let url = URL(string: address),
            let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            guard let work else {
+                observe(note: "No page is in front to go anywhere — the tabs are listed for you with their ids (TABS); say it again with a tab.", full: false, first: false)
+                return
+            }
             work.go(to: url)
             observe(note: "You went to \(address).", full: false, first: false)
             return
         }
         if let target = line["wait"] as? String {
-            Agent.poll(work, until: Date().addingTimeInterval(15), ["op": "present", "target": target]) { [weak self] said in
-                guard let self, let bot = self.bot else { return }
+            guard let work else {
+                observe(note: "No page is in front to wait on — the tabs are listed for you with their ids (TABS); say it again with a tab.", full: false, first: false)
+                return
+            }
+            Agent.poll(work, until: Date().addingTimeInterval(15), ["op": "present", "target": target]) { [self] said in
+                guard self.bot != nil else { return }
                 let came = said["ok"] as? Bool == true
                 self.observe(note: "You waited for \(target) and it \(came ? "came" : "never came").", full: false, first: false)
             }
@@ -967,7 +1020,7 @@ final class Loop {
             } else if bot.auto {
                 useTool(name, arguments: held)
             } else {
-                bot.pending = Bot.Pending(act: Bot.Act(verb: "tool", target: name, text: held), tab: work.id)
+                bot.pending = Bot.Pending(act: Bot.Act(verb: "tool", target: name, text: held), tab: work?.id)
             }
             return
         }
@@ -986,28 +1039,28 @@ final class Loop {
             if bot.unattended {
                 observe(note: "No one is at the keys to allow a command on this Mac — this task works its page only. Answer with what you have.", full: false, first: false)
             } else if bot.auto { runShell(command) }
-            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "run", target: "", text: command), tab: work.id) }
+            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "run", target: "", text: command), tab: work?.id) }
             return
         }
         if let words = line["copy"] as? String, !words.isEmpty {
             if bot.unattended {
                 observe(note: "No one is at the keys to allow words on the clipboard — this task works its page only. Answer with what you have.", full: false, first: false)
             } else if bot.auto { copyOut(words) }
-            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "copy", target: "", text: words), tab: work.id) }
+            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "copy", target: "", text: words), tab: work?.id) }
             return
         }
         if let thought = line["note"] as? String, !thought.isEmpty {
             if bot.unattended {
                 observe(note: "No one is at the keys to allow a thought kept about the person — this task works its page only. Answer with what you have.", full: false, first: false)
             } else if bot.auto { keepNote(thought) }
-            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "note", target: "", text: thought), tab: work.id) }
+            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "note", target: "", text: thought), tab: work?.id) }
             return
         }
         if let count = (line["history"] as? Int) ?? (line["history"] as? Double).map(Int.init) {
             if bot.unattended {
                 observe(note: "No one is at the keys to allow the person's history being read — this task works its page only. Answer with what you have.", full: false, first: false)
             } else if bot.auto { showHistory(count) }
-            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "history", target: "", text: String(max(1, count))), tab: work.id) }
+            else { bot.pending = Bot.Pending(act: Bot.Act(verb: "history", target: "", text: String(max(1, count))), tab: work?.id) }
             return
         }
         // A tab closed at the model's asking — the one act that asks even
@@ -1034,6 +1087,10 @@ final class Loop {
             return
         }
         if let read = line["read"] as? String, !read.isEmpty {
+            guard let work else {
+                observe(note: "No page is in front to read from — the tabs are listed for you with their ids (TABS); say it again with a tab.", full: false, first: false)
+                return
+            }
             perform("read", read, "", on: work)
             return
         }
@@ -1051,8 +1108,11 @@ final class Loop {
                     return
                 }
                 forTab = found
-            } else {
+            } else if let work {
                 forTab = work
+            } else {
+                observe(note: "No page is in front and none was named — the tabs are listed for you with their ids (TABS). Say it again with one of those.", full: false, first: false)
+                return
             }
             if verb == "read" || bot.auto || bot.alwaysPage {
                 perform(verb, target, text, on: forTab)
@@ -1265,15 +1325,19 @@ final class Loop {
 enum TabsOfBrowser {
     /// Every tab of the browser the bot is open on — the one whose window
     /// is in front when there are more than one — but never the bench's
-    /// own pages: those belong to the scripts and agent CLIs that opened
-    /// them, and their content is not the person's to have worked over.
-    /// (A test run's pages are the bench's own, and are the bot's to work:
-    /// the tests would have nothing else. See Agent.seek for the same
-    /// exemption.)
-    static var all: [Tab] { Front.shared.browser?.tabs.filter { Store.testing || !$0.bench } ?? [] }
+    /// own pages (those belong to the scripts and agent CLIs that opened
+    /// them, and their content is not the person's to have worked over)
+    /// and never a chat tab, which is no page to be worked. (A test run's
+    /// pages are the bench's own, and are the bot's to work: the tests
+    /// would have nothing else. See Agent.seek for the same exemption.)
+    static var all: [Tab] {
+        Front.shared.browser?.tabs.filter { (Store.testing || !$0.bench) && !$0.chat } ?? []
+    }
 
-    /// The page the browser is on now, whose snapshot rides with the tabs.
-    static var active: Tab? { Front.shared.browser?.active }
+    /// The page the browser is on now, whose snapshot rides with the tabs —
+    /// never a chat tab: when the person is talking, the page of the moment
+    /// is none.
+    static var active: Tab? { Front.shared.browser?.active.flatMap { $0.chat ? nil : $0 } }
 
     /// One tab by its id, the short way it's listed (tab-a1b2c3… — the
     /// last of the uuid), or the one the browser is on now when the id says

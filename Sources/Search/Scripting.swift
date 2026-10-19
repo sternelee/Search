@@ -73,8 +73,9 @@ extension NSWindow {
 @MainActor
 enum Scripting {
     /// The tabs a script may see in a window: its browser's, without the
-    /// private ones.
+    /// private ones and without the chat tabs, which are talks, not pages
+    /// with addresses.
     static func shown(in window: NSWindow) -> [Tab] {
-        Browsers.browser(for: window)?.tabs.filter { !$0.shy } ?? []
+        Browsers.browser(for: window)?.tabs.filter { !$0.shy && !$0.chat } ?? []
     }
 }

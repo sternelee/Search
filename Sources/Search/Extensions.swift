@@ -114,8 +114,8 @@ final class Extensions: NSObject, ObservableObject {
     /// and sites look for an extension at it. WebKit's own
     /// webkit-extension:// is what Search used before; addresses kept from
     /// then are read as the new ones.
-    static let scheme = "chrome-extension"
-    static let formerScheme = "webkit-extension"
+    nonisolated static let scheme = "chrome-extension"
+    nonisolated static let formerScheme = "webkit-extension"
 
     static func current(_ url: URL) -> URL {
         guard url.scheme == formerScheme, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
@@ -1014,7 +1014,7 @@ final class Extensions: NSObject, ObservableObject {
     /// (chrome-extension://<its id>/*) or every one's. No extension is ever
     /// given them — not from its manifest, not asked for later — whatever
     /// the question said; its own pages are its own without asking.
-    nonisolated static func reachesExtensions(_ pattern: WKWebExtension.MatchPattern) -> Bool {
+    static func reachesExtensions(_ pattern: WKWebExtension.MatchPattern) -> Bool {
         guard let scheme = pattern.scheme?.lowercased() else { return false }
         return [Extensions.scheme, Extensions.formerScheme, "webkit-extension"].contains(scheme)
     }
@@ -1024,12 +1024,12 @@ final class Extensions: NSObject, ObservableObject {
     /// access to file URLs" is turned on for it, and Search has no such
     /// switch. WebKit's <all_urls> leaves file: out; a pattern naming it
     /// (file:///*) would be granted with the rest.
-    nonisolated static func reachesFiles(_ pattern: WKWebExtension.MatchPattern) -> Bool {
+    static func reachesFiles(_ pattern: WKWebExtension.MatchPattern) -> Bool {
         pattern.scheme?.lowercased() == "file"
     }
 
     /// What no extension is given or asked about: extension pages and files.
-    nonisolated static func withheld(_ pattern: WKWebExtension.MatchPattern) -> Bool {
+    static func withheld(_ pattern: WKWebExtension.MatchPattern) -> Bool {
         reachesExtensions(pattern) || reachesFiles(pattern)
     }
 

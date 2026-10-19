@@ -208,10 +208,10 @@ final class Links: NSObject, NSApplicationDelegate {
     /// Gives up waiting after a second or so and runs anyway — a launch
     /// started hidden has a window nobody can see yet.
     @MainActor
-    static func onceShown(_ then: @escaping () -> Void, tries: Int = 0) {
+    static func onceShown(_ then: @escaping @MainActor () -> Void, tries: Int = 0) {
         let shown = NSApp.windows.contains { $0.isVisible && $0.contentView != nil }
         if shown || tries > 40 {
-            DispatchQueue.main.async(execute: then)
+            DispatchQueue.main.async(execute: DispatchWorkItem(block: then))
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { onceShown(then, tries: tries + 1) }
         }

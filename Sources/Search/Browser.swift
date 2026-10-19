@@ -347,6 +347,9 @@ final class Browser: NSObject, ObservableObject {
     @Published var assisting: Assistant?
     /// The bot's talk about the page, while it is open (see Bot).
     @Published var botting: Bot?
+    /// The talks the Agent Chat tabs are having, one apiece, for as long
+    /// as their tabs stand in the row (see ChatTab.swift).
+    @Published var chatBots: [Tab.ID: Bot] = [:]
     /// Talks held while their bot panels are away (see closeBot, in
     /// Bot.swift): the talk a page was having, and the one over every
     /// tab, taken up again when a panel comes back to the same page.
@@ -1176,8 +1179,9 @@ final class Browser: NSObject, ObservableObject {
         // Drawn again even when the tab stays where it is (see unpin).
         objectWillChange.send()
         // Pins are the space's, kept on disk and shown in every window: a
-        // private tab can't be one, or its page would outlive it there.
-        guard !tab.shy else { return }
+        // private tab can't be one, or its page would outlive it there —
+        // and a chat tab is a talk, with no home page to pin to.
+        guard !tab.shy, !tab.chat else { return }
         detachSplit(tab)
         if tab.pin == nil {
             let previousGroup = tab.groupID
@@ -1893,7 +1897,9 @@ final class Browser: NSObject, ObservableObject {
     func writeSession(now: Bool = false) {
         // The pins as they are here, for the other windows (see Pins.swift).
         Pins.set(spaceID, pinDefs(tabs), from: self)
-        writeRow(spaceID, session(tabs, active: activeID, groups: tabGroups, splits: splits), now: now)
+        // A chat tab is a talk of this opening, not an address to come back
+        // to: it is not kept for the next time.
+        writeRow(spaceID, session(tabs.filter { !$0.chat }, active: activeID, groups: tabGroups, splits: splits), now: now)
     }
 
     // MARK: - pins, the same in every window
@@ -2313,7 +2319,9 @@ final class Browser: NSObject, ObservableObject {
     /// A pin can be split with: its page goes into the pair as a tab of its
     /// own, and the pin stays where it is (see splittable).
     func canSplit(_ first: Tab, with second: Tab) -> Bool {
+        // A chat tab is no page to put beside another.
         prefs.splitView && first.id != second.id && !first.bench && !second.bench
+            && !first.chat && !second.chat
             && first.shy == second.shy
             && tabs.contains(where: { $0.id == first.id })
             && tabs.contains(where: { $0.id == second.id })
@@ -2550,6 +2558,16 @@ final class Browser: NSObject, ObservableObject {
         rememberSession()
     }
 
+    /// A chat tab stands in the row like any tab and comes to the front
+    /// (made in ChatTab.swift, where the talk is).
+    func placeChat(_ tab: Tab) {
+        prepare(tab)
+        tabs.append(tab)
+        leaving()
+        activeID = tab.id
+        editing = false
+    }
+
     func newTab() {
         // On a private tab, a new one is private too: ⌘T from a page that
         // keeps nothing and landing on one that keeps everything is how a
@@ -2686,6 +2704,8 @@ final class Browser: NSObject, ObservableObject {
     /// behind; closing that blank tab closes the window.
     func close(_ tab: Tab) {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        // The talk a chat tab was having goes with the tab.
+        chatBots.removeValue(forKey: tab.id)?.stop()
         let pair = split(for: tab)
         let partner = pair.flatMap { pair in tabs.first { $0.id == pair.partner(of: tab.id) } }
         detachSplit(tab)

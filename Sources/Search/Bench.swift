@@ -139,7 +139,7 @@ final class Bench {
             unlink(path)
             return
         }
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
 
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
         source.setEventHandler { [weak self] in self?.accept() }
@@ -203,7 +203,7 @@ final class Bench {
             self.fd = fd
             self.handle = handle
             self.gone = gone
-            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
             source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
             source.setEventHandler { [weak self] in self?.read() }
             source.resume()
@@ -1452,6 +1452,61 @@ final class Bench {
                 answer(["open": browser.botting != nil])
             default:
                 answer(["error": "bot use | open | ask | agree | allow | refuse | auto | every | tap | clear | forget | state | close"])
+            }
+
+        case "chat":
+            // The Agent Chat tab (see ChatTab.swift) as a run can drive it:
+            // the File menu's item stood in for, and the talk it holds.
+            guard Store.testing else { answer(["error": "chat only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "new":
+                guard let tab = browser.openChat() else { answer(["error": "the chat couldn't open — Settings › AI"]); return }
+                answer(["open": true, "id": Bench.short(tab)])
+            case "close":
+                // ⌘W on the chat tab, stood in for.
+                guard let bot = browser.frontChat,
+                      let tab = browser.tabs.first(where: { $0.id == bot.tab })
+                else { answer(["error": "no chat tab in front"]); return }
+                browser.close(tab)
+                answer(["closed": 1])
+            case "ask":
+                guard let text = request["text"] as? String, let bot = browser.frontChat else {
+                    answer(["error": "chat ask TEXT, with a chat tab in front"]); return
+                }
+                bot.draft = text
+                bot.submit()
+                answer(["open": true, "working": bot.working])
+            case "allow":
+                browser.frontChat?.resolve(true)
+                answer(["pending": browser.frontChat?.pending != nil])
+            case "refuse":
+                browser.frontChat?.resolve(false)
+                answer(["pending": browser.frontChat?.pending != nil])
+            case "always":
+                browser.frontChat?.always()
+                answer(["pending": browser.frontChat?.pending != nil, "always": browser.frontChat?.alwaysPage ?? false])
+            case "auto":
+                browser.frontChat?.auto = request["on"] as? Bool ?? true
+                answer(["auto": browser.frontChat?.auto ?? false])
+            case "state":
+                guard let bot = browser.frontChat else { answer(["open": false]); return }
+                answer([
+                    "open": true, "working": bot.working, "auto": bot.auto,
+                    "always": bot.alwaysPage, "unattended": bot.unattended,
+                    "notice": bot.notice ?? "", "trouble": bot.trouble ?? "",
+                    "place": bot.place, "status": bot.status ?? "",
+                    "draft": bot.drafting?.words ?? "",
+                    "chats": browser.chatBots.count,
+                    "pending": bot.pending.map { held in
+                        ["verb": held.act.verb, "target": held.act.target, "text": held.act.text] as [String: Any]
+                    } ?? [:],
+                    "events": bot.events.map { [
+                        "kind": "\($0.kind)", "words": $0.words,
+                        "act": $0.act.map { [$0.verb, $0.target, $0.text, $0.outcome ?? ""] } ?? [],
+                    ] as [String: Any] },
+                ])
+            default:
+                answer(["error": "chat needs an action: new, ask, allow, refuse, always, auto or state"])
             }
 
         case "ai":
@@ -2703,7 +2758,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "accounts", "find", "answer", "visible", "ai", "mcp", "skills", "chores", "notifications",
+                "tabs", "open", "go", "close", "wait", "sleep", "select", "text", "eval", "click", "type", "submit", "shot", "probe", "key", "resize", "hit", "film", "float", "window", "pages", "picture", "place", "group", "tospace", "field", "bookmark", "menu", "keyeq", "fill", "pin", "middle", "windows", "quit", "towindow", "news", "pull", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "accounts", "find", "answer", "visible", "ai", "mcp", "skills", "chores", "chat", "notifications",
             ]])
         }
     }
@@ -3215,6 +3270,7 @@ final class Bench {
     private func describe(_ tab: Tab) -> [String: Any] {
         [
             "id": Bench.short(tab),
+            "label": tab.label,
             "url": tab.address?.absoluteString ?? "",
             "page": tab.pageAddress?.absoluteString ?? "",
             "title": tab.title,

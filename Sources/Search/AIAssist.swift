@@ -125,7 +125,7 @@ final class Assistant: ObservableObject, Identifiable {
     /// skills of the person's ride along when there are any, only the ones
     /// that say they read (see AIDescribed.forAsking).
     private func answer() {
-        guard let read else { return }
+        guard read != nil else { return }
         if !turns.isEmpty { turns[turns.count - 1].answer = "" }
         let system = AIPage.system(fence: fence) + AIDescribed.forAsking()
         // The key, read now and let go with the request.
@@ -194,10 +194,10 @@ final class Assistant: ObservableObject, Identifiable {
         return true
     }
 
-    static let longest = 16_000
+    nonisolated static let longest = 16_000
     /// What a tool or a skill may say into the conversation, capped like a
     /// page (see AIPage).
-    static let pageful = 8_000
+    nonisolated static let pageful = 8_000
     /// Tool calls and skills asked for in one conversation, before the
     /// model is made to answer in words.
     static let steps = 6
@@ -212,7 +212,7 @@ final class Assistant: ObservableObject, Identifiable {
         let id = turn.id, answer = turn.answer
         Task.detached(priority: .userInitiated) { [weak self] in
             let strays = AIPage.strays(in: answer, from: read)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, let index = self.turns.firstIndex(where: { $0.id == id }) else { return }
                 self.turns[index].strays = strays
             }
@@ -684,7 +684,7 @@ struct AISettings: View {
             // named since: said, and offered for the address in use now.
             Line("Key", "••••\(elsewhere.tail), kept for \(elsewhere.host) — not for \(provider.host)") {
                 Pill("Keep for This Address") {
-                    AIKeys.carry(provider, from: elsewhere.host)
+                    _ = AIKeys.carry(provider, from: elsewhere.host)
                     refresh()
                 }
             }

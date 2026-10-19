@@ -13,6 +13,8 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Added
 
+- An Agent Chat tab, from File › New Agent Chat and nowhere else: a tab that is a talk with the agent, not a page — the bot's own conversation at full width, its reach every tab in the row (itself never among the listing), the page in front its page of the moment, and every act naming its tab when none is. The rules are the bot's own, unchanged: acts wait for your Allow, an Always covers the page's own acts, beyond the page asks, a close always asks. The tab is closed like any tab and its talk goes with it; it pins to nothing, splits with nothing, is scripted to nobody, and is not kept for the next time the browser opens. `python3 Tests/chat_tab.py` checks it the hidden way — the tab in the row by name, the listing shown to the model with the chat left out, an act on a named tab held and read back, a command refused, a close asked under Auto, the talk gone with its tab
+
 - The bot can close a tab — a `{"close": "tab-id"}` line in its reply, `this` for the page it's on — and it is the one act that asks even under Auto: a tab is the person's own to close, so every close waits for their Allow, Auto on or off. A task come due may put its own page away, and no other. `python3 Tests/bot_panel.py` checks both sides of it — refused and the tab stays, Auto doesn't skip it, allowed and it closes
 
 ### Changed

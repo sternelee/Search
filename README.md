@@ -157,6 +157,12 @@ The bot is off until asked for (Settings › AI, "The bot on pages"), and indepe
 
 `python3 Tests/bot_panel.py` checks it the same hidden way — a task carried act by act against a form of the test's own, each act held for allowing and once refused, Auto on, a card drawn and tapped, the notice a provider off this Mac is asked first, a talk set down and taken up again, a command run and its telling gone back, where you've been read for the asking, words to the clipboard, and a thought kept and told in the next talk.
 
+### An Agent Chat tab
+
+**File › New Agent Chat** makes a tab that is a talk, not a page: the bot's own conversation, full width, there for as long as you keep the tab. Its reach is every tab you have open — the row is listed to it (itself never among the listing), and the page in front is its page of the moment; when you're on the chat itself, none is, and every act names its tab. The rules are the bot's own, unchanged: every act waits for your Allow, an Always covers the page's own acts, everything beyond the page asks, and a close always asks. The tab is closed like any tab and its talk goes with it; it pins to nothing, splits with nothing, is scripted to nobody, and is not kept for the next time the browser opens.
+
+`python3 Tests/chat_tab.py` checks it the same hidden way — the tab made and standing in the row by name, every tab listed to the model with the chat itself left out, an act on a named tab held for allowing and read back, a command beyond the page refused, a close asked even under Auto, and the talk gone with its tab.
+
 ### Tools beyond the page, and skills of your own
 
 Settings › AI now speaks in tabs: AI itself, MCP, Skills, and Tasks. The MCP tab holds servers — the tool-bearers of the Model Context Protocol — by a command to run on this Mac (stdio, one JSON object a line of its pipes) or an address to ask over HTTP (the streamable way: pages of tools by their cursor, a session id kept and said back), with headers of your own given along with every request — a token to say who's asking, or whatever else the server wants to hear. A server is switched on or off as it stands; its tools are listed when it's called on, and come to the model qualified by the server's name — `notes · add_note`, what it takes with it. A tool called from the bot waits for your Allow like any other act, Auto aside; the Ask panel offers only the tools a server says read only.

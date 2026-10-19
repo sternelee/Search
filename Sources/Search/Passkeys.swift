@@ -440,7 +440,7 @@ final class Passkeys: NSObject {
 
     /// Whether this Mac can derive keys from a passkey at all: the PRF
     /// extension, which sites use to encrypt data only your passkey opens.
-    static var prfAvailable: Bool {
+    nonisolated static var prfAvailable: Bool {
         if #available(macOS 15.0, *) { return true }
         return false
     }
@@ -853,7 +853,7 @@ final class PasskeyRelay: NSObject, WKScriptMessageHandlerWithReply {
     /// functions, and nothing of Search's is there for a page to find — no
     /// window.webkit, no global of its own. Requests go to Search's side as
     /// events on the window (see `bridge`).
-    static let page = """
+    nonisolated static let page = """
     (function () {
       if (!window.PublicKeyCredential || !window.CredentialsContainer) return;
       var proto = CredentialsContainer.prototype;

@@ -80,6 +80,6 @@ enum Pins {
     private static func save() {
         var out: [String: [PinDef]] = [:]
         for (space, defs) in bySpace { out[space.uuidString] = defs }
-        Disk.write(file) { try? JSONEncoder().encode(out) }
+        Disk.write(file) { [out] in try? JSONEncoder().encode(out) }
     }
 }

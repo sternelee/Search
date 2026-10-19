@@ -458,7 +458,6 @@ final class Fetches: ObservableObject {
         if let page = entry.webView, page.configuration.websiteDataStore === store { return (page, false) }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
-        configuration.processPool = Web.pool
         configuration.applicationNameForUserAgent = Web.userAgentName
         return (WKWebView(frame: .zero, configuration: configuration), true)
     }

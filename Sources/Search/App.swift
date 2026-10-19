@@ -52,6 +52,9 @@ struct SearchApp: App {
                     .shortcut("file.newTab")
                 Button("New Private Tab") { browser.newShyTab() }
                     .shortcut("file.newPrivateTab")
+                // A tab that is a talk with the agent, not a page — from
+                // here and nowhere else (see ChatTab.swift).
+                Button("New Agent Chat") { browser.openChat() }
                 Button(browser.reopenTitle) { browser.reopen() }
                     .shortcut("file.reopen")
                     .disabled(browser.ghosts.isEmpty && Browsers.lastClosedAt == nil)
@@ -426,44 +429,57 @@ struct ContentView: View {
         if browser.prefs.splitView {
             SplitStage(browser: browser)
         } else if let tab = browser.active {
-            Page(tab: tab)
-                .overlay {
-                    if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if browser.finding {
-                        FindBar(browser: browser)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if let assistant = browser.assisting, assistant.tab == tab.id {
-                        AssistantPanel(browser: browser, assistant: assistant)
-                            .padding(.top, browser.finding ? 64 : 14)
-                            .padding(.trailing, 14)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
-                }
-                .animation(Motion.settle, value: browser.assisting?.id)
-                .overlay(alignment: .topTrailing) {
-                    if let bot = browser.botting, bot.tab == tab.id {
-                        BotPanel(browser: browser, bot: bot)
-                            .padding(.top, browser.finding ? 64 : 14)
-                            .padding(.trailing, 14)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
-                }
-                .animation(Motion.settle, value: browser.botting?.id)
-                .overlay(alignment: .topLeading) {
-                    if let asked = browser.suggesting, asked.tab == tab.id {
-                        AccountList(browser: browser, asked: asked)
-                            .transition(.opacity)
-                    }
-                }
-                .animation(Motion.quick, value: browser.suggesting)
+            if tab.chat, let bot = browser.chatBots[tab.id] {
+                // A tab that is a talk, not a page: the chat fills the stage
+                // and nothing of a page's chrome is drawn over it.
+                ChatStage(browser: browser, bot: bot)
+            } else {
+                pageStage(tab)
+            }
         } else {
             Palette.ground
         }
+    }
+
+    /// The stage a page fills, with its floating chrome over it: the link
+    /// status, the find bar, the assistant and bot panels, the account list.
+    @ViewBuilder
+    private func pageStage(_ tab: Tab) -> some View {
+        Page(tab: tab)
+            .overlay {
+                if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
+            }
+            .overlay(alignment: .topTrailing) {
+                if browser.finding {
+                    FindBar(browser: browser)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if let assistant = browser.assisting, assistant.tab == tab.id {
+                    AssistantPanel(browser: browser, assistant: assistant)
+                        .padding(.top, browser.finding ? 64 : 14)
+                        .padding(.trailing, 14)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .animation(Motion.settle, value: browser.assisting?.id)
+            .overlay(alignment: .topTrailing) {
+                if let bot = browser.botting, bot.tab == tab.id {
+                    BotPanel(browser: browser, bot: bot)
+                        .padding(.top, browser.finding ? 64 : 14)
+                        .padding(.trailing, 14)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .animation(Motion.settle, value: browser.botting?.id)
+            .overlay(alignment: .topLeading) {
+                if let asked = browser.suggesting, asked.tab == tab.id {
+                    AccountList(browser: browser, asked: asked)
+                        .transition(.opacity)
+                }
+            }
+            .animation(Motion.quick, value: browser.suggesting)
     }
 
     /// What the column and the strip take from the page right now: animated

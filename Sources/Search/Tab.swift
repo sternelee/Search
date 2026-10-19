@@ -63,15 +63,11 @@ enum Web {
         return os >= 26 ? "\(os).0" : "\(os + 3).0"
     }
 
-    /// One pool for every tab. The property is deprecated and said to do
-    /// nothing now, but a configuration without it gets a pool of its own
-    /// when its view is made — so every new tab started a web process from
-    /// cold, fonts registered and all, on the main thread, before its page
-    /// could begin: 41 to 59 ms from a bookmark or Return to the load
-    /// starting, the window stuck meanwhile. Sharing one lets WebKit have
-    /// the next process ready: 9 to 10 ms, for the same memory and the same
-    /// number of processes (measured with ./bench bookmark URL new, 24 Sep 2026).
-    static let pool = WKProcessPool()
+    /// Configurations once named one process pool for every tab: without
+    /// it each new view started a web process from cold — 41 to 59 ms on
+    /// the main thread before its page could begin, fonts registered and
+    /// all. WebKit has shared one pool itself since macOS 12, so there is
+    /// nothing to set anymore: the property is deprecated and does nothing.
 
     /// `space`: the space the tab belongs to, when it is not the one on
     /// screen — a parked row made ahead of time (see Spaces.swift).
@@ -88,7 +84,6 @@ enum Web {
         // Web notifications go through the store (see Notifications.swift);
         // a private tab's is left without, and a page there is refused.
         if !shy { let kept = config.websiteDataStore; MainActor.assumeIsolated { SiteNotifications.shared.attach(kept) } }
-        config.processPool = Web.pool
         // A test run's pretend camera and microphone (see ExtensionCapture).
         if #available(macOS 15.4, *), Store.testing { ExtensionCapture.mockDevices(config.preferences) }
         // Chrome extensions see every page but a private one, unless Settings
@@ -499,6 +494,13 @@ final class Tab: ObservableObject, Identifiable {
     /// the session or the history, and gone when the script is done.
     let bench: Bool
 
+    /// A tab that is a talk with the agent, not a page: made from the File
+    /// menu and nowhere else, holding a conversation that reaches every
+    /// tab in the row (see ChatTab.swift). It owns no web view and goes
+    /// nowhere: it is closed like any tab, and not kept for the next time
+    /// the browser opens.
+    let chat: Bool
+
     /// The tab whose page opened this one, when a script did. Sign-in flows
     /// hand you back to it when they are done.
     var opener: Tab.ID?
@@ -562,12 +564,14 @@ final class Tab: ObservableObject, Identifiable {
 
     /// A tab that has never been anywhere shows the address field instead of a
     /// page. It still owns a web view — built now, warm by the time it's needed.
-    var isBlank: Bool { address == nil }
+    /// A chat tab is never one of these blanks to be reused or cleaned away.
+    var isBlank: Bool { !chat && address == nil }
 
     /// The title if the page has offered one, the address until it does. A tab
     /// that says nothing at all for the first second of every load is a tab you
     /// can't find your way back to.
     var label: String {
+        if chat { return "Agent Chat" }
         if let name, !name.isEmpty { return name }
         if popup, let host = address?.host(), !host.isEmpty {
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
@@ -577,9 +581,10 @@ final class Tab: ObservableObject, Identifiable {
         return "New Tab"
     }
 
-    init(shy: Bool = false, bench: Bool = false, configuration: WKWebViewConfiguration? = nil) {
+    init(shy: Bool = false, bench: Bool = false, chat: Bool = false, configuration: WKWebViewConfiguration? = nil) {
         self.shy = shy
         self.bench = bench
+        self.chat = chat
         self.configuration = configuration ?? Web.configuration(shy: shy)
     }
 
@@ -935,6 +940,8 @@ final class Tab: ObservableObject, Identifiable {
     }
 
     func go(to url: URL) {
+        // A chat tab goes nowhere: it is a talk, not a page.
+        guard !chat else { return }
         // Judged by the page it shows, not by how it was made: a tab an
         // extension's page opened with window.open is built from that
         // extension's configuration too. A tab with no page yet was just
