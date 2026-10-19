@@ -128,7 +128,7 @@ struct ChatStage: View {
                         Text(trouble).font(.system(size: 12.5)).foregroundStyle(Palette.muted)
                     }
                     ForEach(bot.events) { event in
-                        BotEventView(event: event).id(event.id)
+                        chatEventView(event).id(event.id)
                     }
                     // The reply as it comes: a saying on the tab, grown piece
                     // by piece while the model is still saying it.
@@ -271,5 +271,68 @@ extension Browser {
     var frontChat: Bot? {
         guard let active, active.chat else { return nil }
         return chatBots[active.id]
+    }
+}
+
+// MARK: - one event on the tab
+
+/// How one event of the talk is said on the chat tab: the same words the
+/// panel would show (see BotEventView — rendered here, not shared with the
+/// panel, because a SwiftUI view made in another file vanishes from a
+/// ForEach under -Osize: the release build's optimizer drops the whole
+/// view, and a talk that happened shows nothing at all).
+private struct ChatEventView: View {
+    let event: Bot.Event
+
+    var body: some View {
+        switch event.kind {
+        case .ask:
+            Text(verbatim: event.words)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Palette.muted)
+        case .say:
+            Text(verbatim: event.words)
+                .font(.system(size: 13))
+                .foregroundStyle(Palette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+        case .act:
+            if let act = event.act {
+                let outcome = act.outcome
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(act.verb) \(act.target)")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(outcome == "refused" ? Palette.muted : Palette.faint)
+                        .lineLimit(2)
+                    if let outcome {
+                        Text(outcome)
+                            .font(.system(size: 11.5, weight: outcome == "done" ? .medium : .regular))
+                            .foregroundStyle(outcome == "done" ? Palette.ink : Palette.muted)
+                    }
+                }
+            }
+        case .answer:
+            // As written, and never as markdown: no link to follow, no
+            // picture to fetch.
+            Text(verbatim: event.words)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Palette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(10)
+                .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        case .card:
+            EmptyView()
+        case .trouble:
+            Text(verbatim: event.words)
+                .font(.system(size: 12))
+                .foregroundStyle(Palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+extension ChatStage {
+    /// One event of the talk, drawn the tab's way (see ChatEventView).
+    fileprivate func chatEventView(_ event: Bot.Event) -> some View {
+        ChatEventView(event: event)
     }
 }
