@@ -580,6 +580,11 @@ final class TerminalSplits: NSView, ObservableObject {
         }
         zoomed = false
         focus(survivor)
+        // Closing a pane from beside the keys changes the count the title
+        // says; focus(survivor) says it again when the keys move, and
+        // this is for when they don't — the survivor was the pane they
+        // were already in.
+        if survivor == focused { sayTitle() }
         needsLayout = true
         layoutSubtreeIfNeeded()
     }
@@ -859,8 +864,9 @@ final class TerminalSplits: NSView, ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self, weak terminal] _ in
                 guard let self, self.panes[self.focused]?.terminal === terminal else { return }
-                // A new place moves the title too, when the title is ours
-                // to say: the shell has just told us where it is.
+                // A new place moves the title with it: the tab is
+                // called by the directory the shell has just said it is
+                // in.
                 self.sayTitle()
             }
             .store(in: &ears)
@@ -879,13 +885,19 @@ final class TerminalSplits: NSView, ObservableObject {
     /// pane's shell is a title that has been left behind.
     private func sayTitle() {
         guard let pane = panes[focused] else { return }
-        // A shell that set a title of its own keeps its word; one that
-        // never did is called by the directory it is in — "search", not
-        // "zsh" — which is what a tab is for. Until the shell has said
-        // where it is (OSC 7), the terminal's own name stands in.
-        title = pane.terminal.title.isEmpty
-            ? pane.terminal.cwd.map(Self.directoryName(of:)) ?? pane.terminal.named
-            : pane.terminal.title
+        // The tab is called by the directory the focused pane's shell is
+        // in — the directory's own name, home said as "~" — wherever the
+        // shell has said where it is (OSC 7), which every prompt of every
+        // shell the integration wraps says. Until it has, the terminal's
+        // own name stands in: a title the shell set (OSC 0/2), or the
+        // command a tab was made to run. The directory takes its place
+        // over a title the user's shell set on its own — oh-my-zsh sets
+        // one at every prompt, and the tab would say "user@host: ~/path"
+        // instead of where the keys are.
+        let named = pane.terminal.cwd.map(Self.directoryName(of:)) ?? pane.terminal.named
+        // Beside others, the count of terminals the tab is: a room of one
+        // is the tab it always was, and says no number.
+        title = panes.count > 1 ? "\(named) (\(panes.count))" : named
         cwd = pane.terminal.cwd
     }
 
