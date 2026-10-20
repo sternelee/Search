@@ -222,11 +222,12 @@ struct MarkdownText: View {
                         .textSelection(.enabled)
                         .environment(\.openURL, OpenURLAction { url in openLink(url) })
                 case .bullet:
+                    // A bullet wraps like a paragraph: held to one line it
+                    // would run on past the edge of the panel it's read in.
                     HStack(alignment: .top, spacing: 6) {
                         Text("•").font(.system(size: size)).foregroundStyle(Palette.faint)
                         Text(markdownInline(block.words, size: size, color: color))
                             .fixedSize(horizontal: false, vertical: true)
-                            .fixedSize(horizontal: true, vertical: false)
                             .textSelection(.enabled)
                             .environment(\.openURL, OpenURLAction { url in openLink(url) })
                     }

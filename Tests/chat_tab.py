@@ -16,6 +16,10 @@ What is checked:
                 naming its tab
   the rules     an act held for the person's Allow, a command beyond the
                 page held the same, a close always asked
+  the view      the talk standing in its column until the switch asks,
+                and across the whole tab after
+  the thinking  a thought shown as it comes, spent when the answer is in,
+                and never read back to the model
 """
 
 import hashlib
@@ -63,9 +67,17 @@ document.forms[0].addEventListener("submit", function (e) {
 # all that has been said and shown so far.
 script = []
 seen = []
+# A thought on the way to the next reply: one delta of its own, with an empty
+# `content` beside the reasoning (a gateway can write it that way) — spent
+# once, by the next reply the model gives (see case_think).
+thought = []
 def said(reply):
     body = json.dumps({"choices": [{"delta": {"content": reply}}]})
-    return f"data: {body}\n\ndata: [DONE]\n\n".encode()
+    first = ""
+    if thought:
+        thought_body = json.dumps({"choices": [{"delta": {"content": "", "reasoning": thought.pop()}}]})
+        first = f"data: {thought_body}\n\n"
+    return f"{first}data: {body}\n\ndata: [DONE]\n\n".encode()
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         body = PAGE.encode() if self.path == "/form" else f"<!doctype html><title>{self.path.strip('/')}</title>".encode()
@@ -283,6 +295,21 @@ def case_rules(t):
     until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "it asked"
                            for e in s.get("events", [])))
 
+    # A command allowed: what it printed is on its act, to read.
+    script.clear(); seen.clear()
+    script.extend([
+        '{"run": "echo said-on-the-act"}',
+        '{"answer": "ran it"}',
+    ])
+    chat("ask", text="Run it for real")
+    until(t, lambda s: (s.get("pending") or {}).get("verb") == "run", doing="the command held")
+    chat("allow")
+    ran = until(t, lambda s: any(e["kind"] == "act" and e["act"][0] == "run" and e["act"][3] == "ran"
+                                 for e in s.get("events", [])), doing="the command done")
+    t.ok("what it printed is on the act, to read",
+         any(e["kind"] == "act" and e["act"][0] == "run" and "said-on-the-act" in e["act"][4]
+             for e in ran.get("events", [])), ran.get("events"))
+
     # A close: always asked — Auto on, and still asked.
     chat("auto", on=True)
     script.clear(); seen.clear()
@@ -398,11 +425,63 @@ def case_selection(t):
     t.ok("the reply before it still stands on the screen", kept >= 4, f"bands: {kept}")
     chat("close")
 
+def case_view(t):
+    """the view switch: the talk stands in its column until asked, and
+    across the whole tab after — the header's switch, stood in for"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    bt("use", provider="ollama")
+    chat("new")
+    t.ok("the talk stands in its column to begin with", chat("state").get("wide") is False)
+    chat("wide", on=True)
+    t.ok("…asked for, it fills the tab", chat("state").get("wide") is True)
+    chat("wide", on=False)
+    t.ok("…asked again, back in its column", chat("state").get("wide") is False)
+    chat("close")
+
+def case_think(t):
+    """a thinking model's thoughts: shown as they come, spent when the
+    answer is in, and never read back to the model"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    bt("use", provider="ollama")
+    chat("new")
+
+    script.clear(); seen.clear(); thought.clear()
+    thought.append("Weighing the page over, quietly.")
+    script.append('{"answer": "thought it over and answered"}')
+    chat("ask", text="Think first")
+    state = until(t, lambda s: any(e["kind"] == "think" for e in s.get("events", [])),
+                  doing="the thought coming")
+    t.ok("a thought arrives as its own entry",
+         any(e["kind"] == "think" and "Weighing" in e["words"] for e in state.get("events", [])),
+         state.get("events"))
+    t.ok("…and the answer follows it",
+         [e["kind"] for e in state.get("events", []) if e["kind"] in ("think", "answer")]
+         == ["think", "answer"], [e["kind"] for e in state.get("events", [])])
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "thought it over and answered"
+                           for e in s.get("events", [])), doing="the answer after the thought")
+    after = chat("state")
+    t.ok("…and the thinking is spent when the answer is in", after.get("musing") == "", after.get("musing"))
+
+    # The next ask: the model is shown the answer, never the thought.
+    script.clear(); seen.clear()
+    script.append('{"answer": "a second answer"}')
+    chat("ask", text="And again")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "a second answer"
+                           for e in s.get("events", [])), doing="the next answer")
+    asked = seen[-1] if seen else {"messages": []}
+    t.ok("the thought is never read back to the model",
+         "Weighing" not in json.dumps(asked), asked.get("messages", []))
+    t.ok("the answer, not the thought, is what follows",
+         any(m.get("role") == "assistant" and "thought it over" in m.get("content", "")
+             for m in asked.get("messages", [])), asked.get("messages", []))
+
 # MARK: -
 
 def main():
     t = T()
-    for case in (case_tab, case_reach, case_rules, case_selection):
+    for case in (case_tab, case_reach, case_rules, case_selection, case_view, case_think):
         print(case.__name__)
         try:
             case(t)

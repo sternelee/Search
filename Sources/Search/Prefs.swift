@@ -332,6 +332,12 @@ final class Preferences: ObservableObject {
     @Published var bot: Bool {
         didSet { store.set(bot, forKey: "bot") }
     }
+    /// The talk on an Agent Chat tab across the whole tab (see ChatStage).
+    /// Off unless asked for: the column it is read in, where it has always
+    /// stood.
+    @Published var chatWide: Bool {
+        didSet { store.set(chatWide, forKey: "chat.wide") }
+    }
     /// Where its answers come from. None until you choose.
     @Published var aiProvider: AIProvider? {
         didSet { store.set(aiProvider?.rawValue, forKey: "ai.provider") }
@@ -464,6 +470,7 @@ final class Preferences: ObservableObject {
         splitView = store.bool(forKey: "splitView")
         ai = AI.shipped && store.bool(forKey: "ai")
         bot = store.bool(forKey: "bot")
+        chatWide = store.bool(forKey: "chat.wide")
         aiProvider = store.string(forKey: "ai.provider").flatMap(AIProvider.init(rawValue:))
         aiModels = store.dictionary(forKey: "ai.models") as? [String: String] ?? [:]
         aiBases = store.dictionary(forKey: AIProvider.addressesKey) as? [String: String] ?? [:]

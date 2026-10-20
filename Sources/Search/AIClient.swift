@@ -11,7 +11,8 @@ import OSLog
 // Three ways of writing a request cover every provider: OpenAI's chat
 // completions (OpenAI, OpenRouter, Ollama, LM Studio), Anthropic's messages
 // and Gemini's generateContent. Each answer comes back a piece at a time, as
-// server-sent events, and is handed on as text.
+// server-sent events, and is handed on as pieces — the answer's words and a
+// thinking model's thoughts told apart (see AIPiece).
 //
 // Nothing of a request is logged: not the page, the question, the answer,
 // the address with its query or a header. An error says what the provider
@@ -21,6 +22,20 @@ struct AIMessage: Equatable {
     enum Role: String { case user, assistant }
     let role: Role
     let text: String
+}
+
+/// One piece of an answer as it arrives: the answer's own words, or a
+/// thinking model's thoughts before them. The two are kept apart, for the
+/// thoughts are shown to the person as they come (see Bot) and never kept
+/// in the record the model reads back — a model answered with its own
+/// thoughts would answer them again. Every stream speaks these (see
+/// AIClient.stream and AIEngine.stream), and nothing else does: a caller
+/// that wants only the answer takes the answer pieces and lets the
+/// thoughts go by.
+struct AIPiece: Equatable {
+    enum Kind { case answer, thought }
+    let kind: Kind
+    let words: String
 }
 
 enum AIError: LocalizedError, Equatable {
@@ -94,10 +109,11 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
 
     // MARK: - asking
 
-    /// The answer to `messages`, a piece at a time. `system` says what the
-    /// model is for and how to treat the page (see AIPage.system).
+    /// The answer to `messages`, a piece at a time — the answer's words and
+    /// a thinking model's thoughts, told apart (see AIPiece). `system` says
+    /// what the model is for and how to treat the page (see AIPage.system).
     func stream(_ provider: AIProvider, model: String, system: String, messages: [AIMessage],
-                key: String?, patience: TimeInterval? = nil) -> AsyncThrowingStream<String, Error> {
+                key: String?, patience: TimeInterval? = nil) -> AsyncThrowingStream<AIPiece, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -126,7 +142,7 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
                         if data == "[DONE]" { break }
                         guard let json = try? JSONSerialization.jsonObject(with: Data(data.utf8)) as? [String: Any] else { continue }
                         if let failure = Self.failure(json, event: event, hiding: key) { throw failure }
-                        if let piece = Self.piece(provider.wire, json), !piece.isEmpty { continuation.yield(piece) }
+                        if let piece = Self.piece(provider.wire, json), !piece.words.isEmpty { continuation.yield(piece) }
                     }
                     continuation.finish()
                 } catch let error as AIError {
@@ -256,22 +272,61 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
 
     // MARK: - reading
 
-    /// The text in one event, for each way of writing.
-    static func piece(_ wire: AIProvider.Wire, _ json: [String: Any]) -> String? {
+    /// The text in one event, for each way of writing — the answer's words
+    /// or a thinking model's thoughts, told apart, so the thoughts can be
+    /// shown as they come rather than passed over in silence (a model that
+    /// thinks for a while looks gone when nothing of it is shown).
+    static func piece(_ wire: AIProvider.Wire, _ json: [String: Any]) -> AIPiece? {
         switch wire {
         case .openAI:
-            let choice = (json["choices"] as? [[String: Any]])?.first
-            return (choice?["delta"] as? [String: Any])?["content"] as? String
+            let delta = ((json["choices"] as? [[String: Any]])?.first)?["delta"] as? [String: Any]
+            // A gateway can put its empty `content` beside the thought in the
+            // same delta; asking for words keeps the thought from being
+            // passed over (see Bot's loop).
+            if let said = delta?["content"] as? String, !said.isEmpty {
+                return AIPiece(kind: .answer, words: said)
+            }
+            // A model that thinks on the OpenAI wire — DeepSeek's own way, and
+            // the reasoning models OpenRouter and LM Studio bring — says its
+            // thoughts in another field of the same delta: as words in
+            // `reasoning` or `reasoning_content`, as text in the list of
+            // `reasoning_details`, or as `thinking` from a gateway in front of
+            // a model that thinks.
+            for field in ["reasoning", "reasoning_content", "thinking"] {
+                if let thought = delta?[field] as? String, !thought.isEmpty {
+                    return AIPiece(kind: .thought, words: thought)
+                }
+            }
+            if let details = delta?["reasoning_details"] as? [[String: Any]] {
+                let thought = details.compactMap { $0["text"] as? String }.joined()
+                if !thought.isEmpty { return AIPiece(kind: .thought, words: thought) }
+            }
+            return nil
         case .anthropic:
             guard json["type"] as? String == "content_block_delta",
-                  let delta = json["delta"] as? [String: Any], delta["type"] as? String == "text_delta"
+                  let delta = json["delta"] as? [String: Any]
             else { return nil }
-            return delta["text"] as? String
+            switch delta["type"] as? String {
+            case "text_delta":
+                return (delta["text"] as? String).map { AIPiece(kind: .answer, words: $0) }
+            case "thinking_delta":
+                // Only sent when the request itself asks the model to think,
+                // which this client never does — kept for a gateway in front
+                // of a model that thinks.
+                return (delta["thinking"] as? String).map { AIPiece(kind: .thought, words: $0) }
+            default:
+                return nil
+            }
         case .gemini:
             let candidate = (json["candidates"] as? [[String: Any]])?.first
             let parts = (candidate?["content"] as? [String: Any])?["parts"] as? [[String: Any]] ?? []
-            // A model that thinks marks those parts; only the answer is shown.
-            return parts.filter { $0["thought"] as? Bool != true }.compactMap { $0["text"] as? String }.joined()
+            // A model that thinks marks those parts: the thoughts are shown
+            // too now, not passed over — only the answer is the answer.
+            let said = parts.filter { $0["thought"] as? Bool != true }.compactMap { $0["text"] as? String }.joined()
+            if !said.isEmpty { return AIPiece(kind: .answer, words: said) }
+            let thought = parts.filter { $0["thought"] as? Bool == true }.compactMap { $0["text"] as? String }.joined()
+            if !thought.isEmpty { return AIPiece(kind: .thought, words: thought) }
+            return nil
         }
     }
 

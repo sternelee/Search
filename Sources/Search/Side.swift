@@ -942,6 +942,24 @@ struct Door: View {
     }
 }
 
+/// The stop: a turn cut where it stands, quiet (see Bot.stop).
+struct StopButton: View {
+    let act: () -> Void
+
+    var body: some View {
+        Button(action: act) {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Palette.ground)
+                .frame(width: 24, height: 24)
+                .background(Palette.ink, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Stop")
+    }
+}
+
 /// A pinned square picked up and carried across the grid, its travel its
 /// own: only the square being carried redraws as the hand moves, and the
 /// grid only when it changes place.

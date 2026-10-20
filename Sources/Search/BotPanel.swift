@@ -27,18 +27,39 @@ struct BotEventView: View {
             // The model's sayings speak markdown: drawn the way they
             // were written (see MarkdownText).
             MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
+        case .think:
+            // A thought the model had on its way to its say: kept in the
+            // record, muted — the saying it was on its way to is the thing
+            // that's answered to.
+            Text(verbatim: event.words)
+                .font(.system(size: 12))
+                .italic()
+                .foregroundStyle(Palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         case .act:
             if let act = event.act {
                 let outcome = act.outcome
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("\(act.verb) \(act.target)")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(outcome == "refused" ? Palette.muted : Palette.faint)
-                        .lineLimit(2)
-                    if let outcome {
-                        Text(outcome)
-                            .font(.system(size: 11.5, weight: outcome == "done" ? .medium : .regular))
-                            .foregroundStyle(outcome == "done" ? Palette.ink : Palette.muted)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(act.target.isEmpty ? act.verb : "\(act.verb) \(act.target)")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(outcome == "refused" ? Palette.muted : Palette.faint)
+                            .lineLimit(2)
+                        if let outcome {
+                            Text(outcome)
+                                .font(.system(size: 11.5, weight: outcome == "done" ? .medium : .regular))
+                                .foregroundStyle(outcome == "done" ? Palette.ink : Palette.muted)
+                        }
+                    }
+                    // What the act said — a tool's reply, a command's print —
+                    // so what the model was shown is read here too.
+                    if let said = act.said, !said.isEmpty {
+                        Text(verbatim: said)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                 }
             }
@@ -128,7 +149,12 @@ struct BotPanel: View {
                     .focused($typing)
                     .onSubmit { bot.submit() }
                     .disabled(bot.notice != nil || bot.busy)
-                if !bot.busy, bot.notice == nil {
+                if bot.busy {
+                    // The stop: the turn as it stands, quiet (see Bot.stop)
+                    // — a working answer cut where it is, an act still
+                    // waiting let go, and told so.
+                    StopButton { bot.stop() }
+                } else if bot.notice == nil {
                     Text("Auto")
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.faint)
@@ -164,6 +190,9 @@ struct BotPanel: View {
             .onChange(of: bot.drafting?.words) { _, _ in
                 if let last = bot.drafting { scroller.scrollTo(last.id, anchor: .bottom) }
             }
+            .onChange(of: bot.musing?.words) { _, _ in
+                if let last = bot.musing { scroller.scrollTo(last.id, anchor: .bottom) }
+            }
             .onChange(of: bot.pending) { _, _ in
                 if let last = bot.events.last { scroller.scrollTo(last.id, anchor: .bottom) }
             }
@@ -181,6 +210,17 @@ struct BotPanel: View {
             }
             ForEach(bot.events) { event in
                 BotEventView(event: event, openLink: openLink).id(event.id)
+            }
+            // The model's thinking as it comes: shown muted while it's
+            // thought, over the saying when one follows, and kept in the
+            // record as a thought when it's done (see Bot.musing).
+            if let muse = bot.musing, !muse.words.isEmpty {
+                Text(verbatim: muse.words)
+                    .font(.system(size: 12))
+                    .italic()
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .id(muse.id)
             }
             // The reply as it comes: a saying on the panel, grown piece
             // by piece while the model is still saying it.

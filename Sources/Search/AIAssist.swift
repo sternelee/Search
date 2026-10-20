@@ -20,6 +20,9 @@ final class Assistant: ObservableObject, Identifiable {
         /// Nil for the summary.
         let question: String?
         var answer = ""
+        /// The model is thinking — shown while the answer has no words yet
+        /// (see `answer()`).
+        var thinking = false
         var done = false
         var failed: String?
         /// Addresses, emails and numbers in the answer the page doesn't have.
@@ -137,7 +140,13 @@ final class Assistant: ObservableObject, Identifiable {
             do {
                 for try await piece in stream {
                     guard let self, !self.turns.isEmpty else { return }
-                    self.turns[self.turns.count - 1].answer += piece
+                    // A thinking model's thoughts are not the answer about
+                    // the page; they go by (see AIPiece).
+                    guard piece.kind == .answer else {
+                        self.turns[self.turns.count - 1].thinking = true
+                        continue
+                    }
+                    self.turns[self.turns.count - 1].answer += piece.words
                     // Longer than any answer about a page needs: a model
                     // talked into writing on and on is stopped.
                     if self.turns[self.turns.count - 1].answer.count > Assistant.longest { break }
@@ -206,6 +215,7 @@ final class Assistant: ObservableObject, Identifiable {
         guard !turns.isEmpty, let read else { return }
         var turn = turns[turns.count - 1]
         turn.done = true
+        turn.thinking = false
         turn.failed = failed
         turns[turns.count - 1] = turn
         // Checked away from the window's thread: a long answer is a long look.
@@ -452,7 +462,9 @@ struct AssistantPanel: View {
                         .foregroundStyle(Palette.muted)
                 }
                 if turn.answer.isEmpty, !turn.done {
-                    Text("…").font(.system(size: 13)).foregroundStyle(Palette.faint)
+                    Text(turn.thinking ? "Thinking…" : "…")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Palette.faint)
                 }
                 // The answer as the model wrote it: headings, lists,
                 // code blocks, bold, links — read the way they were

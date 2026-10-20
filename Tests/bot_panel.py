@@ -39,6 +39,11 @@ test's own is the page. Checked here:
   the coming  the reply coming in (see Loop.wordsComing): plain words shown on
               the panel as they're said, and the say or answer inside a JSON
               line shown while the line is still arriving — carried once whole
+  the thinking  a thinking model's thoughts, shown muted as they come, spent
+              when the answer is in — never read back to the model
+  the stop    a turn stopped midway (see Bot.stop): the reply cut where it is,
+              quietly, and nothing of it carried after; an act let go, told so;
+              a command stopped with it, stopped where it runs
 """
 
 import hashlib
@@ -102,9 +107,15 @@ document.getElementById('f').addEventListener('submit', function (e) {
 # that has been said and shown so far.
 script = []
 seen = []
+# A thought on the way to the next reply, spent once (see case_thought).
+thought = []
 def said(reply):
     body = json.dumps({"choices": [{"delta": {"content": reply}}]})
-    return f"data: {body}\n\ndata: [DONE]\n\n".encode()
+    first = ""
+    if thought:
+        thought_body = json.dumps({"choices": [{"delta": {"content": "", "reasoning": thought.pop()}}]})
+        first = f"data: {thought_body}\n\n"
+    return f"{first}data: {body}\n\ndata: [DONE]\n\n".encode()
 def piece_event(reply):
     # One event of a reply, not the whole of it (see `pieces` below).
     body = json.dumps({"choices": [{"delta": {"content": reply}}]})
@@ -142,6 +153,9 @@ class H(BaseHTTPRequestHandler):
         # reply can come for a tab the person isn't on: {"tab_from": url,
         # "say": line} — {tab} in the line becomes tab-a1b2c3, from the
         # TABS listing the model was last shown.
+        elif isinstance(line, dict) and "thought" in line:
+            thought.append(line["thought"])
+            body = said(line["say"])
         elif isinstance(line, dict) and "tab_from" in line:
             real = tab_of(words(seen, "TABS", role="user"), line["tab_from"]) or ""
             body = said(line["say"].replace("{tab}", real))
@@ -360,6 +374,7 @@ def case_hands(t):
          any(e["kind"] == "answer" and e["words"] == "signed up, as asked" for e in answer["events"]), answer["events"])
     acts = [e for e in answer["events"] if e["kind"] == "act"]
     t.ok("every act was allowed and done", len(acts) == 6 and all(a["act"][3] in ("done", "read") for a in acts), acts)
+
     t.ok("the turn is over", answer.get("working") is False and not answer.get("pending"), answer)
     t.ok("the talk is kept for the next ask", answer.get("events", [{}])[0]["kind"] == "ask", answer["events"][:1])
 
@@ -575,6 +590,10 @@ def case_run(t):
     until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "It said hi" for e in s.get("events", [])))
     t.ok("what the command printed goes back to the model",
          words(seen, "shell-said-hi", role="user") != "", seen[-1] if seen else {})
+    ran = bt("state")
+    t.ok("…and it is on the act, to read",
+         any(e["kind"] == "act" and e["act"][0] == "run" and "shell-said-hi" in e["act"][4]
+             for e in ran.get("events", [])), ran.get("events"))
 
 
 def case_where(t):
@@ -966,9 +985,120 @@ def case_switched(t):
     t.ok("switching tabs puts it away, as ever", bt("state").get("open") is False, bt("state"))
 
 
+def case_thought(t):
+    """a thinking model's thoughts: shown as they come, muted, over the answer
+    they were on the way to — and never read back to the model"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    script.clear(); seen.clear(); thought.clear()
+    script.append({"thought": "Weighing the page over.",
+                   "say": '{"answer": "thought it over and answered"}'})
+    bt("ask", text="Think first")
+    answer = until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "thought it over and answered"
+                                    for e in s.get("events", [])))
+    kinds = [e["kind"] for e in answer["events"] if e["kind"] in ("think", "answer")]
+    t.ok("a thought comes before the answer, as its own entry", kinds == ["think", "answer"], answer["events"])
+    t.ok("…with the words it was thought in",
+         any(e["kind"] == "think" and "Weighing" in e["words"] for e in answer["events"]), answer["events"])
+
+    script.clear(); seen.clear()
+    script.append('{"answer": "a second answer"}')
+    bt("ask", text="And again")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "a second answer"
+                           for e in s.get("events", [])))
+    asked = seen[-1] if seen else {"messages": []}
+    t.ok("the thought is never read back to the model",
+         "Weighing" not in json.dumps(asked), asked.get("messages", []))
+    t.ok("the answer is what follows",
+         any(m.get("role") == "assistant" and "thought it over" in m.get("content", "")
+             for m in asked.get("messages", [])), asked.get("messages", []))
+
+def case_stop(t):
+    """a turn stopped midway: the reply cut where it is, quietly, and
+    nothing of it carried after; an act held, stopped: let go and told so"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    # A reply a piece at a time, held a while between pieces: the panel has
+    # a saying to cut midway.
+    script.clear(); seen.clear()
+    script.extend([{"pieces": ['{"answer": "A saying cut before', ' it is done"}'],
+                    "hold": 0.6}])
+    bt("ask", text="Say something long")
+    until(t, lambda s: bool(s.get("draft")), within=10, doing="the saying coming")
+    t.ok("the stop is offered while it works", bt("state").get("busy") is True)
+
+    stopped = bt("stop")
+    t.ok("the turn is stopped", stopped.get("working") is False and not stopped.get("pending"), stopped)
+    t.ok("…and the stop goes with it", stopped.get("busy") is False, stopped)
+    after = bt("state")
+    t.ok("…the saying it had come to is gone", after.get("draft") == "", after.get("draft"))
+    t.ok("…and the cut is no trouble", after.get("trouble") == "", after.get("trouble"))
+    had = len(after.get("events", []))
+
+    # The pieces it would have gone on said come and go: none of them is
+    # carried, and the turn is not asked again.
+    time.sleep(2.0)
+    later = bt("state")
+    t.ok("…and nothing of the reply comes after the stop",
+         len(later.get("events", [])) == had
+         and not any(e["kind"] == "answer" for e in later.get("events", [])), later.get("events"))
+    t.ok("…nor is the turn taken up again", later.get("working") is False, later)
+
+    # An act held for allowing, and the person stops instead: let go, told
+    # so, and nothing done after it.
+    script.clear(); seen.clear()
+    script.append('{"act":{"verb":"fill","target":"css=#first","text":"Ada"}}')
+    bt("ask", text="Fill the name in")
+    held = until(t, lambda s: s.get("pending"))
+    t.ok("an act waits to be allowed", held.get("pending", {}).get("verb") == "fill", held)
+    let = bt("stop")
+    t.ok("…stopped, the act is let go", let.get("pending") is False, let)
+    t.ok("…and the letting go is told", "let go" in let.get("trouble", ""), let)
+    let_go = bt("state")
+    t.ok("…with no act done after it",
+         not any(e["kind"] == "act" for e in let_go.get("events", [])), let_go.get("events"))
+    bt("close")
+
+
+def case_kill(t):
+    """a command stopped with the turn: stopped where it runs, not left
+    to finish its work"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    # A command that writes its proof only if it is left to finish.
+    proof = f"/tmp/search-stop-{uuid.uuid4().hex}.txt"
+    script.clear(); seen.clear()
+    script.append(json.dumps({"run": f"sleep 3; touch {proof}"}))
+    bt("ask", text="Run a slow command")
+    held = until(t, lambda s: s.get("pending"))
+    t.ok("the command waits for Allow", held.get("pending", {}).get("verb") == "run", held)
+    bt("allow")
+    until(t, lambda s: s.get("status", "").startswith("running"), within=10,
+          doing="the command running")
+    bt("stop")
+    time.sleep(4.0)
+    t.ok("a command stopped with the turn doesn't finish its work", not os.path.exists(proof))
+    t.ok("…and nothing of it is told after", bt("state").get("status") == "", bt("state"))
+
+
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_close, case_card, case_coming, case_again, case_run, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_close, case_card, case_coming, case_again, case_run, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept, case_thought, case_stop, case_kill]:
         print(f"— {case.__doc__}")
         try:
             case(t)
