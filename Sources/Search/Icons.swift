@@ -191,7 +191,7 @@ final class Favicons {
     /// The kinds of picture a site's icon may be. Anything else a site sends
     /// — a PDF, a TIFF, an icns, PostScript — isn't opened at all: every
     /// kind is one more decoder a site can reach in this process.
-    private static let kinds: Set<String> = [
+    nonisolated private static let kinds: Set<String> = [
         "public.png", "com.microsoft.ico", "public.jpeg", "com.compuserve.gif", "org.webmproject.webp", "com.microsoft.bmp",
     ]
 

@@ -37,7 +37,7 @@ final class AIEngine: ObservableObject {
         let sha256: String
         let size: Int64
     }
-    static let model = Pin(
+    nonisolated static let model = Pin(
         name: "Qwen3 1.7B",
         url: URL(string: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf")!,
         sha256: "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
@@ -142,8 +142,8 @@ final class AIEngine: ObservableObject {
                 try FileManager.default.createDirectory(at: AIEngine.engines, withIntermediateDirectories: true)
                 if let offer = offered, offer.version > (installedVersion ?? 0) {
                     state = .downloading(0)
-                    let file = try await AIDownload.fetch(offer.url, size: offer.size, sha256: offer.sha256) { [weak self] done in
-                        self?.state = .downloading(done * Double(offer.size) / Double(max(1, self?.downloadSize ?? 1)))
+                    let file = try await AIDownload.fetch(offer.url, size: offer.size, sha256: offer.sha256) { done in
+                        self.state = .downloading(done * Double(offer.size) / Double(max(1, self.downloadSize)))
                     }
                     let place = AIEngine.engines.appendingPathComponent("\(offer.version)", isDirectory: true)
                     try? FileManager.default.removeItem(at: place)
@@ -165,8 +165,8 @@ final class AIEngine: ObservableObject {
                     let pin = AIEngine.model
                     let start = Double(downloadSize - pin.size) / Double(max(1, downloadSize))
                     state = .downloading(start)
-                    let file = try await AIDownload.fetch(pin.url, size: pin.size, sha256: pin.sha256) { [weak self] done in
-                        self?.state = .downloading(start + done * (1 - start))
+                    let file = try await AIDownload.fetch(pin.url, size: pin.size, sha256: pin.sha256) { done in
+                        self.state = .downloading(start + done * (1 - start))
                     }
                     try FileManager.default.moveItem(at: file, to: AIEngine.modelFile)
                     var place = AIEngine.modelFile
@@ -376,7 +376,7 @@ final class AIEngine: ObservableObject {
     }
 
     /// responsibility_spawnattrs_setdisclaim, where the system has it.
-    nonisolated(unsafe) private static let disclaim: (@convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32)? = {
+    private static let disclaim: (@convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32)? = {
         guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else { return nil }
         return unsafeBitCast(symbol, to: (@convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32).self)
     }()

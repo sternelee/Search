@@ -211,7 +211,11 @@ final class Links: NSObject, NSApplicationDelegate {
     static func onceShown(_ then: @escaping () -> Void, tries: Int = 0) {
         let shown = NSApp.windows.contains { $0.isVisible && $0.contentView != nil }
         if shown || tries > 40 {
-            DispatchQueue.main.async(execute: then)
+            // The next pass of the run loop, asked of the run loop itself:
+            // the work is the caller's own closure, and a queue would ask it
+            // to promise what none of them make — that it is safe to run
+            // somewhere other than here.
+            CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue as CFString, then)
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { onceShown(then, tries: tries + 1) }
         }

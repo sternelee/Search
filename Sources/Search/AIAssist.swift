@@ -141,9 +141,9 @@ final class Assistant: ObservableObject, Identifiable {
         let id = turn.id, answer = turn.answer
         Task.detached(priority: .userInitiated) { [weak self] in
             let strays = AIPage.strays(in: answer, from: read)
-            await MainActor.run {
-                guard let self, let index = self.turns.firstIndex(where: { $0.id == id }) else { return }
-                self.turns[index].strays = strays
+            await MainActor.run { [weak self] in
+                guard let mine = self, let index = mine.turns.firstIndex(where: { $0.id == id }) else { return }
+                mine.turns[index].strays = strays
             }
         }
         if failed == nil, !turn.answer.isEmpty {

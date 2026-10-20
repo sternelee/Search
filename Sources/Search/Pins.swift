@@ -78,8 +78,9 @@ enum Pins {
     }
 
     private static func save() {
-        var out: [String: [PinDef]] = [:]
-        for (space, defs) in bySpace { out[space.uuidString] = defs }
+        // One value, made before the write: the disk's own queue encodes it,
+        // away from the actor that keeps the pins.
+        let out = bySpace.reduce(into: [String: [PinDef]]()) { out, pin in out[pin.key.uuidString] = pin.value }
         Disk.write(file) { try? JSONEncoder().encode(out) }
     }
 }
