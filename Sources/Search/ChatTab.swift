@@ -41,6 +41,15 @@ struct ChatStage: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.faint)
                 }
+                // The talk's width: the column it is read in, or the whole
+                // tab — asked for at the top right and remembered (see
+                // Preferences.chatWide).
+                Door(icon: browser.prefs.chatWide ? "arrow.down.right.and.arrow.up.left"
+                                                   : "arrow.up.left.and.arrow.down.right",
+                     on: browser.prefs.chatWide,
+                     help: browser.prefs.chatWide ? "Centre the talk" : "Fill the tab") {
+                    browser.prefs.chatWide.toggle()
+                }
             }
             .padding(.horizontal, 20)
             .padding(.top, 14)
@@ -71,17 +80,8 @@ struct ChatStage: View {
                 if bot.busy {
                     // The stop: the turn as it stands, quiet (see Bot.stop)
                     // — a working answer cut where it is, an act still
-                    // waiting refused without a word.
-                    Button(action: { bot.stop() }) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(Palette.ground)
-                            .frame(width: 24, height: 24)
-                            .background(Palette.ink, in: Circle())
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Stop")
+                    // waiting let go, and told so.
+                    StopButton { bot.stop() }
                 } else if bot.notice == nil {
                     // The send: what Return does, for the pointer. Nothing
                     // written, nothing to press.
@@ -130,13 +130,25 @@ struct ChatStage: View {
                     ForEach(bot.events) { event in
                         chatEventView(event).id(event.id)
                     }
+                    // The model's thinking as it comes: shown muted while
+                    // it's thought, over the saying when one follows, and
+                    // kept in the record as a thought when it's done (see
+                    // Bot.musing).
+                    if let muse = bot.musing, !muse.words.isEmpty {
+                        Text(verbatim: muse.words)
+                            .font(.system(size: 12))
+                            .italic()
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .id(muse.id)
+                    }
                     // The reply as it comes: a saying on the tab, grown piece
                     // by piece while the model is still saying it.
                     if let draft = bot.drafting, !draft.words.isEmpty {
-                        Text(verbatim: draft.words)
-                            .font(.system(size: 13.5))
-                            .foregroundStyle(Palette.ink)
-                            .fixedSize(horizontal: false, vertical: true)
+                        // Drawn as it comes, the markdown in it read as it
+                        // stands so far (see MarkdownText — the blocks
+                        // whole ones are made of arrive when it's done).
+                        MarkdownText(open: openLink, text: draft.words, size: 13.5)
                             .id(draft.id)
                     }
                     if !bot.surfaces.isEmpty, bot.notice == nil {
@@ -152,7 +164,9 @@ struct ChatStage: View {
                         }
                     }
                 }
-                .frame(maxWidth: 720, alignment: .leading)
+                // The column it is read in, or the whole tab when the
+                // header's switch asks for it (see Preferences.chatWide).
+                .frame(maxWidth: browser.prefs.chatWide ? .infinity : 720, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 12)
@@ -162,6 +176,9 @@ struct ChatStage: View {
             }
             .onChange(of: bot.drafting?.words) { _, _ in
                 if let last = bot.drafting { scroller.scrollTo(last.id, anchor: .bottom) }
+            }
+            .onChange(of: bot.musing?.words) { _, _ in
+                if let last = bot.musing { scroller.scrollTo(last.id, anchor: .bottom) }
             }
             .onChange(of: bot.pending) { _, _ in
                 if let last = bot.events.last { scroller.scrollTo(last.id, anchor: .bottom) }
@@ -283,6 +300,9 @@ extension Browser {
 /// view, and a talk that happened shows nothing at all).
 private struct ChatEventView: View {
     let event: Bot.Event
+    /// A link's tap, opened the browser's way (the stage's own open —
+    /// see openLink below).
+    let openLink: (URL) -> Void
 
     var body: some View {
         switch event.kind {
@@ -291,32 +311,50 @@ private struct ChatEventView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Palette.muted)
         case .say:
+            // The model's sayings speak markdown: headings, lists, code
+            // blocks, bold, links — drawn the way they were written.
+            MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
+        case .think:
+            // A thought the model had on its way to its say: kept in the
+            // record, muted — the saying it was on its way to is the thing
+            // that's answered to.
             Text(verbatim: event.words)
-                .font(.system(size: 13))
-                .foregroundStyle(Palette.ink)
+                .font(.system(size: 12))
+                .italic()
+                .foregroundStyle(Palette.muted)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         case .act:
             if let act = event.act {
                 let outcome = act.outcome
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("\(act.verb) \(act.target)")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(outcome == "refused" ? Palette.muted : Palette.faint)
-                        .lineLimit(2)
-                    if let outcome {
-                        Text(outcome)
-                            .font(.system(size: 11.5, weight: outcome == "done" ? .medium : .regular))
-                            .foregroundStyle(outcome == "done" ? Palette.ink : Palette.muted)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(act.target.isEmpty ? act.verb : "\(act.verb) \(act.target)")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(outcome == "refused" ? Palette.muted : Palette.faint)
+                            .lineLimit(2)
+                        if let outcome {
+                            Text(outcome)
+                                .font(.system(size: 11.5, weight: outcome == "done" ? .medium : .regular))
+                                .foregroundStyle(outcome == "done" ? Palette.ink : Palette.muted)
+                        }
+                    }
+                    // What the act said — a tool's reply, a command's print —
+                    // so what the model was shown is read here too.
+                    if let said = act.said, !said.isEmpty {
+                        Text(verbatim: said)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                 }
             }
         case .answer:
-            // As written, and never as markdown: no link to follow, no
-            // picture to fetch.
-            Text(verbatim: event.words)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Palette.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            // The answer on a card of its own, the markdown in it read:
+            // headings, lists, code blocks, bold, links drawn as written
+            // (see MarkdownText).
+            MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
                 .padding(10)
                 .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         case .card:
@@ -333,6 +371,12 @@ private struct ChatEventView: View {
 extension ChatStage {
     /// One event of the talk, drawn the tab's way (see ChatEventView).
     fileprivate func chatEventView(_ event: Bot.Event) -> some View {
-        ChatEventView(event: event)
+        ChatEventView(event: event, openLink: openLink)
+    }
+
+    /// A link tapped in the talk: opened the browser's way, the same
+    /// as a link on any page — never by the model's words alone.
+    fileprivate func openLink(_ url: URL) {
+        browser.open(url, foreground: true)
     }
 }

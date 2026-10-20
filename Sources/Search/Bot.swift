@@ -18,12 +18,48 @@ import A2UISwiftUI
 // this Mac. The page goes to the model as a page to work on, never as
 // orders, and text on it written for an AI is flagged (see AIPage).
 
+/// The commands a turn has running: stopped with the turn that started them
+/// (see Loop.halt), so a Stop stops the command too, not just the waiting on
+/// it.
+final class Shells: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shut = false
+    private var running: [Process] = []
+
+    /// A command begun: kept until the turn ends, or stopped at once if the
+    /// turn was stopped first.
+    func keep(_ run: Process) {
+        lock.lock()
+        let after = shut
+        if !after { running.append(run) }
+        lock.unlock()
+        if after { run.terminate() }
+    }
+
+    /// Every command let go of: told to stop, and killed if it won't.
+    func stop() {
+        lock.lock()
+        shut = true
+        let said = running
+        running = []
+        lock.unlock()
+        for run in said where run.isRunning { run.terminate() }
+        let stubborn = said.filter { $0.isRunning }
+        guard !stubborn.isEmpty else { return }
+        // One that won't take its stopping is killed, not waited on.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            for run in stubborn where run.isRunning { kill(run.processIdentifier, SIGKILL) }
+        }
+    }
+}
+
 @MainActor
 final class Bot: ObservableObject, Identifiable {
     /// One thing in the record of a conversation: a question asked, a
-    /// saying, an act taken or refused, an answer, a card, a trouble.
+    /// saying, a thought the model had on its way to one, an act taken or
+    /// refused, an answer, a card, a trouble.
     struct Event: Identifiable {
-        enum Kind { case ask, say, act, answer, card, trouble }
+        enum Kind { case ask, say, think, act, answer, card, trouble }
         let id: UUID
         let kind: Kind
         let words: String
@@ -44,6 +80,10 @@ final class Bot: ObservableObject, Identifiable {
         let target: String
         let text: String
         var outcome: String?
+        /// What the act said: a tool's reply, a command's print — shown
+        /// whole under the line of the act (see BotEventView), so what the
+        /// model was shown is read by the person too.
+        var said: String?
     }
 
     /// An act waiting on you: nothing has touched the page yet. The tab
@@ -267,6 +307,7 @@ final class Bot: ObservableObject, Identifiable {
         pending = nil
         status = nil
         drafting = nil
+        musing = nil
         events.removeAll()
         messages.removeAll()
         surfaces.removeAll()
@@ -283,12 +324,16 @@ final class Bot: ObservableObject, Identifiable {
         // A turn still working was closed on: whoever listened on its end
         // (a scheduled run, see Chores) is told it came to nothing.
         if working { onOver?("the bot was closed on it") }
+        // An act still waiting was let go: told so, rather than vanishing
+        // with the turn (see Loop.halt).
+        if pending != nil { trouble = "The act was let go, unanswered — stopped." }
         loop?.halt()
         loop = nil
         working = false
         pending = nil
         status = nil
         drafting = nil
+        musing = nil
     }
 
     /// The turn is over — an answer, or nothing more to try.
@@ -298,8 +343,15 @@ final class Bot: ObservableObject, Identifiable {
         pending = nil
         status = nil
         drafting = nil
+        musing = nil
         if let failed { trouble = failed }
         onOver?(failed)
+    }
+
+    /// A trouble told of a turn already over — stopped mid-request, and the
+    /// request failed under it: said on the panel, and nothing restarted.
+    fileprivate func fault(_ words: String) {
+        trouble = words
     }
 
     fileprivate func tell(_ event: Event) {
@@ -331,6 +383,42 @@ final class Bot: ObservableObject, Identifiable {
     /// told by `carry` (plain words stand, a JSON line becomes what it is).
     fileprivate func finishDraft() {
         drafting = nil
+    }
+
+    // MARK: - the thinking coming in
+
+    /// The model's thinking as it comes: shown muted while it's thought, in
+    /// the record never — the messages the model reads back hold only what
+    /// was asked and answered, where thoughts held in would be answered
+    /// again (see Loop.think). When it's done it stands in the record as a
+    /// thought of its own (see `thought`).
+    @Published fileprivate(set) var musing: (id: UUID, words: String)?
+
+    /// A thinking begun: its id, steady while it grows. Begun for every
+    /// reply — a model that never thinks never grows it past empty.
+    fileprivate func beginMusing() -> UUID {
+        let id = UUID()
+        musing = (id, "")
+        return id
+    }
+
+    /// The thinking grown: the words it's come to, capped as everything the
+    /// panel holds is (see Bot.pageful).
+    fileprivate func growMusing(_ id: UUID, _ words: String) {
+        musing = (id, words)
+    }
+
+    /// The thinking done: what it came to stands in the record as one
+    /// thought of the model's — muted, over what it was on its way to (see
+    /// BotEventView) — and the thinking itself goes. Nothing thought — a
+    /// model that doesn't think, or one stopped before it said a thing —
+    /// leaves nothing.
+    fileprivate func thought(_ id: UUID, _ words: String) {
+        guard musing?.id == id else { return }
+        musing = nil
+        var words = words.trimmingCharacters(in: .whitespacesAndNewlines)
+        if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
+        if !words.isEmpty { tell(Event(kind: .think, words: words, act: nil)) }
     }
 
     /// The model's ui payload, drawn: decoded as A2UI messages, checked
@@ -442,7 +530,7 @@ final class Bot: ObservableObject, Identifiable {
     /// that never ends is stopped, and what it had printed is what there
     /// is. (The process is waited on away from the app's own thread; a
     /// child it leaves holding the pipe is waited out, not hung on.)
-    nonisolated static func shell(_ command: String) -> (said: String, code: Int32, timedOut: Bool) {
+    nonisolated static func shell(_ command: String, kept: (Process) -> Void = { _ in }) -> (said: String, code: Int32, timedOut: Bool) {
         let run = Process()
         run.executableURL = URL(fileURLWithPath: "/bin/zsh")
         run.arguments = ["-c", command]
@@ -451,6 +539,7 @@ final class Bot: ObservableObject, Identifiable {
         run.standardOutput = spoken
         run.standardError = goneWrong
         do { try run.run() } catch { return ("couldn't start: \(error.localizedDescription)", -1, false) }
+        kept(run)
         var said = Data(), heard = Data()
         let both = DispatchGroup()
         both.enter()
@@ -564,6 +653,9 @@ final class Loop {
     private var messages: [AIMessage]
     private var question: String
     private var task: Task<Void, Never>?
+
+    /// The commands this turn has running, stopped with it (see Bot.stop).
+    private let shells = Shells()
     /// A task for a time to come, held for the person's Allow: what the
     /// model's later line said, kept here until the person answers (see
     /// `route` and `resume`).
@@ -592,6 +684,7 @@ final class Loop {
         task = nil
         patience?.cancel()
         patience = nil
+        shells.stop()
     }
 
     /// A held act let go, or not. Nothing has touched the page until now.
@@ -779,28 +872,62 @@ final class Loop {
         // The saying the panel holds is begun here and grown piece by
         // piece (see Bot.grow).
         let draft = bot.beginDraft()
+        var thought = ""
+        // A thinking model's thoughts, shown as they come too — muted, over
+        // the saying when one follows — and never kept in the messages the
+        // model reads back (see Bot.musing). Begun like the saying: a model
+        // that never thinks never grows it past empty.
+        let muse = bot.beginMusing()
         task = Task { @MainActor [self] in
             do {
                 for try await piece in stream {
-                    whole += piece
-                    // The words said as they come: plain words plainly, and
-                    // the say or answer inside a JSON line while the line is
-                    // still arriving — the rest of the line waits for the
-                    // whole of it (see Loop.wordsComing). Not every piece holds
-                    // a piece: a line can be thinking, or empty.
-                    let head = whole.drop(while: { " \n\t\r".contains($0) })
-                    var grown = head.first == "{" ? (Loop.wordsComing(in: whole) ?? "") : String(head)
-                    if !piece.isEmpty, !grown.isEmpty {
+                    // A thought is not the reply: it grows its own saying,
+                    // muted, apart from the reply the model is read back
+                    // (see AIPiece).
+                    if piece.kind == .thought {
+                        thought += piece.words
+                        var grown = thought
                         if grown.count > Bot.pageful { grown = String(grown.prefix(Bot.pageful)) + "…" }
-                        bot.grow(draft, grown)
+                        bot.growMusing(muse, grown)
+                    } else {
+                        whole += piece.words
+                        // The words said as they come: plain words plainly, and
+                        // the say or answer inside a JSON line while the line is
+                        // still arriving — the rest of the line waits for the
+                        // whole of it (see Loop.wordsComing). Not every piece holds
+                        // a piece: a line can be thinking, or empty.
+                        let head = whole.drop(while: { " \n\t\r".contains($0) })
+                        var grown = head.first == "{" ? (Loop.wordsComing(in: whole) ?? "") : String(head)
+                        if !piece.words.isEmpty, !grown.isEmpty {
+                            if grown.count > Bot.pageful { grown = String(grown.prefix(Bot.pageful)) + "…" }
+                            bot.grow(draft, grown)
+                        }
                     }
-                    // A model talked into going on and on is stopped.
-                    if whole.count > Bot.longest { break }
+                    // A model talked into going on and on is stopped —
+                    // thinking on and on, too.
+                    if whole.count > Bot.longest || thought.count > Bot.longest { break }
                 }
+                // Stopped by the person: the request came to nothing on
+                // purpose (the stream ends quietly on a cancel), and the
+                // words it had come to are carried nowhere (see Bot.stop).
+                if Task.isCancelled { return }
                 bot.finishDraft()
+                bot.thought(muse, thought)
                 self.carry(whole)
             } catch {
+                // Stopped by the person (see Bot.stop and BotPanel's stop):
+                // the turn is already over on the panel, and the request
+                // coming to nothing is no trouble to report.
+                if Task.isCancelled {
+                    // Stopped on purpose — but an error under the stopping
+                    // is still told: a broken request is no quieter for it.
+                    if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
+                        self.bot?.fault("Stopped, with an error under it: \(error.localizedDescription)")
+                    }
+                    return
+                }
                 self.bot?.finishDraft()
+                self.bot?.thought(muse, thought)
                 self.failed(error.localizedDescription)
             }
         }
@@ -1181,11 +1308,14 @@ final class Loop {
             var note: String
             do {
                 let said = try await MCPHub.shared.call(qualified, arguments: arguments)
+                guard self.bot?.loop != nil else { return }
                 act.outcome = said.failed ? "the tool said it failed" : "done"
                 var words = said.text.isEmpty ? "nothing" : said.text
                 if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
+                act.said = words
                 note = "Your tool \(qualified) \(said.failed ? "said it failed" : "said"): \(words)"
             } catch {
+                guard self.bot?.loop != nil else { return }
                 act.outcome = "didn't work: \(error.localizedDescription)"
                 note = "Your tool \(qualified) didn't work: \(error.localizedDescription). Try another way."
             }
@@ -1216,14 +1346,20 @@ final class Loop {
         bot.status = "running it…"
         Task { @MainActor [weak self] in
             guard let self, let bot = self.bot else { return }
+            let shells = self.shells
             let run = await withCheckedContinuation { carry in
                 DispatchQueue.global(qos: .userInitiated).async {
-                    carry.resume(returning: Bot.shell(command))
+                    carry.resume(returning: Bot.shell(command, kept: shells.keep))
                 }
             }
+            // Stopped while it ran: the command was stopped with the turn,
+            // and nothing of what it printed is told (see Bot.stop).
+            guard self.bot?.loop != nil else { return }
             var act = Bot.Act(verb: "run", target: "", text: command)
             var note: String
-            let printed = "$ \(command)\n\(run.said.isEmpty ? "nothing" : run.said)"
+            var printed = "$ \(command)\n\(run.said.isEmpty ? "nothing" : run.said)"
+            if printed.count > Bot.pageful { printed = String(printed.prefix(Bot.pageful)) + "…" }
+            act.said = printed
             if run.timedOut {
                 act.outcome = "stopped at a minute"
                 note = "Your command was stopped at a minute — what it had printed:\n\(printed)"

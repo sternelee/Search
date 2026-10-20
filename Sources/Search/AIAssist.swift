@@ -20,6 +20,9 @@ final class Assistant: ObservableObject, Identifiable {
         /// Nil for the summary.
         let question: String?
         var answer = ""
+        /// The model is thinking — shown while the answer has no words yet
+        /// (see `answer()`).
+        var thinking = false
         var done = false
         var failed: String?
         /// Addresses, emails and numbers in the answer the page doesn't have.
@@ -137,7 +140,13 @@ final class Assistant: ObservableObject, Identifiable {
             do {
                 for try await piece in stream {
                     guard let self, !self.turns.isEmpty else { return }
-                    self.turns[self.turns.count - 1].answer += piece
+                    // A thinking model's thoughts are not the answer about
+                    // the page; they go by (see AIPiece).
+                    guard piece.kind == .answer else {
+                        self.turns[self.turns.count - 1].thinking = true
+                        continue
+                    }
+                    self.turns[self.turns.count - 1].answer += piece.words
                     // Longer than any answer about a page needs: a model
                     // talked into writing on and on is stopped.
                     if self.turns[self.turns.count - 1].answer.count > Assistant.longest { break }
@@ -206,6 +215,7 @@ final class Assistant: ObservableObject, Identifiable {
         guard !turns.isEmpty, let read else { return }
         var turn = turns[turns.count - 1]
         turn.done = true
+        turn.thinking = false
         turn.failed = failed
         turns[turns.count - 1] = turn
         // Checked away from the window's thread: a long answer is a long look.
@@ -385,7 +395,7 @@ struct AssistantPanel: View {
                 caution("This page has text written for an AI to follow. The answer may have been steered by it.")
             }
             ForEach(assistant.turns) { turn in
-                TurnView(turn: turn).id(turn.id)
+                TurnView(turn: turn, openLink: openLink).id(turn.id)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -415,6 +425,12 @@ struct AssistantPanel: View {
             .frame(maxHeight: 420)
     }
 
+    /// A link tapped in the answer: opened the browser's way, the
+    /// same as a link on any page — never by the model's words alone.
+    private func openLink(_ url: URL) {
+        browser.open(url, foreground: true)
+    }
+
     private func noticeCard(_ notice: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Answers from \(assistant.provider.name)")
@@ -435,6 +451,8 @@ struct AssistantPanel: View {
 
     private struct TurnView: View {
         let turn: Assistant.Turn
+        /// A link's tap, opened the browser's way — the panel's own open.
+        let openLink: (URL) -> Void
 
         var body: some View {
             VStack(alignment: .leading, spacing: 6) {
@@ -444,17 +462,15 @@ struct AssistantPanel: View {
                         .foregroundStyle(Palette.muted)
                 }
                 if turn.answer.isEmpty, !turn.done {
-                    Text("…").font(.system(size: 13)).foregroundStyle(Palette.faint)
-                }
-                // As written, and never as markdown: no link to follow, no
-                // picture to fetch.
-                if !turn.answer.isEmpty {
-                    Text(verbatim: turn.answer)
+                    Text(turn.thinking ? "Thinking…" : "…")
                         .font(.system(size: 13))
-                        .foregroundStyle(Palette.ink)
-                        .lineSpacing(2.5)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(Palette.faint)
+                }
+                // The answer as the model wrote it: headings, lists,
+                // code blocks, bold, links — read the way they were
+                // written (see MarkdownText).
+                if !turn.answer.isEmpty {
+                    MarkdownText(open: openLink, text: turn.answer, size: 13)
                 }
                 if let failed = turn.failed {
                     Text(verbatim: failed).font(.system(size: 12)).foregroundStyle(Palette.muted)

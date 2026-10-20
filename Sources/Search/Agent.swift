@@ -322,7 +322,9 @@ enum Agent {
                 let stream = AIClient.shared.stream(
                     provider, model: model, system: system, messages: messages, key: key
                 )
-                for try await piece in stream { said += piece }
+                // The bench's one-line protocol: the answer, not a thinking
+                // model's thoughts (see AIPiece).
+                for try await piece in stream where piece.kind == .answer { said += piece.words }
                 then(.success(said))
             } catch {
                 then(.failure(error))

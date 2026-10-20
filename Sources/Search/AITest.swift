@@ -29,7 +29,8 @@ enum AITest {
                                      key: key, patience: patience)
         var whole = ""
         for try await piece in stream {
-            whole += piece
+            // The answer, not a thinking model's thoughts (see AIPiece).
+            if piece.kind == .answer { whole += piece.words }
             if whole.count >= most { break }
         }
         return whole.trimmingCharacters(in: .whitespacesAndNewlines)

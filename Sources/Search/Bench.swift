@@ -1408,6 +1408,15 @@ final class Bench {
             case "auto":
                 browser.botting?.auto = request["on"] as? Bool ?? true
                 answer(["auto": browser.botting?.auto ?? false])
+            case "stop":
+                // The panel's Stop, stood in for: the turn as it stands,
+                // quiet (see Bot.stop).
+                guard let bot = browser.botting else {
+                    answer(["error": "bot stop, with the bot open"]); return
+                }
+                bot.stop()
+                answer(["working": bot.working, "pending": bot.pending != nil,
+                        "trouble": bot.trouble ?? "", "busy": bot.busy])
             case "every":
                 // The panel's switch, turned mid-talk: the open bot follows it.
                 browser.botEverywhere = request["on"] as? Bool ?? true
@@ -1430,7 +1439,7 @@ final class Bench {
             case "state":
                 guard let bot = browser.botting else { answer(["open": false]); return }
                 answer([
-                    "open": true, "working": bot.working, "auto": bot.auto,
+                    "open": true, "working": bot.working, "busy": bot.busy, "auto": bot.auto,
                     "always": bot.alwaysPage, "unattended": bot.unattended, "addressed": bot.addressed,
                     "notice": bot.notice ?? "", "trouble": bot.trouble ?? "", "place": bot.place,
                     "status": bot.status ?? "", "every": bot.mode == .every,
@@ -1444,14 +1453,29 @@ final class Bench {
                     "surfaces": bot.surfaces.map { $0.surface.id },
                     "events": bot.events.map { [
                         "kind": "\($0.kind)", "words": $0.words,
-                        "act": $0.act.map { [$0.verb, $0.target, $0.text, $0.outcome ?? ""] } ?? [],
+                        "act": $0.act.map { [$0.verb, $0.target, $0.text, $0.outcome ?? "", $0.said ?? ""] } ?? [],
                     ] as [String: Any] },
                 ])
+            case "picture":
+                // The panel as it stands, drawn off screen to a PNG — no
+                // window (see ai picture).
+                guard let bot = browser.botting, let path = request["path"] as? String else {
+                    answer(["error": "bot picture PATH, with the bot open"]); return
+                }
+                let renderer = ImageRenderer(content: BotPanel(browser: browser, bot: bot)
+                    .background(Palette.wash))
+                renderer.scale = 2
+                guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+                      let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+                    answer(["error": "nothing drawn"]); return
+                }
+                try? png.write(to: URL(fileURLWithPath: path))
+                answer(["saved": path, "working": bot.working])
             case "close":
                 browser.closeBot()
                 answer(["open": browser.botting != nil])
             default:
-                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | every | tap | clear | forget | state | close"])
+                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | stop | every | tap | clear | forget | state | picture | close"])
             }
 
         case "chat":
@@ -1488,6 +1512,75 @@ final class Bench {
             case "auto":
                 browser.frontChat?.auto = request["on"] as? Bool ?? true
                 answer(["auto": browser.frontChat?.auto ?? false])
+            case "wide":
+                // The width switch at the top right of the talk, stood in
+                // for: across the whole tab, or in its column (see
+                // Preferences.chatWide).
+                browser.prefs.chatWide = request["on"] as? Bool ?? !browser.prefs.chatWide
+                answer(["wide": browser.prefs.chatWide])
+            case "select":
+                // The talk's words, checked for being takeable and still
+                // standing: the answer drawn under a selection layer
+                // (SwiftUI's own, the one textSelection puts there), the
+                // last event's words, and how many bands of words the
+                // window's own picture holds — for a test that knows what
+                // a person's drag would find and that what stood before a
+                // new reply still stands (a redraw that names every
+                // markdown block as new can drop what stood — see
+                // MarkdownBlock's id). Only on a SEARCH_PROBE run.
+                guard Store.testing else { answer(["error": "chat select only works on a --test run"]); return }
+                guard let bot = browser.frontChat, let window = browser.window
+                else { answer(["error": "no chat tab in front"]); return }
+                guard let content = window.contentView else { answer(["error": "the chat's window shows nothing"]); return }
+                content.layoutSubtreeIfNeeded()
+                // The selection layer under every selectable text: present
+                // when the words are takeable, absent when they're not (see
+                // MarkdownText's textSelection). Both its names, for the
+                // system's own words change from one macOS to the next.
+                var selectable = 0
+                func walk(_ view: NSView) {
+                    let name = NSStringFromClass(type(of: view))
+                    if name.contains("AppKitTextInteraction") || name.contains("SelectionOverlay") { selectable += 1 }
+                    for sub in view.subviews { walk(sub) }
+                }
+                walk(content)
+                // The window's own picture, counted in bands of bright
+                // rows — a row of words is a band, an answer's card and
+                // its words among them. What the person sees, said as a
+                // number. Laid out first, the way `picture` lays the
+                // window out before it draws (a window that never laid
+                // out draws nothing to count).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    var bands = 0
+                    if let frame = window.contentView?.superview {
+                        frame.layoutSubtreeIfNeeded()
+                        if let chrome = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
+                        frame.cacheDisplay(in: frame.bounds, to: chrome)
+                        var inBand = false, bandTop = 0
+                        let bytes = chrome.bytesPerRow
+                        for y in 80..<min(1400, chrome.pixelsHigh) {
+                            var bright = 0
+                            if let data = chrome.bitmapData {
+                                for x in stride(from: 0, to: chrome.pixelsWide, by: 4) {
+                                    let off = y * bytes + x * chrome.bitsPerPixel / 8
+                                    guard off + 2 < bytes * chrome.pixelsHigh else { continue }
+                                    let r = data[off], g = data[off + 1], b = data[off + 2]
+                                    if Int(r) + Int(g) + Int(b) > 330 * 3 { bright += 1 }
+                                }
+                            }
+                            if bright > 4, !inBand {
+                                inBand = true; bandTop = y
+                            } else if bright <= 4, inBand {
+                                if y - bandTop >= 6 { bands += 1 }
+                                inBand = false
+                            }
+                        }
+                        if inBand, min(1400, chrome.pixelsHigh) - bandTop >= 6 { bands += 1 }
+                        }
+                    }
+                    answer(["selectable": selectable, "bands": bands,
+                            "lastWords": bot.events.last?.words ?? ""])
+                }
             case "state":
                 guard let bot = browser.frontChat else { answer(["open": false]); return }
                 answer([
@@ -1496,17 +1589,19 @@ final class Bench {
                     "notice": bot.notice ?? "", "trouble": bot.trouble ?? "",
                     "place": bot.place, "status": bot.status ?? "",
                     "draft": bot.drafting?.words ?? "",
+                    "musing": bot.musing?.words ?? "",
+                    "wide": browser.prefs.chatWide,
                     "chats": browser.chatBots.count,
                     "pending": bot.pending.map { held in
                         ["verb": held.act.verb, "target": held.act.target, "text": held.act.text] as [String: Any]
                     } ?? [:],
                     "events": bot.events.map { [
                         "kind": "\($0.kind)", "words": $0.words,
-                        "act": $0.act.map { [$0.verb, $0.target, $0.text, $0.outcome ?? ""] } ?? [],
+                        "act": $0.act.map { [$0.verb, $0.target, $0.text, $0.outcome ?? "", $0.said ?? ""] } ?? [],
                     ] as [String: Any] },
                 ])
             default:
-                answer(["error": "chat needs an action: new, ask, allow, refuse, always, auto or state"])
+                answer(["error": "chat needs an action: new, ask, allow, refuse, always, auto, wide, select or state"])
             }
 
         case "ai":
@@ -1565,7 +1660,12 @@ final class Bench {
                 Task { @MainActor in
                     var text = "", pieces = 0
                     do {
-                        for try await piece in stream { text += piece; pieces += 1 }
+                        // The answer's words for the text; every piece counted,
+                        // thoughts too — a stream that is thinking is alive.
+                        for try await piece in stream {
+                            if piece.kind == .answer { text += piece.words }
+                            pieces += 1
+                        }
                         answer(["text": text, "pieces": pieces])
                     } catch {
                         answer(["error": error.localizedDescription, "text": text])
