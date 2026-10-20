@@ -385,7 +385,7 @@ struct AssistantPanel: View {
                 caution("This page has text written for an AI to follow. The answer may have been steered by it.")
             }
             ForEach(assistant.turns) { turn in
-                TurnView(turn: turn).id(turn.id)
+                TurnView(turn: turn, openLink: openLink).id(turn.id)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -415,6 +415,12 @@ struct AssistantPanel: View {
             .frame(maxHeight: 420)
     }
 
+    /// A link tapped in the answer: opened the browser's way, the
+    /// same as a link on any page — never by the model's words alone.
+    private func openLink(_ url: URL) {
+        browser.open(url, foreground: true)
+    }
+
     private func noticeCard(_ notice: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Answers from \(assistant.provider.name)")
@@ -435,6 +441,8 @@ struct AssistantPanel: View {
 
     private struct TurnView: View {
         let turn: Assistant.Turn
+        /// A link's tap, opened the browser's way — the panel's own open.
+        let openLink: (URL) -> Void
 
         var body: some View {
             VStack(alignment: .leading, spacing: 6) {
@@ -446,15 +454,11 @@ struct AssistantPanel: View {
                 if turn.answer.isEmpty, !turn.done {
                     Text("…").font(.system(size: 13)).foregroundStyle(Palette.faint)
                 }
-                // As written, and never as markdown: no link to follow, no
-                // picture to fetch.
+                // The answer as the model wrote it: headings, lists,
+                // code blocks, bold, links — read the way they were
+                // written (see MarkdownText).
                 if !turn.answer.isEmpty {
-                    Text(verbatim: turn.answer)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Palette.ink)
-                        .lineSpacing(2.5)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    MarkdownText(open: openLink, text: turn.answer, size: 13)
                 }
                 if let failed = turn.failed {
                     Text(verbatim: failed).font(.system(size: 12)).foregroundStyle(Palette.muted)

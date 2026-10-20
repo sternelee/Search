@@ -133,10 +133,10 @@ struct ChatStage: View {
                     // The reply as it comes: a saying on the tab, grown piece
                     // by piece while the model is still saying it.
                     if let draft = bot.drafting, !draft.words.isEmpty {
-                        Text(verbatim: draft.words)
-                            .font(.system(size: 13.5))
-                            .foregroundStyle(Palette.ink)
-                            .fixedSize(horizontal: false, vertical: true)
+                        // Drawn as it comes, the markdown in it read as it
+                        // stands so far (see MarkdownText — the blocks
+                        // whole ones are made of arrive when it's done).
+                        MarkdownText(open: openLink, text: draft.words, size: 13.5)
                             .id(draft.id)
                     }
                     if !bot.surfaces.isEmpty, bot.notice == nil {
@@ -283,6 +283,9 @@ extension Browser {
 /// view, and a talk that happened shows nothing at all).
 private struct ChatEventView: View {
     let event: Bot.Event
+    /// A link's tap, opened the browser's way (the stage's own open —
+    /// see openLink below).
+    let openLink: (URL) -> Void
 
     var body: some View {
         switch event.kind {
@@ -291,10 +294,9 @@ private struct ChatEventView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Palette.muted)
         case .say:
-            Text(verbatim: event.words)
-                .font(.system(size: 13))
-                .foregroundStyle(Palette.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            // The model's sayings speak markdown: headings, lists, code
+            // blocks, bold, links — drawn the way they were written.
+            MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
         case .act:
             if let act = event.act {
                 let outcome = act.outcome
@@ -311,12 +313,10 @@ private struct ChatEventView: View {
                 }
             }
         case .answer:
-            // As written, and never as markdown: no link to follow, no
-            // picture to fetch.
-            Text(verbatim: event.words)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Palette.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            // The answer on a card of its own, the markdown in it read:
+            // headings, lists, code blocks, bold, links drawn as written
+            // (see MarkdownText).
+            MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
                 .padding(10)
                 .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         case .card:
@@ -333,6 +333,12 @@ private struct ChatEventView: View {
 extension ChatStage {
     /// One event of the talk, drawn the tab's way (see ChatEventView).
     fileprivate func chatEventView(_ event: Bot.Event) -> some View {
-        ChatEventView(event: event)
+        ChatEventView(event: event, openLink: openLink)
+    }
+
+    /// A link tapped in the talk: opened the browser's way, the same
+    /// as a link on any page — never by the model's words alone.
+    fileprivate func openLink(_ url: URL) {
+        browser.open(url, foreground: true)
     }
 }

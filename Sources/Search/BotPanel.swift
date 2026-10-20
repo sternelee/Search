@@ -14,6 +14,8 @@ import A2UISwiftUI
 // talk (see ChatTab.swift).
 struct BotEventView: View {
     let event: Bot.Event
+    /// A link's tap, opened the browser's way — the panel's own open.
+    let openLink: (URL) -> Void
 
     var body: some View {
         switch event.kind {
@@ -22,10 +24,9 @@ struct BotEventView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Palette.muted)
         case .say:
-            Text(verbatim: event.words)
-                .font(.system(size: 13))
-                .foregroundStyle(Palette.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            // The model's sayings speak markdown: drawn the way they
+            // were written (see MarkdownText).
+            MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
         case .act:
             if let act = event.act {
                 let outcome = act.outcome
@@ -42,12 +43,9 @@ struct BotEventView: View {
                 }
             }
         case .answer:
-            // As written, and never as markdown: no link to follow, no
-            // picture to fetch.
-            Text(verbatim: event.words)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Palette.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            // The answer on a card of its own, the markdown in it read:
+            // headings, lists, code blocks, bold, links drawn as written.
+            MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
                 .padding(10)
                 .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         case .card:
@@ -182,15 +180,14 @@ struct BotPanel: View {
                 Caution("This page has text written for an AI to follow. The bot may be steered by it.")
             }
             ForEach(bot.events) { event in
-                BotEventView(event: event).id(event.id)
+                BotEventView(event: event, openLink: openLink).id(event.id)
             }
             // The reply as it comes: a saying on the panel, grown piece
             // by piece while the model is still saying it.
             if let draft = bot.drafting, !draft.words.isEmpty {
-                Text(verbatim: draft.words)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.ink)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Drawn as it comes, the markdown in it read as it stands
+                // so far (see MarkdownText).
+                MarkdownText(open: openLink, text: draft.words, size: 13)
                     .id(draft.id)
             }
             if !bot.surfaces.isEmpty, bot.notice == nil {
@@ -216,6 +213,12 @@ struct BotPanel: View {
     }
 
     /// An act that waits on you: nothing has touched the page yet.
+    /// A link tapped in the talk: opened the browser's way, the same
+    /// as a link on any page — never by the model's words alone.
+    private func openLink(_ url: URL) {
+        browser.open(url, foreground: true)
+    }
+
     private func actCard(_ pending: Bot.Pending) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("\(pending.act.verb)  \(pending.act.target)")
