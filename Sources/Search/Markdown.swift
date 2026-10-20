@@ -28,7 +28,14 @@ struct MarkdownBlock: Identifiable, Equatable {
         case code(language: String?)
     }
 
-    let id = UUID()
+    /// The block's place in the answer: stable across redraws, for
+    /// the same answer is split the same way every time — SwiftUI's
+    /// diff sees the same block in the same place, and the words that
+    /// stand stay standing. (A made-up id would name every redraw's
+    /// blocks as all-new, and the view under them would be torn down
+    /// and built again on every word the answer grows by — a redraw's
+    /// race could leave what stood dropped from the screen.)
+    let id: Int
     let kind: Kind
     /// The block's own words: the paragraph without its blank lines,
     /// the heading without its hashes, the bullet without its dash,
@@ -47,7 +54,7 @@ func markdownBlocks(of text: String) -> [MarkdownBlock] {
 
     func flushParagraph() {
         guard !paragraph.isEmpty else { return }
-        blocks.append(MarkdownBlock(kind: .paragraph, words: paragraph.joined(separator: "\n")))
+        blocks.append(MarkdownBlock(id: blocks.count, kind: .paragraph, words: paragraph.joined(separator: "\n")))
         paragraph = []
     }
 
@@ -57,7 +64,7 @@ func markdownBlocks(of text: String) -> [MarkdownBlock] {
         // kept as written, and nothing inside it is read as marks.
         if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
             if let open = code {
-                blocks.append(MarkdownBlock(kind: .code(language: open.language),
+                blocks.append(MarkdownBlock(id: blocks.count, kind: .code(language: open.language),
                                             words: open.lines.joined(separator: "\n")))
                 code = nil
             } else {
@@ -79,13 +86,13 @@ func markdownBlocks(of text: String) -> [MarkdownBlock] {
         }
         if isBullet(trimmed) {
             flushParagraph()
-            blocks.append(MarkdownBlock(kind: .bullet, words: unbullet(trimmed)))
+            blocks.append(MarkdownBlock(id: blocks.count, kind: .bullet, words: unbullet(trimmed)))
             continue
         }
         // A heading: one to six hashes and a space.
         if let heading = headingLevel(of: trimmed) {
             flushParagraph()
-            blocks.append(MarkdownBlock(kind: .heading(level: heading.level),
+            blocks.append(MarkdownBlock(id: blocks.count, kind: .heading(level: heading.level),
                                         words: heading.words))
             continue
         }
@@ -94,7 +101,7 @@ func markdownBlocks(of text: String) -> [MarkdownBlock] {
     // A code block left open by an answer that stopped short is
     // still shown — the words it held are the words that came.
     if let open = code {
-        blocks.append(MarkdownBlock(kind: .code(language: open.language),
+        blocks.append(MarkdownBlock(id: blocks.count, kind: .code(language: open.language),
                                     words: open.lines.joined(separator: "\n")))
     }
     flushParagraph()

@@ -1488,6 +1488,69 @@ final class Bench {
             case "auto":
                 browser.frontChat?.auto = request["on"] as? Bool ?? true
                 answer(["auto": browser.frontChat?.auto ?? false])
+            case "select":
+                // The talk's words, checked for being takeable and still
+                // standing: the answer drawn under a selection layer
+                // (SwiftUI's own, the one textSelection puts there), the
+                // last event's words, and how many bands of words the
+                // window's own picture holds — for a test that knows what
+                // a person's drag would find and that what stood before a
+                // new reply still stands (a redraw that names every
+                // markdown block as new can drop what stood — see
+                // MarkdownBlock's id). Only on a SEARCH_PROBE run.
+                guard Store.testing else { answer(["error": "chat select only works on a --test run"]); return }
+                guard let bot = browser.frontChat, let window = browser.window
+                else { answer(["error": "no chat tab in front"]); return }
+                guard let content = window.contentView else { answer(["error": "the chat's window shows nothing"]); return }
+                content.layoutSubtreeIfNeeded()
+                // The selection layer under every selectable text: present
+                // when the words are takeable, absent when they're not (see
+                // MarkdownText's textSelection). Both its names, for the
+                // system's own words change from one macOS to the next.
+                var selectable = 0
+                func walk(_ view: NSView) {
+                    let name = NSStringFromClass(type(of: view))
+                    if name.contains("AppKitTextInteraction") || name.contains("SelectionOverlay") { selectable += 1 }
+                    for sub in view.subviews { walk(sub) }
+                }
+                walk(content)
+                // The window's own picture, counted in bands of bright
+                // rows — a row of words is a band, an answer's card and
+                // its words among them. What the person sees, said as a
+                // number. Laid out first, the way `picture` lays the
+                // window out before it draws (a window that never laid
+                // out draws nothing to count).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    var bands = 0
+                    if let frame = window.contentView?.superview {
+                        frame.layoutSubtreeIfNeeded()
+                        if let chrome = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
+                        frame.cacheDisplay(in: frame.bounds, to: chrome)
+                        var inBand = false, bandTop = 0
+                        let bytes = chrome.bytesPerRow
+                        for y in 80..<min(1400, chrome.pixelsHigh) {
+                            var bright = 0
+                            if let data = chrome.bitmapData {
+                                for x in stride(from: 0, to: chrome.pixelsWide, by: 4) {
+                                    let off = y * bytes + x * chrome.bitsPerPixel / 8
+                                    guard off + 2 < bytes * chrome.pixelsHigh else { continue }
+                                    let r = data[off], g = data[off + 1], b = data[off + 2]
+                                    if Int(r) + Int(g) + Int(b) > 330 * 3 { bright += 1 }
+                                }
+                            }
+                            if bright > 4, !inBand {
+                                inBand = true; bandTop = y
+                            } else if bright <= 4, inBand {
+                                if y - bandTop >= 6 { bands += 1 }
+                                inBand = false
+                            }
+                        }
+                        if inBand, min(1400, chrome.pixelsHigh) - bandTop >= 6 { bands += 1 }
+                        }
+                    }
+                    answer(["selectable": selectable, "bands": bands,
+                            "lastWords": bot.events.last?.words ?? ""])
+                }
             case "state":
                 guard let bot = browser.frontChat else { answer(["open": false]); return }
                 answer([
@@ -1506,7 +1569,7 @@ final class Bench {
                     ] as [String: Any] },
                 ])
             default:
-                answer(["error": "chat needs an action: new, ask, allow, refuse, always, auto or state"])
+                answer(["error": "chat needs an action: new, ask, allow, refuse, always, auto, select or state"])
             }
 
         case "ai":

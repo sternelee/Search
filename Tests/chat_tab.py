@@ -297,11 +297,112 @@ def case_rules(t):
     t.ok("allowed, the tab closes",
          not any(tab["id"] == form["id"] for tab in cmd({"do": "tabs"}).get("tabs", [])))
 
+def bands(path):
+    """How many bands of words a picture of the chat's window holds:
+    one per row of text (an ask, a saying, an answer) — for checking a
+    reply stayed on the screen after the next one arrived. The PNG is
+    RGBA with the usual five filters; a bright pixel is a word's."""
+    import struct, zlib
+    with open(path, "rb") as f:
+        png = f.read()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    pos, width, height, idat = 8, 0, 0, b""
+    while pos < len(png):
+        length = struct.unpack(">I", png[pos:pos + 4])[0]
+        kind = png[pos + 4:pos + 8]
+        if kind == b"IHDR":
+            width, height = struct.unpack(">II", png[pos + 8:pos + 16])
+        elif kind == b"IDAT":
+            idat += png[pos + 8:pos + 8 + length]
+        pos += 12 + length
+    raw = zlib.decompress(idat)
+    stride = width * 4 + 1
+
+    def paeth(a, b, c):
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        if pa <= pb and pa <= pc: return a
+        if pb <= pc: return b
+        return c
+
+    # Each row, unfiltered on the row before it (Up) and the byte
+    # before it in the same row (Sub); Average and Paeth mix both.
+    prev = bytearray(width * 4)
+    lines = []
+    for y in range(height):
+        start = y * stride
+        f = raw[start]
+        line = bytearray(raw[start + 1:start + stride])
+        bpp = 4
+        for i in range(len(line)):
+            left = line[i - bpp] if i >= bpp else 0
+            up = prev[i]
+            corner = prev[i - bpp] if i >= bpp else 0
+            if f == 1: line[i] = (line[i] + left) & 0xFF
+            elif f == 2: line[i] = (line[i] + up) & 0xFF
+            elif f == 3: line[i] = (line[i] + (left + up) // 2) & 0xFF
+            elif f == 4: line[i] = (line[i] + paeth(left, up, corner)) & 0xFF
+        lines.append(line)
+        prev = line
+    found, in_band, band_top = 0, False, 0
+    for y in range(80, min(1400, height)):
+        line = lines[y]
+        bright = sum(1 for x in range(width)
+                     if line[x * 4] + line[x * 4 + 1] + line[x * 4 + 2] > 420)
+        if bright > 8 and not in_band:
+            in_band, band_top = True, y
+        elif bright <= 8 and in_band:
+            if y - band_top >= 6: found += 1
+            in_band = False
+    if in_band and min(1400, height) - band_top >= 6: found += 1
+    return found
+
+def case_selection(t):
+    """the words of a reply, takeable out of the talk: drawn under a
+    selection layer (the one ⌘C reads a selection from), and still on
+    the screen when the next reply arrives"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    bt("use", provider="ollama")
+    chat("new")
+
+    # An answer in markdown, so what is takeable is the words of a
+    # rendered reply, not a string of marks.
+    script.clear(); seen.clear()
+    script.append('{"answer": "**Copied words** from a `reply`"}')
+    chat("ask", text="Say something worth taking")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "**Copied words** from a `reply`"
+                           for e in s.get("events", [])), doing="the markdown answer")
+
+    # The words of the reply, drawn as selectable text: the selection
+    # layer SwiftUI puts under takeable words is there.
+    first = chat("select")
+    t.ok("a reply's words are drawn as selectable text",
+         first.get("selectable", 0) > 0 and "Copied words" in (first.get("lastWords") or ""), first)
+
+    # The next reply arrives: the one before it stays on the screen,
+    # its bands of words still standing — a redraw that names every
+    # markdown block as new can drop what stood (see MarkdownBlock's id).
+    script.clear(); seen.clear()
+    script.append('{"answer": "a second answer comes after"}')
+    chat("ask", text="And again")
+    until(t, lambda s: len([e for e in s.get("events", []) if e["kind"] == "answer"]) == 2,
+          doing="the second answer")
+    # Two asks and two answers, each a band of its own, both turns on
+    # the screen together (the picture's own count of bands of words).
+    cmd({"do": "pages", "on": True})
+    time.sleep(1)
+    cmd({"do": "picture", "path": "/tmp/chat-keeps.png"})
+    cmd({"do": "pages", "on": False})
+    kept = bands("/tmp/chat-keeps.png")
+    t.ok("the reply before it still stands on the screen", kept >= 4, f"bands: {kept}")
+    chat("close")
+
 # MARK: -
 
 def main():
     t = T()
-    for case in (case_tab, case_reach, case_rules):
+    for case in (case_tab, case_reach, case_rules, case_selection):
         print(case.__name__)
         try:
             case(t)
