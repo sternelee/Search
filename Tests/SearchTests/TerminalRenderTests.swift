@@ -18,7 +18,7 @@ final class TerminalRenderTests: XCTestCase {
             line.cells[column] = Cell(char: letter, wide: false, ink: Ink())
         }
         let scene = Terminal.Scene(
-            lines: [line, Row(width: 10)], marks: [], caret: nil,
+            lines: [line, Row(width: 10)], caret: nil,
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true)
@@ -49,7 +49,7 @@ final class TerminalRenderTests: XCTestCase {
         paint.size(NSRect(x: 0, y: 0, width: 200, height: 100), scale: 2)
 
         let scene = Terminal.Scene(
-            lines: [Row(width: 10), Row(width: 10)], marks: [], caret: (0, 0),
+            lines: [Row(width: 10), Row(width: 10)], caret: (0, 0),
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true)
@@ -83,7 +83,7 @@ final class TerminalRenderTests: XCTestCase {
         paint.size(NSRect(x: 0, y: 0, width: 200, height: 100), scale: 2)
 
         let scene = Terminal.Scene(
-            lines: [Row(width: 10), Row(width: 10)], marks: [], caret: (0, 0),
+            lines: [Row(width: 10), Row(width: 10)], caret: (0, 0),
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true)
@@ -122,7 +122,7 @@ final class TerminalRenderTests: XCTestCase {
         paint.size(NSRect(x: 0, y: 0, width: 200, height: 100), scale: 2)
 
         var scene = Terminal.Scene(
-            lines: [Row(width: 10), Row(width: 10)], marks: [], caret: (0, 0),
+            lines: [Row(width: 10), Row(width: 10)], caret: (0, 0),
             width: 10, height: 2, back: 0
         )
         scene.cursorInk = .rgb(255, 0, 0)
@@ -144,7 +144,7 @@ final class TerminalRenderTests: XCTestCase {
         paint.size(NSRect(x: 0, y: 0, width: 200, height: 100), scale: 2)
 
         var scene = Terminal.Scene(
-            lines: [Row(width: 10), Row(width: 10)], marks: [], caret: (0, 0),
+            lines: [Row(width: 10), Row(width: 10)], caret: (0, 0),
             width: 10, height: 2, back: 0
         )
         scene.cursorInk = .rgb(255, 128, 0)
@@ -267,7 +267,7 @@ final class TerminalRenderTests: XCTestCase {
     func testACellFilledWithABlockHasNoWedgeCutOutOfIt() throws {
         let paint = try renderer()
         let scene = Terminal.Scene(
-            lines: [line("█"), Row(width: 10)], marks: [], caret: nil,
+            lines: [line("█"), Row(width: 10)], caret: nil,
             width: 10, height: 2, back: 0
         )
         paint.update(scene: scene, damage: Damage(), selection: nil, strong: true)
@@ -320,7 +320,7 @@ final class TerminalRenderTests: XCTestCase {
         let paint = try renderer()
         let scene = Terminal.Scene(
             lines: [line("日本語日本語日本語日本語日本語"), Row(width: 10)],
-            marks: [], caret: nil, width: 10, height: 2, back: 0
+            caret: nil, width: 10, height: 2, back: 0
         )
         paint.update(scene: scene, damage: Damage(), selection: nil, strong: true)
         let drawn = try pixels(of: paint)
@@ -351,7 +351,7 @@ final class TerminalRenderTests: XCTestCase {
         let paint = try renderer()
         let scene = Terminal.Scene(
             lines: [line("日本語日本語日本語日本語日本語"), Row(width: 10)],
-            marks: [], caret: nil, width: 10, height: 2, back: 0
+            caret: nil, width: 10, height: 2, back: 0
         )
         paint.update(scene: scene, damage: Damage(), selection: nil, strong: true)
 
@@ -371,7 +371,7 @@ final class TerminalRenderTests: XCTestCase {
         let paint = try renderer()
         let blank = Row(width: 10)
         let before = Terminal.Scene(
-            lines: [line("iiiiiiiiii"), blank], marks: [], caret: nil,
+            lines: [line("iiiiiiiiii"), blank], caret: nil,
             width: 10, height: 2, back: 0, top: 100
         )
         // Four frames of the same words: the ring is three slots deep, so
@@ -384,7 +384,7 @@ final class TerminalRenderTests: XCTestCase {
         // The screen wrote over that row and nothing else — the row beside
         // it is the very row it was — and nothing said so.
         let after = Terminal.Scene(
-            lines: [line("WWWWWWWWWW"), blank], marks: [], caret: nil,
+            lines: [line("WWWWWWWWWW"), blank], caret: nil,
             width: 10, height: 2, back: 0, top: 100
         )
         paint.update(scene: after, damage: Damage(), selection: nil, strong: true)
@@ -404,7 +404,7 @@ final class TerminalRenderTests: XCTestCase {
         let paint = try renderer()
         let rows = [line("alpha"), line("bravo"), line("charlie"), line("delta")]
         let start = Terminal.Scene(
-            lines: rows, marks: [], caret: nil, width: 10, height: 4, back: 0, top: 100
+            lines: rows, caret: nil, width: 10, height: 4, back: 0, top: 100
         )
         for _ in 0..<4 {
             paint.update(scene: start, damage: Damage(), selection: nil, strong: true)
@@ -413,7 +413,7 @@ final class TerminalRenderTests: XCTestCase {
         // The screen scrolled by one: the content moved a row up it, and
         // the bottom row is new. The rows are the very rows they were.
         let moved = Terminal.Scene(
-            lines: [rows[1], rows[2], rows[3], line("echo")], marks: [], caret: nil,
+            lines: [rows[1], rows[2], rows[3], line("echo")], caret: nil,
             width: 10, height: 4, back: 0, top: 101
         )
         paint.update(scene: moved, damage: Damage(scrolled: true), selection: nil, strong: true)
@@ -471,7 +471,7 @@ final class TerminalRenderTests: XCTestCase {
         var row = Row(width: 10)
         for column in 0..<10 { row.cells[column] = Cell(char: "W", ink: ink) }
         let scene = Terminal.Scene(
-            lines: [row, Row(width: 10)], marks: [], caret: nil,
+            lines: [row, Row(width: 10)], caret: nil,
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true)
@@ -506,7 +506,7 @@ final class TerminalRenderTests: XCTestCase {
         for column in 0..<5 { row.cells[column] = Cell(char: "i", ink: straight) }
         for column in 5..<10 { row.cells[column] = Cell(char: "i", ink: curly) }
         let scene = Terminal.Scene(
-            lines: [row, Row(width: 10)], marks: [], caret: nil,
+            lines: [row, Row(width: 10)], caret: nil,
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true)
@@ -545,7 +545,7 @@ final class TerminalRenderTests: XCTestCase {
         var row = Row(width: 10)
         for column in 0..<10 { row.cells[column] = Cell(char: "W", ink: ink) }
         let scene = Terminal.Scene(
-            lines: [row, Row(width: 10)], marks: [], caret: nil,
+            lines: [row, Row(width: 10)], caret: nil,
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true)
@@ -577,7 +577,7 @@ final class TerminalRenderTests: XCTestCase {
         let paint = try renderer()
         let words = line("Metal!")
         let scene = Terminal.Scene(
-            lines: [words, Row(width: 10)], marks: [], caret: nil,
+            lines: [words, Row(width: 10)], caret: nil,
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true, reversed: true)
@@ -602,63 +602,6 @@ final class TerminalRenderTests: XCTestCase {
         XCTAssertGreaterThan(inky, empty * 9 / 10, "the squares behind the words are the theme's ink, not its ground; painted \(inky) of \(empty)")
     }
 
-    // MARK: - the gutter marks (OSC 133)
-
-    /// A command block's gutter mark hangs in the inset beside the grid,
-    /// never inside the first cell — the inset is `origin`'s to carry, and
-    /// a mark that adds it again lands on the prompt itself, where it
-    /// reads as a bar the terminal never drew.
-    func testAGutterMarkHangsBesideTheGridNotOnThePrompt() throws {
-        let paint = try renderer()
-        let marks = [Terminal.Scene.Mark(row: 0, span: 1, failed: false)]
-        let scene = Terminal.Scene(
-            lines: [line("➜ www"), Row(width: 10)], marks: marks, caret: nil,
-            width: 10, height: 2, back: 0
-        )
-        paint.refresh(scene: scene, selection: nil, strong: true, marks: marks)
-        let (pixels, across: width) = try frame(of: paint)
-
-        // The first cell's column holds the prompt's arrow — a mark drawn
-        // there would paint over it. The inset at the grid's left edge is
-        // where a mark belongs: the leftmost pixels the frame has. The mark
-        // is a wisp of the ink mixed toward the ground, so it is found by
-        // its distance from the ground — small, but not nothing.
-        let theme = TerminalDraw.Theme.current()
-        let inset = Int(TerminalDraw.inset * 2)
-        var marked = 0
-        for y in inset..<(inset + Int(paint.cell.height * 2) - 1) {
-            for x in 0..<inset {
-                let o = (y * width + x) * 4
-                let gap = abs(Double(pixels[o]) / 255 - Double(theme.ground.x))
-                    + abs(Double(pixels[o + 1]) / 255 - Double(theme.ground.y))
-                    + abs(Double(pixels[o + 2]) / 255 - Double(theme.ground.z))
-                if gap > 0.3 { marked += 1 }
-            }
-        }
-        XCTAssertGreaterThan(marked, 4, "the mark hangs in the inset at the grid's edge, a wisp of ink off the ground; painted \(marked) pixels there")
-
-        // And it never paints over the prompt: the inset holds the mark,
-        // and the first cell starts after it — the arrow is a glyph, and a
-        // glyph paints letters, not the solid stripe of a bar.
-        var solid = 0
-        for y in inset..<(inset + Int(paint.cell.height * 2) - 1) {
-            for x in inset..<(inset + 3) {
-                let o = (y * width + x) * 4
-                let gap = abs(Double(pixels[o]) / 255 - Double(theme.ink.x))
-                    + abs(Double(pixels[o + 1]) / 255 - Double(theme.ink.y))
-                    + abs(Double(pixels[o + 2]) / 255 - Double(theme.ink.z))
-                if gap < 0.05 { solid += 1 }
-            }
-        }
-        // The arrow's own strokes land here and there — letters — but never
-        // a full column of them: a solid stripe two pixels wide across the
-        // cell is a bar, and a bar is what the mark must not be.
-        XCTAssertLessThan(
-            solid, Int(paint.cell.height * 2) - 1,
-            "nothing paints a solid bar at the first cell's left edge — the prompt's arrow is letters, not a stripe; painted \(solid) solid pixels"
-        )
-    }
-
     // MARK: - SGR 5
 
     /// A word wearing SGR 5 paints on one half of the blink and hides on
@@ -671,7 +614,7 @@ final class TerminalRenderTests: XCTestCase {
         var row = Row(width: 10)
         for column in 0..<10 { row.cells[column] = Cell(char: "W", ink: ink) }
         let scene = Terminal.Scene(
-            lines: [row, Row(width: 10)], marks: [], caret: nil,
+            lines: [row, Row(width: 10)], caret: nil,
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true, blinking: false)

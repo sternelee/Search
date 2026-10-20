@@ -306,10 +306,9 @@ final class TerminalParseTests: XCTestCase {
         XCTAssertEqual(screen.blocks.count, 1)
         XCTAssertEqual(screen.blocks[0].state, .done)
         XCTAssertEqual(screen.blocks[0].exit, 0)
-        XCTAssertFalse(screen.blocks[0].failed)
         feed("\u{1b}]133;A\u{07}$ \u{1b}]133;C\u{07}false\u{1b}]133;D;1\u{07}")
         XCTAssertEqual(screen.blocks.count, 2)
-        XCTAssertTrue(screen.blocks[1].failed)
+        XCTAssertEqual(screen.blocks[1].exit, 1)
     }
 
     func testBell() {

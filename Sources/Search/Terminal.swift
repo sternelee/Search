@@ -397,16 +397,7 @@ final class Terminal: ObservableObject, Identifiable {
     /// the lane's own order, so a frame never reads a screen being
     /// written — a torn row of half a command is worse than a late one.
     struct Scene {
-        /// A gutter mark, as the frame sees it (see TerminalDraw): the red
-        /// one of a failed command, the dim one of a command still running.
-        struct Mark: Equatable {
-            var row: Int          // the first row it covers, in the frame
-            var span: Int         // the rows it covers, one at least
-            var failed: Bool
-        }
-
         var lines: [Row]
-        var marks: [Mark] = []
         var caret: (x: Int, y: Int)?
         var width: Int
         var height: Int
@@ -592,28 +583,8 @@ extension Screen {
             else { lines.append(rows[index - back.count]) }
         }
         let caret = caret(lifted: lifted)
-        // The gutter marks of the command blocks (OSC 133), a place at a
-        // time: the visible row of a place is found the way the rows above
-        // were, the whole screen kept in mind. A block rolled past the top
-        // of the scrollback is gone with its rows.
-        var marks: [Terminal.Scene.Mark] = []
-        let ending = place(y)
-        for block in blocks {
-            // A finished command that went fine leaves no mark — a glance
-            // only wants the failures (red) and the command still running (a
-            // wisp from where it began to the caret). Striping every
-            // finished block's whole span reads as a stray vertical line
-            // once the output is tall.
-            if block.state == .done && !block.failed { continue }
-            let end = block.last ?? ending
-            let first = block.first - backBase - back.count + lifted
-            let last = end - backBase - back.count + lifted
-            let low = max(first, 0), high = min(last, height - 1)
-            guard low <= high else { continue }
-            marks.append(Terminal.Scene.Mark(row: low, span: high - low + 1, failed: block.failed))
-        }
         return Terminal.Scene(
-            lines: lines, marks: marks, caret: caret,
+            lines: lines, caret: caret,
             width: width, height: height, back: back.count,
             // The first line's place: the lift is clamped to the scrollback
             // above, so this is a row that is really there.

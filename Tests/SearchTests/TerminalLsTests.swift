@@ -12,7 +12,7 @@ final class TerminalLsTests: XCTestCase {
         print("DIAG scene lines:", scene.lines.prefix(6).map { $0.text })
         let paint = TerminalDraw(font: .monospacedSystemFont(ofSize: 13, weight: .regular))!
         paint.size(CGRect(x: 0, y: 0, width: 1180, height: 780), scale: 2)
-        paint.refresh(scene: scene, selection: nil, strong: false, marks: scene.marks, finds: [], found: nil)
+        paint.refresh(scene: scene, selection: nil, strong: false, finds: [], found: nil)
         let tex = try XCTUnwrap(paint.snapshot())
         let W = tex.width, H = tex.height
         var px = [UInt8](repeating: 0, count: W * H * 4)

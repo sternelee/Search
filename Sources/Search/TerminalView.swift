@@ -373,7 +373,7 @@ final class TerminalView: NSView, NSTextInputClient {
         paint.update(
             scene: scene, damage: owed, selection: selection(in: scene),
             strong: window?.firstResponder === self,
-            cursor: pacer.caretShown, marks: scene.marks,
+            cursor: pacer.caretShown,
             finds: finds(in: scene), found: found(in: scene),
             reversed: modes.reversed, blinking: pacer.blinkShown
         )

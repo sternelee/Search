@@ -73,11 +73,9 @@ final class TerminalDraw {
     // MARK: - what it draws with
 
     let layer = CAMetalLayer()
-    /// One rect over the grid, in the mark pass: a gutter mark of a
-    /// command block, the highlight of a find, or the cursor when it is not
-    /// a block. The place is in cells — column, row, cells wide, cells tall
-    /// — and can reach outside them, into the inset, for the gutter.
-    /// Mirrored in the shaders.
+    /// One rect over the grid, in the mark pass: the highlight of a find,
+    /// or the cursor when it is not a block. The place is in cells —
+    /// column, row, cells wide, cells tall. Mirrored in the shaders.
     struct Rect {
         var place: simd_float4
         var tint: simd_float4
@@ -307,16 +305,16 @@ final class TerminalDraw {
     // MARK: - one frame's cells
 
     /// Everything a frame says that is not its cells: the uniforms the
-    /// shaders read, and the rects the mark pass draws — the gutter marks
-    /// of the command blocks (OSC 133), the finds a search has left in the
-    /// frame with `found` the one it is standing on, and the caret when it
-    /// is not the block the background pass draws. `cursor` is whether the
-    /// caret is showing at all, which is how a blinking cursor is left out
-    /// of the frames it blinks off in; `strong` is whether the window has
-    /// the keyboard, which halves the ink of a caret that has lost it.
+    /// shaders read, and the rects the mark pass draws — the finds a search
+    /// has left in the frame with `found` the one it is standing on, and
+    /// the caret when it is not the block the background pass draws.
+    /// `cursor` is whether the caret is showing at all, which is how a
+    /// blinking cursor is left out of the frames it blinks off in; `strong`
+    /// is whether the window has the keyboard, which halves the ink of a
+    /// caret that has lost it.
     private func begin(
         scene: Terminal.Scene, theme: Theme, selection: simd_float4?, strong: Bool, showing: Bool,
-        marks: [Terminal.Scene.Mark], finds: [simd_float4], found: simd_float4?,
+        finds: [simd_float4], found: simd_float4?,
         reversed: Bool, blinking: Bool
     ) {
         let columns = scene.width
@@ -356,27 +354,10 @@ final class TerminalDraw {
             )
         }
 
-        // The rects the mark pass draws: the gutter marks first, the
-        // finds over them. A gutter mark hangs in the inset at the grid's
-        // left edge — a sliver of it, ending a point short of the first
-        // cell so a mark never touches a word. Its place is in cells from
-        // the grid's own edge, which is what `origin` already carries: the
-        // inset is not added again, or the sliver lands inside the first
-        // cell instead of beside it. A terminal with no padding has no
-        // room to hang a gutter mark in: the sliver sits at the very edge
-        // rather than outside it.
-        let gutter = Swift.Float(-Double(min(3, TerminalDraw.inset)) / cell.width)
-        let sliver = Swift.Float(2 / cell.width)
+        // The rects the mark pass draws: the finds a search left, the one it
+        // is standing on over them.
         var stripes: [Rect] = []
-        stripes.reserveCapacity(marks.count + finds.count + 2)
-        for gutterMark in marks {
-            stripes.append(Rect(
-                place: SIMD4(gutter, Swift.Float(gutterMark.row), sliver, Swift.Float(gutterMark.span)),
-                tint: gutterMark.failed
-                    ? simd_float4(0.85, 0.19, 0.17, 0.9)
-                    : simd_float4(theme.ink.x, theme.ink.y, theme.ink.z, 0.35)
-            ))
-        }
+        stripes.reserveCapacity(finds.count + 2)
         for hit in finds {
             stripes.append(Rect(place: hit, tint: theme.select))
         }
@@ -436,7 +417,7 @@ final class TerminalDraw {
     /// worth keeping.
     func refresh(
         scene: Terminal.Scene, selection: simd_float4?, strong: Bool, cursor showing: Bool = true,
-        marks: [Terminal.Scene.Mark] = [], finds: [simd_float4] = [], found: simd_float4? = nil,
+        finds: [simd_float4] = [], found: simd_float4? = nil,
         reversed: Bool = false, blinking: Bool = true
     ) {
         let columns = scene.width
@@ -451,7 +432,7 @@ final class TerminalDraw {
         beginAtlas()
         begin(
             scene: scene, theme: theme, selection: selection, strong: strong, showing: showing,
-            marks: marks, finds: finds, found: found, reversed: reversed, blinking: blinking
+            finds: finds, found: found, reversed: reversed, blinking: blinking
         )
         guard let buffer = buffer(slot, columns: columns, lines: lines) else { return }
         let words = buffer.contents().assumingMemoryBound(to: Record.self)
@@ -479,7 +460,7 @@ final class TerminalDraw {
     /// that never comes costs a conversion, not a stale row.
     func update(
         scene: Terminal.Scene, damage: Damage, selection: simd_float4?, strong: Bool,
-        cursor showing: Bool = true, marks: [Terminal.Scene.Mark] = [],
+        cursor showing: Bool = true,
         finds: [simd_float4] = [], found: simd_float4? = nil,
         reversed: Bool = false, blinking: Bool = true
     ) {
@@ -490,7 +471,7 @@ final class TerminalDraw {
         beginAtlas()
         begin(
             scene: scene, theme: theme, selection: selection, strong: strong, showing: showing,
-            marks: marks, finds: finds, found: found, reversed: reversed, blinking: blinking
+            finds: finds, found: found, reversed: reversed, blinking: blinking
         )
         guard let buffer = buffer(slot, columns: columns, lines: lines) else { return }
         let plan = book.plan(
@@ -875,9 +856,9 @@ final class TerminalDraw {
 
     /// The whole renderer in four instanced draws: one pass for the
     /// background a cell paints over the ground (selection and the cursor
-    /// live here), one for the gutter marks and find highlights over it, one
-    /// for the lines under and through struck words, and one for the glyphs,
-    /// each a quad sampling the atlas.
+    /// live here), one for the find highlights and the cursor's own bar or
+    /// line over them, one for the lines under and through struck words,
+    /// and one for the glyphs, each a quad sampling the atlas.
     private static let shaders = """
     #include <metal_stdlib>
     using namespace metal;
@@ -892,8 +873,7 @@ final class TerminalDraw {
     };
 
     // One rect of the mark pass, as the CPU wrote it: a place in cells —
-    // column, row, cells wide, cells tall, the gutter reaching outside —
-    // and its colour.
+    // column, row, cells wide, cells tall — and its colour.
     struct RectRecord {
         float4 place;
         float4 tint;
@@ -1015,9 +995,8 @@ final class TerminalDraw {
         return out;
     }
 
-    // The mark pass: one quad per rect — a command block's gutter mark,
-    // a find's highlight, the cursor when it is not a block — over the
-    // background, under the glyphs.
+    // The mark pass: one quad per rect — a find's highlight, the cursor
+    // when it is not a block — over the background, under the glyphs.
     vertex FlatOut markVertex(
         uint vid [[vertex_id]], uint iid [[instance_id]],
         constant Frame& f [[buffer(1)]], const device RectRecord* rects [[buffer(0)]]

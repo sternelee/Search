@@ -103,10 +103,6 @@ struct Block: Equatable {
     var began: Date?
     var ended: Date?
     var exit: Int32?
-
-    /// A gutter mark in red when the command failed — the one thing about
-    /// a block a glance wants to know.
-    var failed: Bool { exit.map { $0 != 0 } ?? false }
 }
 
 /// Which mouse the program asked to hear, if any. The names are what the

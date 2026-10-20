@@ -79,26 +79,16 @@ final class TerminalPTYTests: XCTestCase {
         terminal.stop()
     }
 
-    /// The shell's own marks (OSC 133) come back as the frame's blocks: a
-    /// command that failed leaves its span in the gutter, red (see
-    /// TerminalDraw, TerminalGrid).
-    func testMarksACommandsSpanAndFailure() {
+    /// The shell's own marks (OSC 133) come back as a block in the grid: one
+    /// span, from the prompt it drew to the end of the command, with the
+    /// exit the shell printed (see TerminalGrid).
+    func testBlocksAreKeptFromTheShellsOwnMarks() {
         let (terminal, _) = runUntilEnded(
             TerminalCommand(argv: ["/bin/sh", "-c", "printf '\u{1b}]133;A\u{7}hi\u{1b}]133;C\u{7}\u{1b}]133;D;7\u{7}'"]))
-        let scene = terminal.scene(scroll: 0)
-        XCTAssertEqual(scene?.marks, [
-            Terminal.Scene.Mark(row: 0, span: 1, failed: true),
-        ], "a block from its prompt to its end, failed: exit 7")
-    }
-
-    /// A command that went fine leaves the gutter alone: a stripe under
-    /// every finished block reads as a stray vertical line once the output
-    /// is tall (the drawing bug a full `ls` screen used to wear).
-    func testMarksLeaveASuccessfulCommandAlone() {
-        let (terminal, _) = runUntilEnded(
-            TerminalCommand(argv: ["/bin/sh", "-c", "printf '\u{1b}]133;A\u{7}hi\u{1b}]133;C\u{7}\u{1b}]133;D;0\u{7}'"]))
-        let scene = terminal.scene(scroll: 0)
-        XCTAssertEqual(scene?.marks, [], "a finished, successful command marks nothing")
+        let kept = terminal.look(scroll: 0) { screen, _ in screen.blocks }
+        XCTAssertEqual(kept?.count, 1, "one block, from the prompt to the end of the command")
+        XCTAssertEqual(kept?.first?.exit, 7, "the exit the shell printed")
+        XCTAssertEqual(kept?.first?.state, .done, "the command is done with")
     }
 
     func testEndsAStubbornProgramByEscalation() {
