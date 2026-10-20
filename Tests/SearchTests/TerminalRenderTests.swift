@@ -602,6 +602,63 @@ final class TerminalRenderTests: XCTestCase {
         XCTAssertGreaterThan(inky, empty * 9 / 10, "the squares behind the words are the theme's ink, not its ground; painted \(inky) of \(empty)")
     }
 
+    // MARK: - the gutter marks (OSC 133)
+
+    /// A command block's gutter mark hangs in the inset beside the grid,
+    /// never inside the first cell — the inset is `origin`'s to carry, and
+    /// a mark that adds it again lands on the prompt itself, where it
+    /// reads as a bar the terminal never drew.
+    func testAGutterMarkHangsBesideTheGridNotOnThePrompt() throws {
+        let paint = try renderer()
+        let marks = [Terminal.Scene.Mark(row: 0, span: 1, failed: false)]
+        let scene = Terminal.Scene(
+            lines: [line("➜ www"), Row(width: 10)], marks: marks, caret: nil,
+            width: 10, height: 2, back: 0
+        )
+        paint.refresh(scene: scene, selection: nil, strong: true, marks: marks)
+        let (pixels, across: width) = try frame(of: paint)
+
+        // The first cell's column holds the prompt's arrow — a mark drawn
+        // there would paint over it. The inset at the grid's left edge is
+        // where a mark belongs: the leftmost pixels the frame has. The mark
+        // is a wisp of the ink mixed toward the ground, so it is found by
+        // its distance from the ground — small, but not nothing.
+        let theme = TerminalDraw.Theme.current()
+        let inset = Int(TerminalDraw.inset * 2)
+        var marked = 0
+        for y in inset..<(inset + Int(paint.cell.height * 2) - 1) {
+            for x in 0..<inset {
+                let o = (y * width + x) * 4
+                let gap = abs(Double(pixels[o]) / 255 - Double(theme.ground.x))
+                    + abs(Double(pixels[o + 1]) / 255 - Double(theme.ground.y))
+                    + abs(Double(pixels[o + 2]) / 255 - Double(theme.ground.z))
+                if gap > 0.3 { marked += 1 }
+            }
+        }
+        XCTAssertGreaterThan(marked, 4, "the mark hangs in the inset at the grid's edge, a wisp of ink off the ground; painted \(marked) pixels there")
+
+        // And it never paints over the prompt: the inset holds the mark,
+        // and the first cell starts after it — the arrow is a glyph, and a
+        // glyph paints letters, not the solid stripe of a bar.
+        var solid = 0
+        for y in inset..<(inset + Int(paint.cell.height * 2) - 1) {
+            for x in inset..<(inset + 3) {
+                let o = (y * width + x) * 4
+                let gap = abs(Double(pixels[o]) / 255 - Double(theme.ink.x))
+                    + abs(Double(pixels[o + 1]) / 255 - Double(theme.ink.y))
+                    + abs(Double(pixels[o + 2]) / 255 - Double(theme.ink.z))
+                if gap < 0.05 { solid += 1 }
+            }
+        }
+        // The arrow's own strokes land here and there — letters — but never
+        // a full column of them: a solid stripe two pixels wide across the
+        // cell is a bar, and a bar is what the mark must not be.
+        XCTAssertLessThan(
+            solid, Int(paint.cell.height * 2) - 1,
+            "nothing paints a solid bar at the first cell's left edge — the prompt's arrow is letters, not a stripe; painted \(solid) solid pixels"
+        )
+    }
+
     // MARK: - SGR 5
 
     /// A word wearing SGR 5 paints on one half of the blink and hides on

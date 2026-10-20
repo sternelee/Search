@@ -357,16 +357,18 @@ final class TerminalDraw {
         }
 
         // The rects the mark pass draws: the gutter marks first, the
-        // finds over them. A gutter mark is a sliver of the inset — a
-        // failed command in red, a running one a wisp of the ink; a find
-        // is the cell itself, the theme's selection, the current one held
-        // harder.
+        // finds over them. A gutter mark hangs in the inset at the grid's
+        // left edge — a sliver of it, ending a point short of the first
+        // cell so a mark never touches a word. Its place is in cells from
+        // the grid's own edge, which is what `origin` already carries: the
+        // inset is not added again, or the sliver lands inside the first
+        // cell instead of beside it. A terminal with no padding has no
+        // room to hang a gutter mark in: the sliver sits at the very edge
+        // rather than outside it.
+        let gutter = Swift.Float(-Double(min(3, TerminalDraw.inset)) / cell.width)
+        let sliver = Swift.Float(2 / cell.width)
         var stripes: [Rect] = []
         stripes.reserveCapacity(marks.count + finds.count + 2)
-        // A terminal with no padding has no room to hang a gutter mark in:
-        // the sliver sits at the very edge rather than outside it.
-        let gutter = Swift.Float(max(0, TerminalDraw.inset - 1) / cell.width)
-        let sliver = Swift.Float(2 / cell.width)
         for gutterMark in marks {
             stripes.append(Rect(
                 place: SIMD4(gutter, Swift.Float(gutterMark.row), sliver, Swift.Float(gutterMark.span)),
