@@ -40,9 +40,17 @@ final class TerminalPacer {
         /// A program is holding the screen (synchronized output, 2026).
         /// Nothing shows until it lets go, however much arrives meanwhile.
         static let hold = Purpose(rawValue: 1 << 3)
+        /// Words wearing SGR 5 are on the screen, and this is what keeps
+        /// time for their half of the blink. Held only while any are: the
+        /// frames it owes are drawn in step with the caret's, so one
+        /// blink's phase serves both — the clock starts them together,
+        /// and the same flip carries them.
+        static let blink = Purpose(rawValue: 1 << 4)
     }
 
-    /// Twice a second, which is what a Mac's own caret blinks at.
+    /// Twice a second, which is what a Mac's own caret blinks at — and
+    /// what SGR 5 blinks at, because a terminal that blinked its words at
+    /// one rate and its caret at another would never let either settle.
     private static let blink: CFTimeInterval = 0.5
 
     /// How long a program may hold the screen before the frames are let
@@ -67,6 +75,10 @@ final class TerminalPacer {
     /// Whether the caret shows in the frame now being drawn. Only the
     /// clock in here moves it; the view reads it as it draws.
     private(set) var caretShown = true
+    /// Whether words wearing SGR 5 show in the frame now being drawn —
+    /// the words' half of the same blink the caret is the other half of.
+    /// Only the clock in here moves it; the view reads it as it draws.
+    private(set) var blinkShown = true
 
     private var link: CADisplayLink?
     private var blinkedAt: CFTimeInterval = 0
@@ -99,6 +111,17 @@ final class TerminalPacer {
         want(.once)
     }
 
+    /// The last of the blinking words has left the screen: the reason goes
+    /// with it, and the frame that says so is asked for once — a frame
+    /// drawn on the half of the blink that hides them would otherwise
+    /// keep hiding them forever.
+    func dropBlink() {
+        guard purpose.contains(.blink) else { return }
+        purpose.remove(.blink)
+        blinkShown = true
+        want(.once)
+    }
+
     /// A program that was holding the screen has let go: the frame it was
     /// holding back is owed now, and it is the one that shows everything
     /// that arrived while it held.
@@ -116,6 +139,7 @@ final class TerminalPacer {
         link = nil
         purpose = []
         caretShown = true
+        blinkShown = true
     }
 
     // MARK: - the clock
@@ -154,12 +178,13 @@ final class TerminalPacer {
     func tick(now: CFTimeInterval) {
         // The blink first, so a frame drawn for another reason is already
         // on the right half of it rather than showing a caret that should
-        // have blinked out.
+        // have blinked out. The caret and the words flip together: one
+        // clock, one phase, one frame that carries both halves of the flip.
         var flipped = false
-        if purpose.contains(.caret), now - blinkedAt >= TerminalPacer.blink {
+        if purpose.contains(.caret) || purpose.contains(.blink), now - blinkedAt >= TerminalPacer.blink {
             blinkedAt = now
-            caretShown.toggle()
-            flipped = true
+            if purpose.contains(.caret) { caretShown.toggle(); flipped = true }
+            if purpose.contains(.blink) { blinkShown.toggle(); flipped = true }
         }
 
         // A program holding the screen gets no frames until it lets go.

@@ -108,9 +108,43 @@ final class TerminalParseTests: XCTestCase {
 
     func testSGRWithSubParameters() {
         // A colon speaks the sub-parameter's semicolon (4:3 the curly
-        // underline, the straight one as far as this is concerned).
+        // underline, 4:4 the dotted one — kept as an underline, though
+        // the screen draws the two of them the same heavy way).
         feed("\u{1b}[4:3mX")
         XCTAssertTrue(screen.rows[0].cells[0].ink.underline)
+        XCTAssertTrue(screen.rows[0].cells[0].ink.curl, "4:3 is the curly underline")
+        feed("\u{1b}[4:4mY")
+        XCTAssertTrue(screen.rows[0].cells[1].ink.underline, "4:4 is still an underline")
+        XCTAssertFalse(screen.rows[0].cells[1].ink.curl, "4:4 is dotted, not curly")
+        feed("\u{1b}[24m.")
+        XCTAssertFalse(screen.ink.underline)
+        XCTAssertFalse(screen.ink.curl, "24 takes the line away, whatever its style")
+    }
+
+    /// SGR 21 is the double underline — the one it was taken for in the
+    /// days when a vt220 could not hold a style it had not the line for.
+    /// 22 is the other one: bold and faint off, the pair SGR 1 and 2 set.
+    func testSGR21IsTheDoubleUnderlineNotBoldOff() {
+        feed("\u{1b}[1mb\u{1b}[21mu")
+        XCTAssertTrue(screen.rows[0].cells[0].ink.bold, "21 leaves bold alone")
+        XCTAssertTrue(screen.rows[0].cells[1].ink.underline, "21 is the double underline")
+        XCTAssertFalse(screen.rows[0].cells[1].ink.curl, "21 is double, not curly")
+        feed("\u{1b}[4:3mc\u{1b}[21mv")
+        XCTAssertTrue(screen.rows[0].cells[3].ink.underline)
+        XCTAssertFalse(screen.rows[0].cells[3].ink.curl, "21 replaces the curly style with the double one")
+    }
+
+    /// SGR 58: the line under (or through) the words gets a colour of its
+    /// own — the same two forms 38 and 48 speak — and 59 takes it away.
+    func testSGR58IsTheLinesOwnColour() {
+        feed("\u{1b}[4;58;5;196mu")
+        XCTAssertEqual(screen.ink.underline, true)
+        XCTAssertEqual(screen.ink.line, .ansi(196), "58;5;n names the line's colour from the 256")
+        feed("\u{1b}[9;58;2;10;20;30ms")
+        XCTAssertEqual(screen.ink.line, .rgb(10, 20, 30), "58;2;r;g;b names it from the colour itself")
+        feed("\u{1b}[59m.")
+        XCTAssertEqual(screen.ink.line, .plain, "59 takes the line's colour away")
+        XCTAssertEqual(screen.ink.strike, true, "59 leaves the strike alone")
     }
 
     // MARK: The private modes

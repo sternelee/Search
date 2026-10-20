@@ -189,7 +189,8 @@
 
 ## 七、还没做的
 
-- **视觉细节**：SGR 5 闪烁真正绘制（`ink.blink` 解析了但渲染器不读）、下划线/删除线的样式与颜色（SGR 4:x / 58）、DECSCNM 反显（`reverseVideo` 解析进 `Modes` 了但渲染器不用）、SGR 21 的正确含义（现在是"关粗体"，实为双下划线 —— 这是个真 bug，`TerminalParse.swift:381`）、隐藏格子仍画下划线。
+- ~~**视觉细节**~~（已落地）：SGR 5 闪烁真正绘制（Pacer 加 `.blink` 目的，与 caret 共用同一个时钟与相位，半个周期隐藏字形；屏幕上没有闪烁字时该目的自动退场）、下划线/删除线的样式与颜色（SGR 4:3 记入 `Ink.curl`，画成加重线；58/59 记入 `Ink.line`，装饰 pass 用它）、DECSCNM 反显（`Modes.reversed`，background 与 glyph 两个 pass 一起把格子翻面，Record 的 `spare` 改名为 `decoration`）、SGR 21 修正为双下划线（`TerminalParse.swift`：不再关粗体）、隐藏格子不再画下划线。
+- **下划线样式的诚实上限**：4:4（dotted）与 4:5（dashed）在格子模型里与直线同权重绘制——一个 quad 装不下一个真正的波浪/点划线，解析层如实记账，绘制层用加重线作为简写。
 - **Kitty 键盘协议**（CSI u）：一整套编码 + 旗标状态机，单独一轮更稳。目前查询如实回答"不支持"。
 - **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、彩色 emoji 图集、平滑滚动动画。
 - **Metalterm 的标志性 UX**：底部输入坞、命令块折叠、状态栏 + git、光标动效。

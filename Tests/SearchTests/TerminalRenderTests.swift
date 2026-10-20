@@ -53,7 +53,7 @@ final class TerminalRenderTests: XCTestCase {
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true)
-        let (pixels, width) = try frame(of: paint)
+        let (pixels, across: width) = try frame(of: paint)
 
         let theme = TerminalDraw.Theme.current()
         // The cursor's cell: the inset over, the first cell square. Any pixel
@@ -87,7 +87,7 @@ final class TerminalRenderTests: XCTestCase {
             width: 10, height: 2, back: 0
         )
         paint.refresh(scene: scene, selection: nil, strong: true)
-        let (pixels, width) = try frame(of: paint)
+        let (pixels, across: width) = try frame(of: paint)
 
         let theme = TerminalDraw.Theme.current()
         let inset = Int(TerminalDraw.inset * 2)
@@ -178,7 +178,7 @@ final class TerminalRenderTests: XCTestCase {
         _ paint: TerminalDraw, scene: Terminal.Scene, strong: Bool
     ) throws -> [(red: Int, green: Int, blue: Int)] {
         paint.refresh(scene: scene, selection: nil, strong: strong)
-        let (pixels, width) = try frame(of: paint)
+        let (pixels, across: width) = try frame(of: paint)
 
         let inset = Int(TerminalDraw.inset * 2)
         var cell: [(red: Int, green: Int, blue: Int)] = []
@@ -456,5 +456,173 @@ final class TerminalRenderTests: XCTestCase {
                 "the frame after \(word) is the frame the screen shows"
             )
         }
+    }
+
+    // MARK: - the lines a word can wear
+
+    /// A word that asked for a line under it gets one, in the colour the
+    /// program named for the line (SGR 58) when it named one, and in the
+    /// ink of the words it runs under when it named none.
+    func testALineUnderAWordPaintsInTheColourTheProgramNamed() throws {
+        let paint = try renderer()
+        var ink = Ink()
+        ink.underline = true
+        ink.line = .rgb(255, 0, 0)
+        var row = Row(width: 10)
+        for column in 0..<10 { row.cells[column] = Cell(char: "W", ink: ink) }
+        let scene = Terminal.Scene(
+            lines: [row, Row(width: 10)], marks: [], caret: nil,
+            width: 10, height: 2, back: 0
+        )
+        paint.refresh(scene: scene, selection: nil, strong: true)
+        let (pixels, across: width) = try frame(of: paint)
+
+        // The line sits under the words, at the bottom of the first row:
+        // red pixels there — the pure red a program named, which nothing
+        // else in the frame is.
+        let inset = Int(TerminalDraw.inset * 2)
+        var red = 0
+        var redRow = 0
+        for y in inset..<(inset + Int(paint.cell.height * 2) - 1) {
+            var rowRed = 0
+            for x in inset..<(inset + Int(paint.cell.width * 2 * 10)) {
+                let o = (y * width + x) * 4
+                // The drawable is BGRA: red is the third byte.
+                if pixels[o + 2] > 200, pixels[o] < 60, pixels[o + 1] < 60 { rowRed += 1 }
+            }
+            if rowRed > red { red = rowRed; redRow = y }
+        }
+        XCTAssertGreaterThan(red, 10, "the line under the words wears the colour the program named it; painted \(red) red pixels at row \(redRow)")
+    }
+
+    /// A curly line (4:3) is drawn as the heavier one — a line that carries
+    /// more weight than the straight one beside it, which is the shorthand
+    /// a quad holds for a wave at cell sizes.
+    func testACurlyLineIsDrawnHeavierThanAStraightOne() throws {
+        let paint = try renderer()
+        var straight = Ink(); straight.underline = true
+        var curly = straight; curly.curl = true
+        var row = Row(width: 10)
+        for column in 0..<5 { row.cells[column] = Cell(char: "i", ink: straight) }
+        for column in 5..<10 { row.cells[column] = Cell(char: "i", ink: curly) }
+        let scene = Terminal.Scene(
+            lines: [row, Row(width: 10)], marks: [], caret: nil,
+            width: 10, height: 2, back: 0
+        )
+        paint.refresh(scene: scene, selection: nil, strong: true)
+        let (pixels, across: width) = try frame(of: paint)
+
+        let theme = TerminalDraw.Theme.current()
+        let inset = Int(TerminalDraw.inset * 2)
+        let cell = Int(paint.cell.width * 2)
+        func lined(_ from: Int, _ to: Int) -> Int {
+            var painted = 0
+            for y in inset..<(inset + Int(paint.cell.height * 2) - 1) {
+                for x in (inset + from * cell)..<(inset + to * cell) {
+                    let o = (y * width + x) * 4
+                    let gap = abs(Double(pixels[o]) / 255 - Double(theme.ink.x))
+                        + abs(Double(pixels[o + 1]) / 255 - Double(theme.ink.y))
+                        + abs(Double(pixels[o + 2]) / 255 - Double(theme.ink.z))
+                    if gap < 0.2 { painted += 1 }
+                }
+            }
+            return painted
+        }
+        let heavy = lined(5, 10), plain = lined(0, 5)
+        XCTAssertGreaterThan(
+            Double(heavy) / Double(max(1, plain)), 1.3,
+            "the curly line carries more weight than the straight one; \(heavy) pixels against \(plain)"
+        )
+    }
+
+    /// A hidden word (SGR 8) wears nothing at all — not the glyph, and not
+    /// the line under it, which is the one thing that would give it away.
+    func testAHiddenWordWearsNoLineEither() throws {
+        let paint = try renderer()
+        var ink = Ink()
+        ink.hidden = true
+        ink.underline = true
+        var row = Row(width: 10)
+        for column in 0..<10 { row.cells[column] = Cell(char: "W", ink: ink) }
+        let scene = Terminal.Scene(
+            lines: [row, Row(width: 10)], marks: [], caret: nil,
+            width: 10, height: 2, back: 0
+        )
+        paint.refresh(scene: scene, selection: nil, strong: true)
+        let (pixels, across: width) = try frame(of: paint)
+
+        let theme = TerminalDraw.Theme.current()
+        // The whole first row is the ground — the words are hidden, and so
+        // are the lines that would have run under them.
+        let inset = Int(TerminalDraw.inset * 2)
+        var stray = 0
+        for y in inset..<(inset + Int(paint.cell.height * 2) - 1) {
+            for x in inset..<(inset + Int(paint.cell.width * 2 * 10)) {
+                let o = (y * width + x) * 4
+                let gap = abs(Double(pixels[o]) / 255 - Double(theme.ground.x))
+                    + abs(Double(pixels[o + 1]) / 255 - Double(theme.ground.y))
+                    + abs(Double(pixels[o + 2]) / 255 - Double(theme.ground.z))
+                if gap > 0.1 { stray += 1 }
+            }
+        }
+        XCTAssertEqual(stray, 0, "a hidden word is hidden whole — glyph and line both; \(stray) pixels off the ground")
+    }
+
+    // MARK: - DECSCNM
+
+    /// A reversed screen (DECSCNM) turns a square over: the words that
+    /// named no ink paint in it, and the ground behind them is the ground
+    /// — the whole screen the negative of the one it was.
+    func testAReversedScreenPaintsTheNegativeOfItself() throws {
+        let paint = try renderer()
+        let words = line("Metal!")
+        let scene = Terminal.Scene(
+            lines: [words, Row(width: 10)], marks: [], caret: nil,
+            width: 10, height: 2, back: 0
+        )
+        paint.refresh(scene: scene, selection: nil, strong: true, reversed: true)
+        let (pixels, across: width) = try frame(of: paint)
+
+        // The ground behind the words is the ink of the theme — every
+        // square that named nothing is named for its ink — and the words
+        // themselves paint in the ground's colour.
+        let theme = TerminalDraw.Theme.current()
+        let inset = Int(TerminalDraw.inset * 2)
+        var inky = 0
+        for y in inset..<(inset + Int(paint.cell.height * 2) - 1) {
+            for x in (inset + Int(paint.cell.width * 2 * 6))..<(inset + Int(paint.cell.width * 2 * 10)) {
+                let o = (y * width + x) * 4
+                let gap = abs(Double(pixels[o]) / 255 - Double(theme.ink.x))
+                    + abs(Double(pixels[o + 1]) / 255 - Double(theme.ink.y))
+                    + abs(Double(pixels[o + 2]) / 255 - Double(theme.ink.z))
+                if gap < 0.1 { inky += 1 }
+            }
+        }
+        let empty = Int(paint.cell.width * 2 * 4) * (Int(paint.cell.height * 2) - 1)
+        XCTAssertGreaterThan(inky, empty * 9 / 10, "the squares behind the words are the theme's ink, not its ground; painted \(inky) of \(empty)")
+    }
+
+    // MARK: - SGR 5
+
+    /// A word wearing SGR 5 paints on one half of the blink and hides on
+    /// the other — and only the word: the square it sits on is whatever the
+    /// ground says of it.
+    func testABlinkingWordHidesOnTheHalfItBlinkedOff() throws {
+        let paint = try renderer()
+        var ink = Ink()
+        ink.blink = true
+        var row = Row(width: 10)
+        for column in 0..<10 { row.cells[column] = Cell(char: "W", ink: ink) }
+        let scene = Terminal.Scene(
+            lines: [row, Row(width: 10)], marks: [], caret: nil,
+            width: 10, height: 2, back: 0
+        )
+        paint.refresh(scene: scene, selection: nil, strong: true, blinking: false)
+        var hidden = specks(try pixels(of: paint))
+        XCTAssertEqual(hidden, 0, "a blinked-off word is not on the screen at all; painted \(hidden) pixels")
+
+        paint.refresh(scene: scene, selection: nil, strong: true, blinking: true)
+        hidden = specks(try pixels(of: paint))
+        XCTAssertGreaterThan(hidden, 300, "the same word, blinked back on, is; painted \(hidden) pixels")
     }
 }

@@ -30,10 +30,22 @@ struct Ink: Equatable {
     var faint = false
     var italic = false
     var underline = false
+    /// SGR 21 — double — and SGR 4:3, curly, land here as styles; 4:4 is
+    /// dotted, 4:5 dashed, 4:1 straight. Styles other than straight and
+    /// curly are not told apart on screen — every terminal draws them a
+    /// little differently, so the two that carry the style's weight (the
+    /// line, and the doubled one) are the ones drawn; the rest answer the
+    /// pen honestly, so a program that asks what it set gets back what it
+    /// set, which is a fuller truth than the screen's.
+    var curl = false
     var strike = false
     var blink = false
     var inverse = false
     var hidden = false
+    /// SGR 58;5;n / 58;2;r;g;b: the line's own colour, which without one
+    /// is the ink of the words it runs under. Also the colour of a
+    /// strike-through, which no other terminal of the kind draws at all.
+    var line: Paint = .plain
 
     static let plain = Ink()
 }
@@ -140,6 +152,11 @@ struct Modes: Equatable {
     var focus = false             // 1004: the program wants to hear the keyboard come and go
     var sync = false              // 2026: the program is holding the screen while it composes
     var visible = true            // DECTCEM: whether the caret is there at all
+    /// DECSCNM (DECSET ?5): the whole screen is reversed. Part of the word
+    /// and not of the cells: it turns over what every square says without
+    /// touching any of them — the mark of a thing that belongs in a frame,
+    /// not in a record, and the reason the word carries it here.
+    var reversed = false
 }
 
 /// What feeding the screen changed, for whoever draws it: the rows by
@@ -325,7 +342,7 @@ final class Screen {
         Modes(
             mouse: mouse, mouseFormat: mouseFormat, applicationCursor: applicationCursor,
             applicationKeypad: applicationKeypad,
-            focus: focusReporting, sync: syncOutput, visible: visible
+            focus: focusReporting, sync: syncOutput, visible: visible, reversed: reverseVideo
         )
     }
 
