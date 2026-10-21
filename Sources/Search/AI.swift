@@ -133,6 +133,41 @@ enum AIProvider: String, CaseIterable, Identifiable {
     }
 }
 
+/// How hard the model thinks before it speaks: the reasoning effort sent
+/// with each request, where the provider supports it. Off for providers
+/// that don't think, and for the engine on this Mac (its model never does).
+enum BotThinking: String, CaseIterable, Identifiable {
+    case off, low, medium, high
+    var id: String { rawValue }
+    var name: String {
+        switch self {
+        case .off: return "Off"
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        }
+    }
+    /// The budget sent to a provider that takes one: a number of tokens the
+    /// model may spend on thinking. Nil for off, where nothing is asked for.
+    var budget: Int? {
+        switch self {
+        case .off: return nil
+        case .low: return 1024
+        case .medium: return 4096
+        case .high: return 16384
+        }
+    }
+    /// OpenAI's reasoning effort string, where the model takes one.
+    var effort: String? {
+        switch self {
+        case .off: return nil
+        case .low: return "low"
+        case .medium: return "medium"
+        case .high: return "high"
+        }
+    }
+}
+
 /// The keys, in this Mac's keychain.
 ///
 /// This Mac's own keychain, as ordinary keychain items under a service of the

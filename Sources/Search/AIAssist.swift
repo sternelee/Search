@@ -602,6 +602,36 @@ struct AISettings: View {
                 }
                 .onAppear(perform: refresh)
                 Card {
+                    Line("Thinking", "How hard the model reasons before it speaks — off for providers that don't think, and for the model on this Mac") {
+                        if drawn {
+                            Stand(prefs.botThinking.name, menu: true)
+                        } else {
+                            Picker("", selection: $prefs.botThinking) {
+                                ForEach(BotThinking.allCases) { level in
+                                    Text(level.name).tag(level)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .fixedSize()
+                        }
+                    }
+                    Rule()
+                    Line("Tool calls", "The most tool calls one turn makes before it wraps up with an answer") {
+                        if drawn {
+                            Stand("\(prefs.botSteps)")
+                        } else {
+                            Stepper(value: $prefs.botSteps, in: 1...50) {
+                                Text("\(prefs.botSteps)")
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(Palette.ink)
+                                    .frame(width: 28, alignment: .trailing)
+                            }
+                            .fixedSize()
+                        }
+                    }
+                }
+                Card {
                     Line("Forget every key", "Deletes them from this Mac's keychain. A key made by signing in with OpenRouter still works until you delete it on openrouter.ai") {
                         Pill("Forget") {
                             AIKeys.forgetAll()

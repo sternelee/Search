@@ -142,6 +142,12 @@ final class Bot: ObservableObject, Identifiable {
     /// is no hand there to allow it.
     var unattended = false
     @Published var draft = ""
+    /// How hard the model thinks before it speaks (see BotThinking). Read
+    /// by the loop when it asks the model; the person changes it in Settings.
+    var thinking: BotThinking = .off
+    /// The most tool calls one turn makes before it wraps up. Read by the
+    /// loop in place of Bot.steps; the person changes it in Settings.
+    var steps: Int = Bot.steps
     /// Told when a turn is over — an answer, a card, a trouble, or the panel
     /// closed on it — with the trouble's words, or nothing. The scheduled
     /// run listens (see Chores); nothing else does.
@@ -656,7 +662,11 @@ final class Loop {
     private let provider: AIProvider
     private let model: String
     private let key: String?
-    private var steps = Bot.steps
+    private var steps: Int
+    /// The steps ran out once: the model was asked to wrap up, and a second
+    /// run-out stops for good rather than looping on the last chance.
+    private var wrappedUp = false
+    private let thinking: BotThinking
     private var messages: [AIMessage]
     private var question: String
     private var task: Task<Void, Never>?
@@ -679,6 +689,8 @@ final class Loop {
         self.key = provider.isLocal ? nil : AIKeys.key(for: provider)
         self.question = question
         self.messages = messages
+        self.steps = bot.steps
+        self.thinking = bot.thinking
     }
 
     func start() {
@@ -893,8 +905,19 @@ final class Loop {
     private func think() {
         guard let bot else { return }
         guard steps > 0 else {
-            bot.tell(Bot.Event(kind: .trouble, words: "The task ran out of steps — say more of what you want and it can carry on.", act: nil))
-            bot.over(nil)
+            guard !wrappedUp else {
+                // The wrap-up chance was already given and the model didn't
+                // answer: stopped for good, the person told so they can carry
+                // on with their own words.
+                bot.tell(Bot.Event(kind: .trouble, words: "The task ran out of steps — say more of what you want and it can carry on.", act: nil))
+                bot.over(nil)
+                return
+            }
+            wrappedUp = true
+            // The steps are done: one more ask, so the model can wrap up with
+            // an answer rather than the talk just stopping mid-work.
+            bot.tell(Bot.Event(kind: .say, words: "wrapping up…", act: nil))
+            observe(note: "You've used your steps. Give your answer now — what you found, what you did, or what's left undone — in one reply, and stop.", full: false, first: false)
             return
         }
         steps -= 1
@@ -904,7 +927,7 @@ final class Loop {
         let system = Bot.system + Bot.remembered + AIDescribed.forTheBot()
         let stream = provider == .thisMac
             ? AIEngine.shared.stream(system: system, messages: messages)
-            : AIClient.shared.stream(provider, model: model, system: system, messages: messages, key: key)
+            : AIClient.shared.stream(provider, model: model, system: system, messages: messages, key: key, thinking: thinking)
         var whole = ""
         // The reply coming in, shown as it comes: plain words as they're
         // said, and the words a JSON line holds while it's still arriving.
@@ -1680,6 +1703,8 @@ extension Browser {
         if held { talk = botEverywhere ? heldEvery : heldTalks[tab.id] }
         let bot = Bot(tab: tab, provider: talk?.provider ?? provider, model: talk?.model ?? model,
                       mode: botEverywhere ? .every : .page)
+        bot.thinking = prefs.botThinking
+        bot.steps = prefs.botSteps
         if let talk { bot.takeUp(talk) }
         botting = bot
     }
