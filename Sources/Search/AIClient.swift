@@ -112,12 +112,14 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     /// The answer to `messages`, a piece at a time — the answer's words and
     /// a thinking model's thoughts, told apart (see AIPiece). `system` says
     /// what the model is for and how to treat the page (see AIPage.system).
+    /// `thinking` asks a model that can to spend more effort before it speaks;
+    /// nil or `.off` leaves it at its default.
     func stream(_ provider: AIProvider, model: String, system: String, messages: [AIMessage],
-                key: String?, patience: TimeInterval? = nil) -> AsyncThrowingStream<AIPiece, Error> {
+                key: String?, patience: TimeInterval? = nil, thinking: BotThinking = .off) -> AsyncThrowingStream<AIPiece, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    var request = try Self.request(provider, model: model, system: system, messages: messages, key: key)
+                    var request = try Self.request(provider, model: model, system: system, messages: messages, key: key, thinking: thinking)
                     // A test says how long it will wait; everything else takes
                     // the client's own patience (the session's configuration).
                     if let patience { request.timeoutInterval = patience }
@@ -164,9 +166,10 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
 
     /// The request as the provider wants it, with the key in a header — never
     /// in the address, which ends up in errors and logs — and only once the
-    /// address is known to be the provider's own.
+    /// address is known to be the provider's own. `thinking` asks a model
+    /// that can to reason before it speaks; off leaves the request unchanged.
     static func request(_ provider: AIProvider, model: String, system: String, messages: [AIMessage],
-                        key: String?) throws -> URLRequest {
+                        key: String?, thinking: BotThinking = .off) throws -> URLRequest {
         let url: URL
         var body: [String: Any]
         switch provider.wire {
@@ -181,12 +184,22 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
             // A limit on the answer, for every one: OpenAI's own models take
             // it under its newer name.
             body[provider == .openAI ? "max_completion_tokens" : "max_tokens"] = 2048
+            // A reasoning model's effort: only the models that take one read
+            // it; the rest ignore it.
+            if let effort = thinking.effort { body["reasoning_effort"] = effort }
         case .anthropic:
             url = provider.base.appendingPathComponent("messages")
             body = [
                 "model": model, "stream": true, "max_tokens": 2048, "system": system,
                 "messages": messages.map { ["role": $0.role.rawValue, "content": $0.text] },
             ]
+            // Extended thinking: a budget of tokens the model may spend on
+            // thinking before it speaks. The budget must be less than
+            // max_tokens, so max_tokens grows with it.
+            if let budget = thinking.budget {
+                body["max_tokens"] = 2048 + budget
+                body["thinking"] = ["type": "enabled", "budget_tokens": budget]
+            }
         case .gemini:
             // The model's name is part of the path; nothing of the key is.
             let name = model.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._"))) ?? ""
@@ -197,7 +210,7 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
             body = [
                 "systemInstruction": ["parts": [["text": system]]],
                 "contents": messages.map { ["role": $0.role == .user ? "user" : "model", "parts": [["text": $0.text]]] },
-                "generationConfig": ["maxOutputTokens": 2048],
+                "generationConfig": thinking.budget.map { ["maxOutputTokens": 2048, "thinkingConfig": ["thinkingBudget": $0]] } ?? ["maxOutputTokens": 2048],
             ]
         }
         guard allowed(url, for: provider) else { throw AIError.refusedHost }

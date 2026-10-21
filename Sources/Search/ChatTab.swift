@@ -281,6 +281,8 @@ extension Browser {
         // AIDescribed).
         MCPHub.shared.wake()
         let bot = Bot(chat: tab, provider: provider, model: model)
+        bot.thinking = prefs.botThinking
+        bot.steps = prefs.botSteps
         chatBots[tab.id] = bot
         return tab
     }

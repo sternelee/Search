@@ -352,6 +352,16 @@ final class Preferences: ObservableObject {
     @Published private(set) var aiBases: [String: String] {
         didSet { store.set(aiBases, forKey: AIProvider.addressesKey) }
     }
+    /// How hard the model thinks before it speaks (see BotThinking). Off
+    /// for providers that don't think, and for the engine on this Mac.
+    @Published var botThinking: BotThinking {
+        didSet { store.set(botThinking.rawValue, forKey: "bot.thinking") }
+    }
+    /// The most tool calls one turn of the bot makes before it wraps up
+    /// (see Bot.steps). A person who sets it higher lets the bot work longer.
+    @Published var botSteps: Int {
+        didSet { store.set(botSteps, forKey: "bot.steps") }
+    }
 
     /// What was named, as typed — the provider's own address until what was
     /// typed is an address at all (see AIProvider.named).
@@ -474,6 +484,8 @@ final class Preferences: ObservableObject {
         aiProvider = store.string(forKey: "ai.provider").flatMap(AIProvider.init(rawValue:))
         aiModels = store.dictionary(forKey: "ai.models") as? [String: String] ?? [:]
         aiBases = store.dictionary(forKey: AIProvider.addressesKey) as? [String: String] ?? [:]
+        botThinking = BotThinking(rawValue: store.string(forKey: "bot.thinking") ?? "") ?? .off
+        botSteps = store.object(forKey: "bot.steps") as? Int ?? 12
         commandBar = store.bool(forKey: "commandbar")
         let history = store.bool(forKey: "swipe.history")
         holdsHistory = history
