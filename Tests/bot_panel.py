@@ -44,6 +44,8 @@ test's own is the page. Checked here:
   the stop    a turn stopped midway (see Bot.stop): the reply cut where it is,
               quietly, and nothing of it carried after; an act let go, told so;
               a command stopped with it, stopped where it runs
+  the goto    a page gone to (see route): held for the person's Allow like any
+              act on the page — refused, the page stays; allowed, it goes
 """
 
 import hashlib
@@ -779,6 +781,45 @@ def tab_here(id):
     """Whether a tab stands in the row, by its bench id."""
     return any(tab["id"] == id for tab in cmd({"do": "tabs"}).get("tabs", []))
 
+def case_goto(t):
+    """a page gone to: held for the person's Allow like any act on the
+    page — refused, the page stays; allowed, it goes"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    def at(url):
+        """Where the tab has got to, by its bench id."""
+        return any(tab["id"] == opened["id"] and tab["url"] == url
+                   for tab in cmd({"do": "tabs"}).get("tabs", []))
+
+    # Refused: the page stays where it is.
+    script.clear(); seen.clear()
+    script.extend([
+        '{"goto": "' + BASE + '/other"}',
+        '{"answer": "stayed, then"}',
+    ])
+    bt("ask", text="Go to the other page")
+    until(t, lambda s: (s.get("pending") or {}).get("verb") == "goto", doing="the goto held for allowing")
+    bt("refuse")
+    until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "stayed, then" for e in s.get("events", [])))
+    t.ok("refused, the page stays", at(f"{BASE}/form"))
+
+    # Allowed: the page goes.
+    script.clear(); seen.clear()
+    script.extend([
+        '{"goto": "' + BASE + '/other"}',
+        '{"answer": "went, then"}',
+    ])
+    bt("ask", text="Go to the other page now")
+    until(t, lambda s: (s.get("pending") or {}).get("verb") == "goto", doing="the goto held again")
+    bt("allow")
+    until(t, lambda s: at(f"{BASE}/other"), doing="the page to go")
+    t.ok("allowed, the page goes", at(f"{BASE}/other"))
+
 def case_close(t):
     """a tab closed at the model's asking: held for the person — always,
     even under Auto, for a tab is the person's own to close"""
@@ -1098,7 +1139,7 @@ def case_kill(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_close, case_card, case_coming, case_again, case_run, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept, case_thought, case_stop, case_kill]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_close, case_goto, case_card, case_coming, case_again, case_run, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept, case_thought, case_stop, case_kill]:
         print(f"— {case.__doc__}")
         try:
             case(t)
