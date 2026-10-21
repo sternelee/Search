@@ -77,6 +77,32 @@ FORM = FORM.replace(
     f"    {OPTIONS}</select>",
 )
 
+# A page with a shadow host of its own, a button buried under something
+# else, and a button under an overlay that lets clicks through — the
+# cases the page's own walking used to go blind to.
+SHADOW = """<!doctype html><html><head><title>shadow</title><style>
+body { font: 14px system-ui; margin: 40px } span { position: relative; display: inline-block }
+</style></head><body>
+<p id="said" hidden></p>
+<menu-bar id="bar"></menu-bar>
+<span><button id="buried">Buried</button><b style="position:absolute;left:0;top:0;right:0;bottom:0;background:#eee;z-index:1"></b></span>
+<span><button id="seen">Seen</button><b style="position:absolute;left:0;top:0;right:0;bottom:0;background:#eee;z-index:1;pointer-events:none"></b></span>
+<script>
+var bar = document.getElementById('bar');
+var root = bar.attachShadow({ mode: 'open' });
+root.innerHTML = '<label>Shadow name <input id="who"></label> <button id="go">Shadow go</button>';
+root.getElementById('go').addEventListener('click', function () {
+  var said = document.getElementById('said'); said.hidden = false;
+  said.textContent = 'shadow ' + root.getElementById('who').value;
+});
+document.getElementById('buried').addEventListener('click', function () {
+  var said = document.getElementById('said'); said.hidden = false; said.textContent = 'buried';
+});
+document.getElementById('seen').addEventListener('click', function () {
+  var said = document.getElementById('said'); said.hidden = false; said.textContent = 'seen';
+});
+</script></body></html>"""
+
 # The stand-in model: one line from the script a request at a time, in the
 # openAI way of streaming, over SSE. The script is the acts a model would
 # take to fill the form; each request carries all that has been said so far,
@@ -90,6 +116,8 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/form":
             body = FORM.encode()
+        elif self.path == "/shadow":
+            body = SHADOW.encode()
         else:
             body = f"<!doctype html><title>{self.path.strip('/')}</title><p>{self.path}".encode()
         self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -223,8 +251,8 @@ def finish():
 
 def ref(snapshot, what):
     """The number a snapshot gave a thing described as `role "Name"` —
-    `textbox "First name" @3` for what."""
-    hit = re.search(rf"^{re.escape(what)}(?: \[[^\]]*\])* @\d+", snapshot, re.M)
+    `textbox "First name" @3` for what, indented or not."""
+    hit = re.search(rf"^\s*{re.escape(what)}(?: \[[^\]]*\])* @\d+", snapshot, re.M)
     return hit.group(0).rsplit(" ", 1)[1] if hit else None
 
 def wait_load(t, label, within=15):
@@ -321,6 +349,36 @@ def case_carrier(t):
     task_seen = next(m["content"] for m in seen[0]["messages"] if m["role"] == "user")
     t.ok("…and the task, with the page under it", task_seen.startswith("TASK: Sign the form up") and "THE PAGE HOLDS:" in task_seen, task_seen[:120])
 
+def case_shadow(t):
+    """what the page holds in its own shadow, and what it holds under something"""
+    setup(); launch()
+    opened = ag("open", url=f"{BASE}/shadow")
+    t.ok("the page is there", opened.get("label") == "p1", opened)
+    wait_load(t, "p1")
+
+    tree = ag("snapshot", id="p1").get("snapshot", "")
+    t.ok("a shadow host is said as its own place", "shadow @" in tree, tree)
+    t.ok("…and what it holds is walked like the page's own",
+         ref(tree, 'textbox "Shadow name"') and ref(tree, 'button "Shadow go"'), tree)
+
+    filled = ag("act", id="p1", verb="fill", target="loc=role:textbox[name='Shadow name']", text="Ada")
+    t.ok("a box inside the shadow is filled by its role and name",
+         filled.get("value") == "Ada", filled)
+    clicked = ag("act", id="p1", verb="click", target="text=Shadow go")
+    t.ok("a button inside the shadow is clicked by its words", "at" in clicked, clicked)
+    said = ag("read", id="p1", target="#said")
+    t.ok("…and the click landed, not only said so", said.get("text") == "shadow Ada", said)
+
+    buried = ag("act", id="p1", verb="click", target="text=Buried")
+    t.ok("a button under something else is refused, in words",
+         "over it" in buried.get("error", ""), buried)
+    seen = ag("act", id="p1", verb="click", target="text=Seen")
+    t.ok("…but one under an overlay that lets clicks through goes",
+         "at" in seen, seen)
+    said2 = ag("read", id="p1", target="#said")
+    t.ok("…and that click landed too", said2.get("text") == "seen", said2)
+
+
 def case_bounds(t):
     """what is not the bench's is not touched"""
     setup(); launch()
@@ -334,7 +392,7 @@ def case_bounds(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_carrier, case_bounds]:
+    for case in [case_hands, case_carrier, case_shadow, case_bounds]:
         print(f"— {case.__doc__}")
         try:
             case(t)

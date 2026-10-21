@@ -131,11 +131,11 @@ The same socket, under the same consent switch, speaks an agent's view of the br
 ./bench agent close signin                      # one of its own, gone
 ```
 
-A snapshot is the page as a model reads it — `button "Sign in" @12`, `textbox "Email" @3`, states such as `[checked]` in brackets — one line a thing, hidden things not listed, numbers good until the next snapshot. A target is a number from the list (`@3`), words on the thing (`text=Sign in`), a role and a name (`loc=role:button[name='Sign in']`), or a plain selector. Filling types the way pages listen for (React hears it); Enter submits the form the field is in; a `<label>` stands for its field. Agent pages are bench pages: never selected for you, out of the session and the history, gone when the script says so.
+A snapshot is the page as a model reads it — `button "Sign in" @12`, `textbox "Email" @3`, states such as `[checked]` in brackets — one line a thing, hidden things not listed, numbers good until the next snapshot; what a page holds in a shadow host of its own is walked under a line of its own (`shadow @5`), found like the page's own. A target is a number from the list (`@3`), words on the thing (`text=Sign in`), a role and a name (`loc=role:button[name='Sign in']`), or a plain selector. Filling types the way pages listen for (React hears it); Enter submits the form the field is in; a `<label>` stands for its field. A click counts only where a person could make it — something drawn over the thing is refused, an overlay that lets clicks through goes. Agent pages are bench pages: never selected for you, out of the session and the history, gone when the script says so.
 
 `./bench agent run` hands a task in words to a model and lets it work: one act a line (`ACT fill @3 me@here.com`), the page back after each, until it answers in words (`ANSWER …`) — twelve steps by default, forty at most. The provider is whichever the AI add-on speaks, a local one included; the add-on is still held back from release, and tests point it at a stand-in. Nothing leaves the Mac but the model's own request, when one is asked for.
 
-`python3 Tests/agent_automation.py` checks both sides of it — the hands against a form of the test's own, and the carrier against a stand-in model that plays the model's part — the same hidden way every suite here runs.
+`python3 Tests/agent_automation.py` checks both sides of it — the hands against a form of the test's own, and the carrier against a stand-in model that plays the model's part, the same hidden way every suite here runs — and a third case against a page with a shadow host, a button buried under something and one under an overlay that lets clicks through.
 
 ### The browser as an agent CLI's tool
 

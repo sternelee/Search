@@ -604,6 +604,13 @@ enum Agent {
               if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|LINK|META|BASE|BR|WBR|HEAD)$/.test(tag)) return;
               if (!visible(el)) return;
               if (!full && !place(el)) return;
+              // A shadow host holds its own children apart from the page's —
+              // what a person sees on it — so they're walked as its own,
+              // beside whatever light children it has.
+              if (el.shadowRoot) {
+                lines.push(pad(depth) + 'shadow ' + give(el)); n++;
+                try { visitChildren(el.shadowRoot, depth + 1) } catch (e9) {}
+              }
               var role = roleOf(el);
               if (role === 'iframe' || role === 'frame') {
                 var what = short(el.getAttribute('title') || el.src || el.name || 'frame');
@@ -648,6 +655,21 @@ enum Agent {
             if (document.body) visit(document.body, 0);
             return { tree: lines.join('\\n'), count: n };
           }
+          function deep(sel) {
+            // What the page's own querySelectorAll can't see — the shadow
+            // roots' own children — walked in with the rest, so what a
+            // person sees inside a host is found like anything else.
+            var out = [], roots = [document];
+            while (roots.length) {
+              var r = roots.shift(), list;
+              try { list = r.querySelectorAll(sel) } catch (e) { continue }
+              for (var i = 0; i < list.length; i++) {
+                out.push(list[i]);
+                if (list[i].shadowRoot) roots.push(list[i].shadowRoot);
+              }
+            }
+            return out;
+          }
           function resolve(target) {
             target = trim(target);
             var m;
@@ -658,7 +680,7 @@ enum Agent {
             }
             if ((m = target.match(/^loc=role:([a-zA-Z]+)(?:\\[name(\\*)?=["'](.+?)["']\\])?$/))) {
               var want = m[1].toLowerCase(), part = m[2] === '*', like = m[3] || '';
-              var found = null, all = document.querySelectorAll('*');
+              var found = null, all = deep('*');
               for (var i = 0; i < all.length; i++) {
                 var e = all[i];
                 if (!visible(e)) continue;
@@ -679,7 +701,7 @@ enum Agent {
               if (rest.length > 1 && rest[0] === '"' && rest[rest.length - 1] === '"') { exact = true; rest = rest.slice(1, -1) }
               var sought = exact ? rest : trim(rest).toLowerCase();
               var hit = null;
-              var cands = document.querySelectorAll('a, button, input, select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], label, [contenteditable]');
+              var cands = deep('a, button, input, select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], label, [contenteditable]');
               for (var j = 0; j < cands.length; j++) {
                 var e2 = cands[j];
                 if (!visible(e2)) continue;
@@ -691,7 +713,7 @@ enum Agent {
                 }
               }
               if (!hit) {
-                var any = document.querySelectorAll('body *');
+                var any = deep('*');
                 for (var k = 0; k < any.length; k++) {
                   var e3 = any[k];
                   if (!visible(e3)) continue;
@@ -731,6 +753,26 @@ enum Agent {
             var r = el.getBoundingClientRect();
             return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)];
           }
+          function related(hit, el) {
+            if (hit === el) return true;
+            if (hit.contains && hit.contains(el)) return true;
+            if (el.contains && el.contains(hit)) return true;
+            // A point over a shadow tree is said back as its host; walk
+            // each side's hosts, the way a click's own trail goes.
+            for (var n = el; n; ) {
+              var r = n.getRootNode ? n.getRootNode() : null;
+              if (!(r && r.host)) break;
+              if (r.host === hit || r.host.contains(hit)) return true;
+              n = r.host;
+            }
+            for (var m = hit; m; ) {
+              var s = m.getRootNode ? m.getRootNode() : null;
+              if (!(s && s.host)) break;
+              if (s.host === el || s.host.contains(el)) return true;
+              m = s.host;
+            }
+            return false;
+          }
           function mouse(el, type) {
             var at = point(el);
             var o = { bubbles: true, cancelable: true, view: window, clientX: at[0], clientY: at[1] };
@@ -762,6 +804,12 @@ enum Agent {
             if (!el.focus) throw 'not something the page can act on';
             scrollMid(el);
             if (verb === 'click') {
+              // A click only counts if a person could make it: on what
+              // is there, not under something else, not on what is off.
+              if (el.disabled || el.getAttribute('aria-disabled') === 'true') throw 'it is disabled — not a click a person can make';
+              var spot = point(el), landed = null;
+              try { landed = el.ownerDocument.elementFromPoint(spot[0], spot[1]) } catch (e8) {}
+              if (!landed || !related(landed, el)) throw 'something else is over it — not a click a person could make';
               mouse(el, 'mouseover'); mouse(el, 'mousemove');
               mouse(el, 'pointerdown'); mouse(el, 'mousedown');
               mouse(el, 'pointerup'); mouse(el, 'mouseup');
