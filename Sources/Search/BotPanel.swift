@@ -65,10 +65,19 @@ struct BotEventView: View {
             }
         case .answer:
             // The answer on a card of its own, the markdown in it read:
-            // headings, lists, code blocks, bold, links drawn as written.
+            // headings, lists, code blocks, bold, links drawn the way they
+            // were written.
             MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
                 .padding(10)
                 .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        case .human:
+            // What's left is only a person's to do: the answer's own shape,
+            // with an edge drawn around it, so what's needed of the person
+            // stands out from the answers.
+            MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
+                .padding(10)
+                .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.ink.opacity(0.35), lineWidth: 1))
         case .card:
             EmptyView()
         case .trouble:

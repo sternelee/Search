@@ -500,6 +500,23 @@ def case_talk(t):
          "boom" in heard and "GET /missing → 404" in heard, heard)
 
 
+def case_human(t):
+    """a task that ends where only a person can go on"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    ag("open", url=f"{BASE}/form")
+    wait_load(t, "p1")
+
+    script.clear(); seen.clear()
+    script.extend(["HUMAN the sign-in wants its password"])
+    done = ag("run", id="p1", provider="ollama", task="sign me in")
+    t.ok("the run ends in a person's hands, not its steps burned",
+         done.get("human") == "the sign-in wants its password"
+         and not done.get("answer") and done.get("steps") == 1, done)
+    t.ok("…and what's needed of the person is kept, not said as an answer",
+         "answer" not in done, done)
+
+
 def case_bounds(t):
     """what is not the bench's is not touched"""
     setup(); launch()
@@ -513,7 +530,7 @@ def case_bounds(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_carrier, case_shadow, case_tables, case_talk, case_bounds]:
+    for case in [case_hands, case_carrier, case_human, case_shadow, case_tables, case_talk, case_bounds]:
         print(f"— {case.__doc__}")
         try:
             case(t)

@@ -397,6 +397,40 @@ def case_run(t):
     until(t, lambda s: any(e["kind"] == "answer" and e["words"] == "it asked this time"
                            for e in s.get("events", [])))
 
+def case_person(t):
+    """a task come due that ends where only a person can go on"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    bt("use", provider="ollama")
+
+    # A task whose page asks for a password: the bot works it until what's
+    # left is only a person's to do, and ends there — not failed, not done.
+    at = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 5))
+    added = chores("add", goal="Sign in and read what's behind it",
+                   at=at, page=f"{BASE}/form")
+    t.ok("a task set for a time already come", bool(added.get("added")), added)
+
+    script.clear(); seen.clear()
+    script.extend([
+        '{"say":"the sign-in is in my way"}',
+        '{"human":"the sign-in wants its password"}',
+    ])
+    chores("tick")
+    answer = until(t, lambda s: any(e["kind"] == "human" for e in s.get("events", [])), within=60,
+                   doing="the task the clock set the bot on")
+    t.ok("the bot said where only a person can go on",
+         any(e["kind"] == "human" and e["words"] == "the sign-in wants its password"
+             for e in answer.get("events", [])), answer.get("events"))
+    listing = chores("list")
+    tasks = listing.get("tasks", [])
+    t.ok("the task waits for the person, not failed and not done",
+         len(tasks) == 1 and tasks[0]["state"] == "human"
+         and tasks[0]["words"] == "the sign-in wants its password", tasks)
+    asking = words(seen, "only a person")
+    t.ok("the model was told it can hand it back",
+         "a person's to do" in asking, asking[:200])
+
+
 def case_missing(t):
     """a time that passes with Search closed: missed, not run"""
     setup(); launch()
@@ -504,7 +538,7 @@ def case_round_missed(t):
 
 def main():
     t = T()
-    for case in [case_list, case_note, case_time, case_run, case_missing, case_round, case_round_gap, case_round_missed]:
+    for case in [case_list, case_note, case_time, case_run, case_person, case_missing, case_round, case_round_gap, case_round_missed]:
         print(f"— {case.__doc__}")
         try:
             case(t)

@@ -59,7 +59,7 @@ final class Bot: ObservableObject, Identifiable {
     /// saying, a thought the model had on its way to one, an act taken or
     /// refused, an answer, a card, a trouble.
     struct Event: Identifiable {
-        enum Kind { case ask, say, think, act, answer, card, trouble }
+        enum Kind { case ask, say, think, act, answer, human, card, trouble }
         let id: UUID
         let kind: Kind
         let words: String
@@ -590,6 +590,11 @@ final class Bot: ObservableObject, Identifiable {
         {"wait": "target"}  — wait for something to be on the page
         {"full": true}  — you were shown only what's in view; ask for the whole page
         {"answer": "…"}  — the task is done (or can't be done); the person reads this
+        {"human": "…"}  — what's left is only a person's to do (a password, a code from \
+        another place, a payment, a puzzle only a person can read): say so, and your turn \
+        ends there, the words shown to the person plainly — never pretend it was done, and \
+        never spend steps on what only a person can do. Not for what's merely hard: a \
+        thing you can't find is not a person's to do; keep looking until you run out of steps
         {"later": {"goal": "…", "at": "…", "every": 600}}  — note a task for a time to come, the goal your own\nsumming up of what's to be done, at as ISO 8601 (like 2026-10-15T08:00:00+08:00).\nEach page comes with NOW, the time it is — turn "tomorrow at eight" into a time\nto come, in the person's own timezone given with it. For a task that comes round\nagain ("every ten minutes"), give every as the gap in seconds (a minute at least)\nand at as the first time to come — at can be left out, and the first time is one\ngap from now. When the time comes, this page is opened again and you work it,\nAuto on, no one watching; a task with every comes round again until the person\ntakes it off. A task for a time to come runs with no one watching, so setting\none is shown to the person for their Allow (Auto aside).
         {"run": "command"}  — run a command on this Mac (zsh): shown for the person's Allow\
         like an act, and what it printed comes back with the next page
@@ -1004,7 +1009,7 @@ final class Loop {
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         }
         if let whole = object(text) { return whole }
-        let known: Set<String> = ["say", "act", "read", "console", "ui", "goto", "wait", "full", "answer", "later", "run", "history", "copy", "note", "tab", "tool", "skill"]
+        let known: Set<String> = ["say", "act", "read", "console", "ui", "goto", "wait", "full", "answer", "human", "later", "run", "history", "copy", "note", "tab", "tool", "skill"]
         for line in text.split(separator: "\n").map(String.init) {
             if let one = object(line), !known.isDisjoint(with: one.keys) { return one }
         }
@@ -1095,6 +1100,17 @@ final class Loop {
         }
         if let answer = line["answer"] as? String, !answer.isEmpty {
             bot.tell(Bot.Event(kind: .answer, words: answer, act: nil))
+            bot.messages = messages
+            bot.over(nil)
+            return
+        }
+        // What's left is only a person's to do — said, and the turn ends
+        // there, nothing touched. It needs no Allow: it touches nothing,
+        // and it's the one honest way out of a task no one is watching
+        // (a task come due — see Chores) that runs into a password, a
+        // code from another place, a payment.
+        if let human = line["human"] as? String, !human.isEmpty {
+            bot.tell(Bot.Event(kind: .human, words: human, act: nil))
             bot.messages = messages
             bot.over(nil)
             return

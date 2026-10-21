@@ -263,6 +263,7 @@ enum Agent {
 
         ACT VERB TARGET [TEXT]   to act on the page
         ANSWER TEXT              when the task is done, saying what was found or done
+        HUMAN WORDS              when what's left is only a person's to do, saying what's needed of them
 
         Verbs: click, fill, press, select, check, uncheck, hover, scroll, read, clear, console — \
         TARGET a number from the list (@12), text=Words on the thing, css=a selector, \
@@ -275,6 +276,11 @@ enum Agent {
         Take one act at a time. Prefer a number from the list you were just shown. \
         If the list is stale — a number no longer there — say ACT snapshot and you will \
         be shown the page again.
+
+        A password, a code from another place, a payment, a puzzle only a person can \
+        read — say HUMAN and the task stops there — never pretend it was done, and never \
+        spend steps on what only a person can do. Not for what's merely hard: a thing \
+        you can't find is not a person's to do — keep looking until the steps run out.
         """
 
     /// The loop of `agent run`: a task in words, a tab to do it in, a model
@@ -415,6 +421,19 @@ enum Agent {
                     answer(out)
                     return
                 }
+                // What's left is only a person's to do: said, and the run
+                // ends there — not a failure and not an answer, a hand
+                // given back, with the page left where the person can take
+                // it from.
+                if let words = act.human {
+                    var out: [String: Any] = [
+                        "human": words, "steps": step, "tab": Bench.short(tab),
+                        "url": tab.address?.absoluteString ?? "", "title": tab.title,
+                    ]
+                    if let label = Agent.label(of: tab) { out["label"] = label }
+                    answer(out)
+                    return
+                }
                 // One act, then the page again.
                 switch act.verb {
                 case "goto":
@@ -493,20 +512,23 @@ enum Agent {
         }
     }
 
-    /// The one line the model was asked for: `ACT VERB TARGET [TEXT…]` or
-    /// `ANSWER TEXT`. Anything else is nothing.
-    private static func parse(_ said: String) -> (line: String, verb: String, target: String, text: String, answer: String?)? {
+    /// The one line the model was asked for: `ACT VERB TARGET [TEXT…]`,
+    /// `ANSWER TEXT`, or `HUMAN WORDS`. Anything else is nothing.
+    private static func parse(_ said: String) -> (line: String, verb: String, target: String, text: String, answer: String?, human: String?)? {
         for raw in said.split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
             let words = line.split(separator: " ", maxSplits: 3).map(String.init)
             if words.isEmpty { continue }
             let head = words[0].lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ":"))
             if head == "answer" {
-                return (line, "", "", "", words.count > 1 ? words[1...].joined(separator: " ") : "")
+                return (line, "", "", "", words.count > 1 ? words[1...].joined(separator: " ") : "", nil)
+            }
+            if head == "human" {
+                return (line, "", "", "", nil, words.count > 1 ? words[1...].joined(separator: " ") : "")
             }
             if head == "act" || head == "action" {
                 guard words.count >= 3 else { continue }
-                return (line, words[1].lowercased(), words[2], words.count > 3 ? words[3] : "", nil)
+                return (line, words[1].lowercased(), words[2], words.count > 3 ? words[3] : "", nil, nil)
             }
         }
         return nil
