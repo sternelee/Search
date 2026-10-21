@@ -262,7 +262,7 @@ enum Agent {
         TARGET a number from the list (@12), text=Words on the thing, css=a selector, \
         or loc=role:button[name='Sign in']. fill and select take the TEXT that follows; \
         press takes a key (Enter, Tab, Escape, ArrowDown). read puts what it found in your \
-        next view. goto takes an address. wait TARGET pauses until it is there.
+        next view — a table as its rows, a list as its items. goto takes an address. wait TARGET pauses until it is there.
 
         Take one act at a time. Prefer a number from the list you were just shown. \
         If the list is stale — a number no longer there — say ACT snapshot and you will \
@@ -433,7 +433,25 @@ enum Agent {
                         if let failure = done["error"] as? String {
                             reply = "the page refused: \(failure)"
                         } else if act.verb == "read" {
-                            reply = "read: \(done["text"] ?? "") value \(done["value"] ?? "") href \(done["href"] ?? "")"
+                            // A table or a list comes as its shape, not its
+                            // flattened text — what it holds said shortly,
+                            // the rows themselves in the answer's reply.
+                            if let rows = done["rows"] as? [[String]] {
+                                let count = done["count"] as? Int ?? rows.count
+                                let held = done["more"] as? Int ?? 0
+                                let head = done["header"] as? [String] ?? []
+                                reply = "read: a table of \(count) rows"
+                                    + (held > 0 ? " (\(held) not shown)" : "")
+                                    + (head.isEmpty ? "" : ", header \(head.joined(separator: ", "))")
+                            } else if let items = done["items"] as? [String] {
+                                let count = done["count"] as? Int ?? items.count
+                                let held = done["more"] as? Int ?? 0
+                                reply = "read: a list of \(count) items"
+                                    + (held > 0 ? " (\(held) not shown)" : "")
+                                    + ": \(items.prefix(10).joined(separator: " · "))"
+                            } else {
+                                reply = "read: \(done["text"] ?? "") value \(done["value"] ?? "") href \(done["href"] ?? "")"
+                            }
                         } else {
                             reply = "done"
                         }
@@ -809,7 +827,9 @@ enum Agent {
               if (el.disabled || el.getAttribute('aria-disabled') === 'true') throw 'it is disabled — not a click a person can make';
               var spot = point(el), landed = null;
               try { landed = el.ownerDocument.elementFromPoint(spot[0], spot[1]) } catch (e8) {}
-              if (!landed || !related(landed, el)) throw 'something else is over it — not a click a person could make';
+              if (!landed || !related(landed, el)) throw 'something else is over it — '
+                + (landed ? 'a ' + landed.tagName.toLowerCase() + (landed.innerText ? ' saying ' + JSON.stringify(landed.innerText.slice(0, 40)) : '') : 'nothing at its place — the page is ' + window.innerWidth + ' by ' + window.innerHeight + ' around its middle ' + spot[0] + ',' + spot[1])
+                + ' — not a click a person could make';
               mouse(el, 'mouseover'); mouse(el, 'mousemove');
               mouse(el, 'pointerdown'); mouse(el, 'mousedown');
               mouse(el, 'pointerup'); mouse(el, 'mouseup');
@@ -868,6 +888,40 @@ enum Agent {
           }
           function read(target) {
             var el = resolve(target);
+            var tag = (el.tagName || '').toUpperCase();
+            // A table or a list read as what it holds — rows and cells,
+            // items — so a page's table is one read, not a walk of a
+            // hundred things: one line a row, cut where it grows past
+            // what a reply should carry.
+            if (tag === 'TABLE') {
+              var head = [], rows = [], total = 0, used = 0, more = 0;
+              var trs = el.rows || el.querySelectorAll('tr');
+              for (var i = 0; i < trs.length; i++) {
+                var cells = [], cs = trs[i].cells;
+                for (var j = 0; cs && j < cs.length && j < 40; j++) {
+                  var one = (cs[j].innerText || cs[j].textContent || '')
+                    .replace(/\\s+/g, ' ').trim().slice(0, 200);
+                  cells.push(one); used += one.length;
+                }
+                var th = 0;
+                for (var k = 0; cs && k < cs.length; k++) if (cs[k].tagName === 'TH') th++;
+                if (!head.length && th && th === cells.length && rows.length === 0) { head = cells; continue }
+                total++;
+                if (rows.length < 200 && used <= 6000) rows.push(cells); else more++;
+              }
+              return { tag: 'table', role: 'table', header: head, rows: rows, count: total, more: more };
+            }
+            if (tag === 'UL' || tag === 'OL') {
+              var items = [], count = 0, spent = 0, left = 0;
+              for (var c = el.firstElementChild; c; c = c.nextElementSibling) {
+                if (c.tagName !== 'LI') continue;
+                var each = (c.innerText || c.textContent || '')
+                  .replace(/\\s+/g, ' ').trim().slice(0, 200);
+                count++;
+                if (items.length < 200 && spent <= 6000) { items.push(each); spent += each.length } else left++;
+              }
+              return { tag: tag.toLowerCase(), role: 'list', items: items, count: count, more: left };
+            }
             var out = {
               tag: (el.tagName || '').toLowerCase(), role: roleOf(el),
               text: (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 4000),

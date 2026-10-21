@@ -191,6 +191,10 @@ extension Browser {
             return
         }
         let tab = open(url, foreground: false)
+        // Opened behind and never selected, the view would lay out at nothing
+        // (a page 0 by 0): no click could land on it. It lives off-screen in
+        // the bench's room until the person picks its tab.
+        Bench.shared.house(tab)
         // The page has to come in before the bot can look at it: the bot
         // works over a page, not a blank.
         Task { @MainActor [weak tab] in

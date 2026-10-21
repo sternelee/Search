@@ -118,6 +118,8 @@ class H(BaseHTTPRequestHandler):
             body = FORM.encode()
         elif self.path == "/shadow":
             body = SHADOW.encode()
+        elif self.path == "/table":
+            body = TABLES.encode()
         else:
             body = f"<!doctype html><title>{self.path.strip('/')}</title><p>{self.path}".encode()
         self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -379,6 +381,65 @@ def case_shadow(t):
     t.ok("…and that click landed too", said2.get("text") == "seen", said2)
 
 
+# A page of tables and lists — the things a scraping task wants whole,
+# not one thing at a time.
+TABLES = """<!doctype html><html><head><title>tables</title></head><body style="font:14px system-ui;margin:40px">
+<table id="t"><thead><tr><th>Name</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Ada</td><td><a href="/ada">home</a></td></tr>
+<tr><td>Grace</td><td>away</td></tr>
+</tbody></table>
+<ul id="l"><li>one</li><li>two <b>bold</b></li><li>three</li></ul>
+<table id="big"></table>
+<script>
+  var big = document.getElementById('big');
+  var head = big.createTHead().insertRow();
+  head.insertCell().outerHTML = '<th>N</th>';
+  var body = document.createElement('tbody');
+  big.appendChild(body);
+  for (var i = 0; i < 260; i++) {
+    var tr = body.insertRow();
+    tr.insertCell().textContent = 'row ' + i;
+    tr.insertCell().textContent = 'value ' + i;
+  }
+</script>
+</body></html>"""
+
+
+def case_tables(t):
+    """a table read as its rows, a list as its items"""
+    setup(); launch()
+    opened = ag("open", url=f"{BASE}/table")
+    t.ok("the page is there", opened.get("label") == "p1", opened)
+    wait_load(t, "p1")
+
+    table = ag("read", id="p1", target="css=#t")
+    t.ok("a table comes as its header and rows",
+         table.get("header") == ["Name", "Where"]
+         and table.get("rows") == [["Ada", "home"], ["Grace", "away"]]
+         and table.get("count") == 2, table)
+    listed = ag("read", id="p1", target="css=#l")
+    t.ok("a list comes as its items",
+         listed.get("items") == ["one", "two bold", "three"]
+         and listed.get("count") == 3, listed)
+    big = ag("read", id="p1", target="css=#big")
+    t.ok("a table too long to tell whole says how much it held back",
+         big.get("count") == 260 and len(big.get("rows", [])) == 200
+         and big.get("more") == 60 and big.get("header") == ["N"],
+         {k: (v if k != "rows" else len(v)) for k, v in big.items()})
+
+    # The carrier shapes what the model is told of one: the shape, not a
+    # thousand words of flattened text.
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    script.clear(); seen.clear()
+    script.extend(["ACT read css=#t", "ANSWER done"])
+    ag("run", id="p1", provider="ollama", task="read the table")
+    asked = seen[-1]["messages"]
+    reading = next((m["content"] for m in asked if "read:" in m["content"]), "")
+    t.ok("the model is told the shape of it, shortly",
+         "a table of 2 rows" in reading and "header Name, Where" in reading, reading)
+
+
 def case_bounds(t):
     """what is not the bench's is not touched"""
     setup(); launch()
@@ -392,7 +453,7 @@ def case_bounds(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_carrier, case_shadow, case_bounds]:
+    for case in [case_hands, case_carrier, case_shadow, case_tables, case_bounds]:
         print(f"— {case.__doc__}")
         try:
             case(t)

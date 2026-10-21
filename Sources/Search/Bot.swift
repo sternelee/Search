@@ -581,7 +581,7 @@ final class Bot: ObservableObject, Identifiable {
 
         {"say": "…"}  — tell the person what you're doing, then carry on
         {"act": {"verb": "…", "target": "…", "text": "…"}}  — work the page
-        {"read": "target"}  — read one thing closely (its text, value or address)
+        {"read": "target"}  — read one thing closely (its text, value or address; a table as its rows, a list as its items)
         {"ui": [ … ]}  — draw a card: a form, a choice, a picture of what you found.\
         A card ends your turn: the person answers it with a tap, and the card goes
         {"goto": "https://…"}  — go to an address: an act on the page the person is shown,\
@@ -1472,6 +1472,29 @@ final class Loop {
                     act.outcome = "didn't work: \(error)"
                     bot.tell(Bot.Event(kind: .act, words: "", act: act))
                     self.observe(note: "Reading \(target) didn't work: \(error).", full: false, first: false)
+                    return
+                }
+                if let rows = said["rows"] as? [[String]] {
+                    let count = said["count"] as? Int ?? rows.count
+                    let held = said["more"] as? Int ?? 0
+                    let shown = rows.prefix(20)
+                        .map { $0.joined(separator: " | ") }
+                        .joined(separator: "; ")
+                    act.outcome = "read"
+                    bot.tell(Bot.Event(kind: .act, words: "", act: act))
+                    self.observe(note: "You read \(target): a table of \(count) rows"
+                        + (held > 0 ? " (\(held) not shown)" : "")
+                        + ". \(String(shown.prefix(1200)))", full: false, first: false)
+                    return
+                }
+                if let items = said["items"] as? [String] {
+                    let count = said["count"] as? Int ?? items.count
+                    let held = said["more"] as? Int ?? 0
+                    act.outcome = "read"
+                    bot.tell(Bot.Event(kind: .act, words: "", act: act))
+                    self.observe(note: "You read \(target): a list of \(count) items"
+                        + (held > 0 ? " (\(held) not shown)" : "")
+                        + ". \(String(items.joined(separator: " · ").prefix(1200)))", full: false, first: false)
                     return
                 }
                 let value = (said["value"] ?? said["text"]).flatMap { $0 as? String } ?? "nothing"

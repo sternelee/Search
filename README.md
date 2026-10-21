@@ -126,7 +126,7 @@ The same socket, under the same consent switch, speaks an agent's view of the br
 ./bench agent snapshot signin                   # the page in words, a number a thing
 ./bench agent act signin fill "@3" "me@here.com"  # …by that number, by role and name, or by words
 ./bench agent act signin click "text=Sign in"
-./bench agent read signin "@3"                  # the words at a thing, its value, where a link goes
+./bench agent read signin "@3"                  # the words at a thing, its value, where a link goes — a table as its rows, a list as its items
 ./bench agent wait signin target "#done"
 ./bench agent close signin                      # one of its own, gone
 ```
