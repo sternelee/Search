@@ -107,6 +107,25 @@ document.getElementById('seen').addEventListener('click', function () {
 # openAI way of streaming, over SSE. The script is the acts a model would
 # take to fill the form; each request carries all that has been said so far,
 # and the next line of it is the answer.
+# A page that talks: console lines, a thrown error, a fetch that comes
+# back 404 — the page's own story, kept where only the page can read it.
+TALK = """<!doctype html><html><head><title>talk</title></head><body style="font:14px system-ui;margin:40px">
+<p id="said">quiet</p>
+<script>
+console.log('hello from the page');
+console.warn('careful with this');
+setTimeout(function () { console.error('boom') }, 100);
+fetch('__BASE__/answer').then(function (r) { return r.text() }).then(function () {
+  document.getElementById('said').textContent = 'answered';
+});
+fetch('__BASE__/missing');
+var x = new XMLHttpRequest();
+x.open('GET', '__BASE__/echo');
+x.onload = function () { console.log('xhr came ' + x.status) };
+x.send();
+setTimeout(function () { throw new Error('late trouble') }, 250);
+</script></body></html>"""
+
 script = []
 seen = []
 def said(reply):
@@ -120,6 +139,10 @@ class H(BaseHTTPRequestHandler):
             body = SHADOW.encode()
         elif self.path == "/table":
             body = TABLES.encode()
+        elif self.path == "/talk":
+            body = TALK.encode()
+        elif self.path == "/missing":
+            self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
         else:
             body = f"<!doctype html><title>{self.path.strip('/')}</title><p>{self.path}".encode()
         self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -132,6 +155,7 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
 BASE = f"http://127.0.0.1:{srv.server_port}"
+TALK = TALK.replace("__BASE__", BASE)
 
 # Only ever a probe of this world: the one this run started, or one a run
 # before left holding this world's socket. Never the Search someone is using,
@@ -381,6 +405,7 @@ def case_shadow(t):
     t.ok("…and that click landed too", said2.get("text") == "seen", said2)
 
 
+
 # A page of tables and lists — the things a scraping task wants whole,
 # not one thing at a time.
 TABLES = """<!doctype html><html><head><title>tables</title></head><body style="font:14px system-ui;margin:40px">
@@ -440,6 +465,41 @@ def case_tables(t):
          "a table of 2 rows" in reading and "header Name, Where" in reading, reading)
 
 
+def case_talk(t):
+    """the page's own story: console, errors, network"""
+    setup(); launch()
+    opened = ag("open", url=f"{BASE}/talk")
+    wait_load(t, "p1")
+    time.sleep(1)  # the page's late trouble is thrown at a quarter second
+
+    story = ag("console", id="p1", count=40)
+    words = story.get("text", "")
+    t.ok("the console lines are there",
+         "log: hello from the page" in words and "warn: careful" in words
+         and "error: boom" in words, words)
+    t.ok("the thrown error is there", "late trouble" in words, words)
+    t.ok("the network is there with its answers",
+         "GET /missing → 404" in words and "GET /echo → 200" in words
+         and "GET /answer → 200" in words, words)
+
+    snap = ag("snapshot", id="p1")
+    t.ok("what went badly rides along with the snapshot",
+         "The page said of itself" in snap.get("snapshot", "")
+         and "boom" in snap.get("snapshot", "")
+         and "GET /missing → 404" in snap.get("snapshot", ""),
+         snap.get("snapshot", "")[-400:])
+
+    # The carrier puts the story in the model's hands as its own verb.
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    script.clear(); seen.clear()
+    script.extend(["ACT console 40", "ANSWER done"])
+    ag("run", id="p1", provider="ollama", task="what has the page said of itself")
+    asked = seen[-1]["messages"]
+    heard = next((m["content"] for m in asked if "console:" in m["content"]), "")
+    t.ok("the model hears the page's own story",
+         "boom" in heard and "GET /missing → 404" in heard, heard)
+
+
 def case_bounds(t):
     """what is not the bench's is not touched"""
     setup(); launch()
@@ -453,7 +513,7 @@ def case_bounds(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_carrier, case_shadow, case_tables, case_bounds]:
+    for case in [case_hands, case_carrier, case_shadow, case_tables, case_talk, case_bounds]:
         print(f"— {case.__doc__}")
         try:
             case(t)

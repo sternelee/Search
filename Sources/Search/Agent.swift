@@ -111,6 +111,12 @@ enum Agent {
             Bench.shared.house(tab)
             ask(tab, ["op": "read", "target": target]) { page in answer(page) }
 
+        case "console":
+            guard let tab = pick() else { answer(["error": "no such tab"]); return }
+            let count = request["count"] as? Int ?? 30
+            Bench.shared.house(tab)
+            ask(tab, ["op": "console", "count": count]) { page in answer(page) }
+
         case "wait":
             guard let tab = pick() else { answer(["error": "no such tab"]); return }
             let seconds = min(request["seconds"] as? Double ?? 10, 60)
@@ -258,11 +264,13 @@ enum Agent {
         ACT VERB TARGET [TEXT]   to act on the page
         ANSWER TEXT              when the task is done, saying what was found or done
 
-        Verbs: click, fill, press, select, check, uncheck, hover, scroll, read, clear — \
+        Verbs: click, fill, press, select, check, uncheck, hover, scroll, read, clear, console — \
         TARGET a number from the list (@12), text=Words on the thing, css=a selector, \
         or loc=role:button[name='Sign in']. fill and select take the TEXT that follows; \
         press takes a key (Enter, Tab, Escape, ArrowDown). read puts what it found in your \
-        next view — a table as its rows, a list as its items. goto takes an address. wait TARGET pauses until it is there.
+        next view — a table as its rows, a list as its items. console takes a count of lines \
+        (ACT console 30) — the page's own story: its console, its errors, its network. \
+        goto takes an address. wait TARGET pauses until it is there.
 
         Take one act at a time. Prefer a number from the list you were just shown. \
         If the list is stale — a number no longer there — say ACT snapshot and you will \
@@ -422,16 +430,23 @@ enum Agent {
                 case "wait":
                     let until = Date().addingTimeInterval(5)
                     Agent.poll(tab, until: until, ["op": "present", "target": act.target]) { _ in self.observe() }
-                case "snapshot", "read", "click", "fill", "press", "select", "check", "uncheck", "hover", "scroll", "clear", "focus":
+                case "snapshot", "read", "console", "click", "fill", "press", "select", "check", "uncheck", "hover", "scroll", "clear", "focus":
                     Bench.shared.house(tab)
                     // Reading the page is its own ask of the page, not an act on it.
-                    let ask: [String: Any] = act.verb == "read"
-                        ? ["op": "read", "target": act.target]
-                        : ["op": "act", "verb": act.verb, "target": act.target, "text": act.text]
+                    let ask: [String: Any]
+                    if act.verb == "read" {
+                        ask = ["op": "read", "target": act.target]
+                    } else if act.verb == "console" {
+                        ask = ["op": "console", "count": Int(act.target) ?? 30]
+                    } else {
+                        ask = ["op": "act", "verb": act.verb, "target": act.target, "text": act.text]
+                    }
                     Agent.ask(tab, ask) { done in
                         var reply = ""
                         if let failure = done["error"] as? String {
                             reply = "the page refused: \(failure)"
+                        } else if act.verb == "console" {
+                            reply = "console:\n\(done["text"] ?? "")"
                         } else if act.verb == "read" {
                             // A table or a list comes as its shape, not its
                             // flattened text — what it holds said shortly,
@@ -500,6 +515,88 @@ enum Agent {
     // MARK: - the page's side
 
     /// The script every op runs as, in the page. It keeps its refs — the
+    /// The page's own story — its console, its errors, its network — kept
+    /// where only the page can read it. A user script at document start
+    /// (see Tab.build) hooks console, the error events, fetch and XHR into a
+    /// ring the page holds; nothing is sent anywhere until an agent asks the
+    /// page for it with the `console` op, and the hooks themselves change
+    /// nothing a page does — the original console call, the original fetch,
+    /// all still happen exactly as the page meant them.
+    static let watch = """
+        window.__searchNotes = (function () {
+          var ring = [];
+          function said(x) {
+            if (typeof x === 'string') return x;
+            try { return JSON.stringify(x) } catch (e) { return String(x) }
+          }
+          function keep(kind, words) {
+            try {
+              words = said(words);
+              if (words.length > 300) words = words.slice(0, 300) + '…';
+              ring.push({ kind: kind, words: words });
+              if (ring.length > 100) ring.splice(0, ring.length - 100);
+            } catch (e) {}
+          }
+          function where(url) {
+            try {
+              var u = new URL(url, location.href);
+              return (u.host === location.host ? '' : u.origin) + u.pathname + u.search;
+            } catch (e) { return url }
+          }
+          ['log', 'info', 'warn', 'error'].forEach(function (kind) {
+            var was = console[kind];
+            console[kind] = function () {
+              var words = '';
+              try { for (var i = 0; i < arguments.length; i++) words += (i ? ' ' : '') + said(arguments[i]) } catch (e) {}
+              keep(kind, words);
+              try { was.apply(console, arguments) } catch (e) {}
+            };
+          });
+          window.addEventListener('error', function (e) {
+            keep('error', (e.message || 'an error') + (e.filename ? ' in ' + e.filename.split('/').pop() + ':' + e.lineno : ''));
+          });
+          window.addEventListener('unhandledrejection', function (e) {
+            keep('unhandled', said(e.reason && e.reason.message ? e.reason.message : e.reason));
+          });
+          try {
+            var wasFetch = window.fetch;
+            if (wasFetch) {
+              window.fetch = function (input, init) {
+                var way = (init && init.method) || (input && input.method) || 'GET';
+                var at = where(typeof input === 'string' ? input : (input && input.url) || '');
+                var began = Date.now();
+                return wasFetch.call(window, input, init).then(function (r) {
+                  keep('net', way + ' ' + at + ' → ' + r.status + ' (' + (Date.now() - began) + 'ms)');
+                  return r;
+                }, function (err) {
+                  keep('net', way + ' ' + at + ' → refused (' + said(err && err.message ? err.message : err) + ')');
+                  throw err;
+                });
+              };
+            }
+            var wasOpen = XMLHttpRequest.prototype.open;
+            var wasSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function (way, at) { this.__search = [way, at]; return wasOpen.apply(this, arguments) };
+            XMLHttpRequest.prototype.send = function () {
+              var self = this, began = Date.now();
+              this.addEventListener('loadend', function () {
+                keep('net', (self.__search ? self.__search[0] + ' ' + where(self.__search[1]) : 'request') + ' → ' + self.status + ' (' + (Date.now() - began) + 'ms)');
+              });
+              return wasSend.apply(this, arguments);
+            };
+          } catch (e) {}
+          function word(e) { return (e.kind === 'net' ? '' : e.kind + ': ') + e.words }
+          return {
+            text: function (list) { return list.map(word).join('\\n') },
+            take: function (n) { return ring.slice(-n) },
+            flagged: function (n) {
+              var worth = { warn: 1, error: 1, unhandled: 1 };
+              return ring.filter(function (e) { return worth[e.kind] || (e.kind === 'net' && / → [45]\\d\\d \\(/.test(e.words)) }).slice(-n);
+            }
+          };
+        })();
+        """
+
     /// numbers a snapshot gave out — on the window, where they last as long
     /// as the page does; a number from a page since gone elsewhere is stale,
     /// and says so. One op goes in as JSON, one object comes back: what the
@@ -671,7 +768,15 @@ enum Agent {
               }
             }
             if (document.body) visit(document.body, 0);
-            return { tree: lines.join('\\n'), count: n };
+            var tree = lines.join('\\n');
+            // The page's own story rides along when it went badly: a page
+            // that just failed a fetch or threw says so beside its looks,
+            // without the agent knowing to ask.
+            try {
+              var story = window.__searchNotes ? window.__searchNotes.text(window.__searchNotes.flagged(5)) : '';
+              if (story) tree += '\\n\\nThe page said of itself:\\n' + story;
+            } catch (e7) {}
+            return { tree: tree, count: n };
           }
           function deep(sel) {
             // What the page's own querySelectorAll can't see — the shadow
@@ -934,6 +1039,12 @@ enum Agent {
             if (req.op === 'snapshot') return snapshot(req.full === true);
             if (req.op === 'act') { var done = act(req.verb, req.target, req.text || ''); done.ok = 1; return done }
             if (req.op === 'read') { var got = read(req.target); got.ok = 1; return got }
+            if (req.op === 'console') {
+              var notes = window.__searchNotes;
+              if (!notes) return { __error: 'this page was never made to say anything' };
+              var last = notes.take(Math.min(100, req.count || 30));
+              return { text: last.length ? notes.text(last) : '(the page has said nothing yet)' };
+            }
             if (req.op === 'present') return { present: (function () { try { return visible(resolve(req.target)) } catch (e) { return false } })() };
             if (req.op === 'contains') {
               var body = document.body ? (document.body.innerText || '') : '';

@@ -808,6 +808,15 @@ final class Tab: ObservableObject, Identifiable {
         controller.addUserScript(
             WKUserScript(source: PasskeyRelay.bridge, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Web.world)
         )
+        // The agent's ears, in the page's own world from its first breath:
+        // the page's own story — console, errors, network — kept in the page
+        // itself, sent nowhere, until an agent asks the page for it (see
+        // Agent.watch). Here rather than in build: this list is the one that
+        // stands after the wipe above, and arm runs again whenever the
+        // veils change.
+        controller.addUserScript(
+            WKUserScript(source: Agent.watch, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page)
+        )
         guard !css.isEmpty else { return }
         controller.addUserScript(
             WKUserScript(source: Veiling.style(css), injectionTime: .atDocumentStart, forMainFrameOnly: true, in: Web.world)

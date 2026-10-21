@@ -582,6 +582,7 @@ final class Bot: ObservableObject, Identifiable {
         {"say": "…"}  — tell the person what you're doing, then carry on
         {"act": {"verb": "…", "target": "…", "text": "…"}}  — work the page
         {"read": "target"}  — read one thing closely (its text, value or address; a table as its rows, a list as its items)
+        {"console": 30}  — the page's own story: its console, its errors, its network — the last 30 lines, what went badly said plainly
         {"ui": [ … ]}  — draw a card: a form, a choice, a picture of what you found.\
         A card ends your turn: the person answers it with a tap, and the card goes
         {"goto": "https://…"}  — go to an address: an act on the page the person is shown,\
@@ -1003,7 +1004,7 @@ final class Loop {
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         }
         if let whole = object(text) { return whole }
-        let known: Set<String> = ["say", "act", "read", "ui", "goto", "wait", "full", "answer", "later", "run", "history", "copy", "note", "tab", "tool", "skill"]
+        let known: Set<String> = ["say", "act", "read", "console", "ui", "goto", "wait", "full", "answer", "later", "run", "history", "copy", "note", "tab", "tool", "skill"]
         for line in text.split(separator: "\n").map(String.init) {
             if let one = object(line), !known.isDisjoint(with: one.keys) { return one }
         }
@@ -1262,6 +1263,26 @@ final class Loop {
                 return
             }
             perform("read", read, "", on: work)
+            return
+        }
+        if line["console"] != nil {
+            guard let work else {
+                observe(note: "No page is in front to listen to — the tabs are listed for you with their ids (TABS); say it again with a tab.", full: false, first: false)
+                return
+            }
+            // The page's own story is a read of it, not an act on it: no
+            // Allow waits on what the page merely said of itself.
+            let count = line["console"] as? Int ?? 30
+            Agent.ask(work, ["op": "console", "count": count]) { [weak self] said in
+                guard let self, let bot = self.bot else { return }
+                var act = Bot.Act(verb: "console", target: "the page", text: "")
+                act.outcome = "read"
+                bot.tell(Bot.Event(kind: .act, words: "", act: act))
+                self.observe(
+                    note: (said["error"] as? String).map { "Listening to the page didn't work: \($0)." }
+                        ?? "The page said of itself, the last \(count) lines:\n\(said["text"] ?? "")",
+                    full: false, first: false)
+            }
             return
         }
         if let act = line["act"] as? [String: Any],
