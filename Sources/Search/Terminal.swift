@@ -59,6 +59,10 @@ private final class TerminalLane: @unchecked Sendable {
     private var dying: DispatchSourceProcess?
     private var master: Int32
     private let pid: pid_t
+    /// One reading's bytes, kept across readings: a program printing a line
+    /// at a time used to allocate a fresh 64 KB buffer for every line, which
+    /// is most of what a hundred thousand lines cost.
+    private var buffer = [UInt8](repeating: 0, count: 1 << 16)
 
     init(screen: Screen, parser: Parser, master: Int32, pid: pid_t, queue: DispatchQueue) {
         self.screen = screen
@@ -88,22 +92,37 @@ private final class TerminalLane: @unchecked Sendable {
         let reads = DispatchSource.makeReadSource(fileDescriptor: master, queue: queue)
         reads.setEventHandler { [weak self] in
             guard let self, self.reading != nil else { return }
-            var buffer = [UInt8](repeating: 0, count: 1 << 16)
             var closed = false
+            // Drain everything the kernel has, not one short read per wake:
+            // `poll` says whether there is more, and a read from a ready
+            // pty returns what is there rather than waiting for a full
+            // buffer. A line-at-a-time program then costs one reading for
+            // the whole burst, not one reading per line.
+            var waiting = pollfd(fd: self.master, events: Int16(POLLIN), revents: 0)
             while true {
-                let taken = read(self.master, &buffer, buffer.count)
-                if taken > 0 {
-                    self.parser.feed(Array(buffer[0..<taken]))
-                    if taken < buffer.count { break }
-                } else if taken == 0 {
-                    closed = true
-                    break
-                } else {
-                    // EIO: every reader on the other end is gone, which is
-                    // what a program ending looks like from this side.
+                guard poll(&waiting, 1, 0) > 0 else { break }
+                let flags = waiting.revents
+                waiting.revents = 0
+                if flags & Int16(POLLIN) != 0 {
+                    let taken = read(self.master, &self.buffer, self.buffer.count)
+                    if taken > 0 {
+                        self.parser.feed(self.buffer[0..<taken])
+                        continue
+                    }
+                    if taken == 0 {
+                        closed = true
+                        break
+                    }
+                    if errno == EINTR { continue }
                     closed = errno == EIO
                     break
                 }
+                // A slave that has gone leaves the master readable for the
+                // hang-up and nothing else; not saying so would leave the
+                // read source firing at a lane with nothing to read, and
+                // the program's own end waiting behind it forever.
+                if flags & Int16(POLLHUP | POLLERR | POLLNVAL) != 0 { closed = true }
+                break
             }
             self.deliver()
             if closed {
@@ -230,6 +249,15 @@ final class Terminal: ObservableObject, Identifiable {
     // queue, one order, no shared word.
     private let lane: TerminalLane?
 
+    /// What the lane has said changed since the main thread last heard.
+    /// A program printing a line at a time wakes the lane once per line,
+    /// and one hop to the main thread per line is a queue of a hundred
+    /// thousand frames where one will do: the damage is gathered here, and
+    /// the main thread takes it in one go whenever it gets there.
+    private var drawPending: (damage: Damage, modes: Modes)?
+    private var drawScheduled = false
+    private let drawLock = NSLock()
+
     // MARK: Starting
 
     init(command: TerminalCommand? = nil, width: Int = 80, height: Int = 24, directory: String? = nil) {
@@ -268,7 +296,19 @@ final class Terminal: ObservableObject, Identifiable {
             lane.copied = { [weak self] text in DispatchQueue.main.async { self?.copied(text) } }
             lane.ended = { [weak self] code in DispatchQueue.main.async { self?.ended(code) } }
             lane.drawn = { [weak self] taken, modes in
-                DispatchQueue.main.async { self?.drawn(taken, modes) }
+                guard let self else { return }
+                self.drawLock.lock()
+                if var pending = self.drawPending {
+                    pending.damage.merge(taken)
+                    pending.modes = modes
+                    self.drawPending = pending
+                } else {
+                    self.drawPending = (taken, modes)
+                }
+                let schedule = !self.drawScheduled
+                self.drawScheduled = true
+                self.drawLock.unlock()
+                if schedule { DispatchQueue.main.async { self.deliverDraw() } }
             }
             queue.async { lane.listen() }
         } else {
@@ -390,6 +430,20 @@ final class Terminal: ObservableObject, Identifiable {
 
     private func drawn(_ taken: Damage, _ modes: Modes) {
         onDraw?(taken, modes)
+    }
+
+    /// The one hop the lane scheduled: everything gathered since the last
+    /// time, handed over as one reading. `drawScheduled` goes back first,
+    /// so damage that arrives while this is being delivered schedules the
+    /// next hop rather than being folded into a frame already on its way.
+    private func deliverDraw() {
+        drawLock.lock()
+        let pending = drawPending
+        drawPending = nil
+        drawScheduled = false
+        drawLock.unlock()
+        guard let pending else { return }
+        drawn(pending.damage, pending.modes)
     }
 
     /// One moment of the screen, as the renderer sees it: the rows a
@@ -542,7 +596,7 @@ final class Terminal: ObservableObject, Identifiable {
     func whole(_ see: @escaping ([Row]) -> Void) {
         guard let lane else { return }
         lane.queue.async {
-            see(lane.screen.back + lane.screen.rows)
+            see(Array(lane.screen.back) + lane.screen.rows)
         }
     }
 

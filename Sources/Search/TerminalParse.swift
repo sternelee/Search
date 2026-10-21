@@ -98,7 +98,7 @@ final class Parser {
     // A UTF-8 character, taken apart as its bytes arrive.
     private var pending: [UInt8] = []
 
-    func feed(_ bytes: [UInt8]) {
+    func feed<S: Sequence>(_ bytes: S) where S.Element == UInt8 {
         for byte in bytes {
             switch state {
             case .ground:
