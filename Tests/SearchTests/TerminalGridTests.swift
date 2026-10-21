@@ -130,6 +130,18 @@ final class TerminalGridTests: XCTestCase {
         XCTAssertTrue(screen.take().blocks)
     }
 
+    /// The scrollback is a ring: once it has gone round its storage, the
+    /// oldest row is where the newest one will go, and the order read out
+    /// is still the order the lines went in.
+    func testTheScrollbackRingKeepsItsOrderAcrossItsWrap() {
+        let screen = Screen(width: 8, height: 2)
+        screen.backLimit = 5
+        type(screen, (0..<40).map { "L\($0)" }.joined(separator: "\r\n"))
+        XCTAssertEqual(screen.back.count, 5)
+        XCTAssertEqual(screen.backBase, 33)
+        XCTAssertEqual(screen.back.map(\.text), ["L33", "L34", "L35", "L36", "L37"])
+    }
+
     /// Trimming to a limit set after the fact — what turning the scrollback
     /// down in Settings does — drops the rows scrolling past that limit
     /// would have dropped.

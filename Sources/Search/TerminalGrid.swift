@@ -189,12 +189,82 @@ struct Damage: Equatable {
     static let everything = Damage(rows: [], scrolled: true, overturned: true, blocks: true, moved: true)
 }
 
+/// The rows that have left the top of the screen, oldest first, as a ring.
+/// A row going into a full scrollback moves the head rather than every row
+/// behind it, so a program printing a line costs the same at ten rows as at
+/// a hundred thousand; the limit still says exactly how many are kept.
+struct Scrollback: RandomAccessCollection {
+    typealias Index = Int
+
+    private var storage: [Row?] = []
+    private var head = 0
+    private(set) var count = 0
+
+    var startIndex: Int { 0 }
+    var endIndex: Int { count }
+    var isEmpty: Bool { count == 0 }
+
+    subscript(index: Int) -> Row {
+        get {
+            precondition(index >= 0 && index < count, "scrollback index out of range")
+            return storage[(head + index) % storage.count]!
+        }
+        set {
+            precondition(index >= 0 && index < count, "scrollback index out of range")
+            storage[(head + index) % storage.count] = newValue
+        }
+    }
+
+    mutating func append(_ row: Row) {
+        if count == storage.count { grow() }
+        storage[(head + count) % storage.count] = row
+        count += 1
+    }
+
+    mutating func append(contentsOf rows: ArraySlice<Row>) {
+        for row in rows { append(row) }
+    }
+
+    /// The rows leaving the front, at a cost that does not depend on how
+    /// many stay: the head moves, and the slots it passes are reused by
+    /// the next rows that come in.
+    mutating func removeFirst(_ number: Int) {
+        let gone = Swift.min(Swift.max(number, 0), count)
+        guard gone > 0 else { return }
+        // Let go of the rows as they leave: a scrollback turned down from a
+        // hundred thousand rows to a few should give the memory back then,
+        // not wait for enough new lines to overwrite every slot.
+        for offset in 0..<gone {
+            storage[(head + offset) % storage.count] = nil
+        }
+        head = (head + gone) % storage.count
+        count -= gone
+        if count == 0 { head = 0 }
+    }
+
+    mutating func removeAll() {
+        storage = []
+        head = 0
+        count = 0
+    }
+
+    private mutating func grow() {
+        let room = Swift.max(16, storage.count * 2)
+        var next: [Row?] = Array(repeating: nil, count: room)
+        for index in 0..<count {
+            next[index] = storage[(head + index) % storage.count]
+        }
+        storage = next
+        head = 0
+    }
+}
+
 final class Screen {
     /// The screen proper. Row 0 at the top.
     private(set) var rows: [Row]
     /// Rows that have left the top, oldest first, never more than
     /// `backLimit` of them.
-    private(set) var back: [Row] = []
+    private(set) var back: Scrollback = Scrollback()
     /// The place of `back.first` — how many rows have left the top since
     /// the beginning, so places never repeat or go backwards.
     private(set) var backBase = 0
@@ -536,7 +606,7 @@ final class Screen {
             for row in 0..<height { damage.rows.insert(place(row)) }
         case 3:
             backBase += back.count
-            back = []
+            back.removeAll()
             damage.overturned = true
         default:
             break
