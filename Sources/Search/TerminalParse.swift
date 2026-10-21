@@ -191,15 +191,17 @@ final class Parser {
     /// The range of a wide character: the scripts a full square, and the
     /// blocks of pictures the terminals drew double from the start.
     static func isWide(_ char: Character) -> Bool {
-        guard char.unicodeScalars.count == 1, let scalar = char.unicodeScalars.first else {
-            // A combining sequence rides on its base's square.
-            return false
-        }
+        let scalars = char.unicodeScalars
+        guard let scalar = scalars.first else { return false }
+        // A sequence that asks for emoji presentation is wide, and so is a
+        // cluster that rides on a wide base — a letter with a combining
+        // mark is still its base's square. What is judged is the first.
+        if scalars.contains(where: { $0.value == 0xFE0F }) { return true }
         switch scalar.value {
         case 0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF, 0x3400...0x4DBF,
              0x4E00...0x9FFF, 0xA000...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF,
              0xFE30...0xFE6F, 0xFF00...0xFF60, 0xFFE0...0xFFE6,
-             0x1F300...0x1F64F, 0x1F900...0x1F9FF, 0x1FA70...0x1FAFF,
+             0x1F000...0x1FAFF, 0x1FC00...0x1FFFF,
              0x20000...0x3FFFD:
             return true
         default:

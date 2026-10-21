@@ -18,7 +18,7 @@
 
 | 学到的做法 | 在本仓库落成的形状 |
 |---|---|
-| **常驻 GPU 的字形图集**："a 200 MB log costs what an empty prompt costs" | 一张 2048² `r8Unorm`，`.storageModePrivate`，blit 写入，ASCII 预切。见 3.2 |
+| **常驻 GPU 的字形图集**："a 200 MB log costs what an empty prompt costs" | 一张 2048² `r8Unorm`，`.storageModePrivate`，blit 写入，ASCII 预切；彩色 emoji 另有同尺寸 RGBA 图集，按需创建。见 3.2 |
 | **格子要小**："a cell that stayed 20 bytes" | `Record` **16 字节**（`glyph`/`flags`/`fore`/`back`/`spare`）。稀有特性走旁表，不塞进主结构 |
 | **损伤驱动**："avoid treating every refresh as: something changed, redraw everything" | `Damage`（行集合 + `moved`）驱动格子缓存，纯滚动是 `memmove` 不是重建。见 3.2 |
 | **每个标签有自己的 display clock，可挂起** | `TerminalPacer` 用 `NSView.displayLink`，理由集为空即停表；标签不在屏上就 `detach()` |
@@ -42,10 +42,10 @@
 |---|---|
 | `Terminal.swift` (649) | PTY 生命周期（`openpty` + `posix_spawn`）、读写调度、`TIOCSWINSZ`、lane（单条串行队列，解析与取景同序）、`Scene`/`look` 两个取景口、`Modes` 快照 |
 | `TerminalGrid.swift` (882) | 屏幕模型：`Cell`/`Row`、滚动缓冲（`trim()` 裁到 `scrollback`）、alt screen、滚区域、命令块区间表、超链接内联表、光标色、`Damage` |
-| `TerminalParse.swift` (724) | VT 解析器。纯逻辑，可单测 |
+| `TerminalParse.swift` (726) | VT 解析器。纯逻辑，可单测 |
 | `TerminalCells.swift` (168) | **3 槽的格子环**：以 `Screen.place(row)` 为键的逐行缓存，`owed` 集合，滚动走 memmove |
-| `TerminalAtlas.swift` (525) | **异步字形图集**：整数 `GlyphKey`、reserve-then-fill、后台串行切割、`generation` 换代 |
-| `TerminalDraw.swift` (1115) | Metal 渲染器：设备/队列/四个管线、一个 pass 的编码、MSL 内联、`Frame`/`Record`、`groundColor`（窗格沟的底色） |
+| `TerminalAtlas.swift` (621) | **异步字形图集**：整数 `GlyphKey`、reserve-then-fill、后台串行切割、`generation` 换代 |
+| `TerminalDraw.swift` (1143) | Metal 渲染器：设备/队列/四个管线、一个 pass 的编码、MSL 内联、`Frame`/`Record`、`groundColor`（窗格沟的底色） |
 | `TerminalPacer.swift` (206) | 帧节奏：`NSView.displayLink`、理由集（damage/caret/once/hold）、闪烁与 hold 的相位 |
 | `TerminalView.swift` (952) | `NSView` + `CAMetalLayer`：键盘（含 IME 提交路径、DECCKM/DECKPAM）、鼠标上报与选区、滚轮、尺寸换算、焦点上报（`onFocused` 缝，窗格容器挂它）、⌘-click、命令块跳转 |
 | `TerminalMouse.swift` (183) | 四种鼠标编码的字节与坐标换算。纯逻辑，可单测 |
@@ -75,6 +75,7 @@
   - **换代**：字体、缩放、字面任一变化 → `generation &+= 1`、新纹理、旧的进 `retired` 并**留到读它的在途帧结束**（在放行 semaphore 的同一个 completion handler 里丢），否则 GPU 读已释放的纹理。切割任务带 `generation`，换代前的落地直接丢。
   - **每帧上限**：`perFrame = 512` 个落地，backlog 4096。ASCII 0x20–0x7E × 4 种样式在 init 与每次换字体时预切（约 6 ms / 376 个字形），所以 ASCII 永不闪。新 CJK 字形会闪一帧空格（~8 ms）——**这是故意的**，为了消灭它去等切割，正是这次要删掉的那个停顿。
   - `NSFontManager.convert(_:toHaveTrait:)` 只在主线程：四种字面每代在主线程解析好再交给切割队列，`CTLineDraw` 才在后台跑。
+  - **彩色字形走第二张图集**：emoji 不能是覆盖度（它的颜色是画的一部分），所以另有一张 2048² `rgba8Unorm`，首次出现彩色字形时才创建；`Record.flags` 的 bit 32 说这一格采样哪一张，片元把 CoreText 写的 premultiplied RGBA 反预乘后按同一套 alpha 混合画。宽的彩色字形（🧠 占两格）与宽 CJK 共享同一套槽位；blit 的目标起点按**基础槽宽**算，不是按 2× 宽的裁剪宽度算——旧写法会把宽字形整体右移一格。
 
 ### 3.3 帧节奏
 
@@ -210,7 +211,7 @@
 - ~~**视觉细节**~~（已落地）：SGR 5 闪烁真正绘制（Pacer 加 `.blink` 目的，与 caret 共用同一个时钟与相位，半个周期隐藏字形；屏幕上没有闪烁字时该目的自动退场）、下划线/删除线的样式与颜色（SGR 4:3 记入 `Ink.curl`，画成加重线；58/59 记入 `Ink.line`，装饰 pass 用它）、DECSCNM 反显（`Modes.reversed`，background 与 glyph 两个 pass 一起把格子翻面，Record 的 `spare` 改名为 `decoration`）、SGR 21 修正为双下划线（`TerminalParse.swift`：不再关粗体）、隐藏格子不再画下划线。
 - **下划线样式的诚实上限**：4:4（dotted）与 4:5（dashed）在格子模型里与直线同权重绘制——一个 quad 装不下一个真正的波浪/点划线，解析层如实记账，绘制层用加重线作为简写。
 - **Kitty 键盘协议**（CSI u）：一整套编码 + 旗标状态机，单独一轮更稳。目前查询如实回答"不支持"。
-- **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、彩色 emoji 图集、平滑滚动动画。
+- **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、平滑滚动动画。
 - **Metalterm 的标志性 UX**：底部输入坞、命令块折叠、状态栏 + git、光标动效。
 - **多显示器拖拽**会引起 `contentsScale` 变化 → 整个图集换代 → 闪一下。缓解是按缩放双图集缓存，先记着不建。
 - **窗格**：pane 树随会话恢复（会话只记终端标签页本身与位置，落点是新 shell，恢复时按单格重建，不还原布局）；`splitLeft`/`splitUp` 命令（从另一侧分右边那格即可做到）；跨窗格共享字形图集（每格约 4–6 MB，隐藏格帧时钟自停，代价是内存不是帧）；MetalTerm 式 `confirm_close` 设置项（关格确认目前无条件开，设置项后加）。
