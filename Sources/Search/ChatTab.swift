@@ -57,61 +57,63 @@ struct ChatStage: View {
 
             if let notice = bot.notice {
                 noticeCard(notice)
+                    .frame(maxWidth: browser.prefs.chatWide ? .infinity : 720, alignment: .leading)
+                    .frame(maxWidth: .infinity)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 8)
             } else {
                 talk
                 if let pending = bot.pending {
                     actCard(pending)
+                        .frame(maxWidth: browser.prefs.chatWide ? .infinity : 720, alignment: .leading)
+                        .frame(maxWidth: .infinity)
                         .padding(.horizontal, 20)
                         .padding(.bottom, 8)
                 }
             }
 
             Rectangle().fill(Palette.hairline).frame(height: 1)
-            HStack(spacing: 8) {
-                TextField("", text: $bot.draft, prompt: Text("Ask the agent — it works every tab you have open…").foregroundStyle(Palette.faint))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.ink)
-                    .focused($typing)
-                    .onSubmit { bot.submit() }
-                    .disabled(bot.notice != nil || bot.busy)
-                if bot.busy {
-                    // The stop: the turn as it stands, quiet (see Bot.stop)
-                    // — a working answer cut where it is, an act still
-                    // waiting let go, and told so.
-                    StopButton { bot.stop() }
-                } else if bot.notice == nil {
-                    // The send: what Return does, for the pointer. Nothing
-                    // written, nothing to press.
-                    let canSend = !bot.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    Button(action: { bot.submit() }) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(canSend ? Palette.ground : Palette.faint)
-                            .frame(width: 24, height: 24)
-                            .background(canSend ? Palette.ink : Palette.wash, in: Circle())
-                            .contentShape(Circle())
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    TextField("", text: $bot.draft, prompt: Text("Ask the agent — it works every tab you have open…").foregroundStyle(Palette.faint))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Palette.ink)
+                        .focused($typing)
+                        .onSubmit { bot.submit() }
+                        .disabled(bot.notice != nil || bot.busy)
+                    if bot.busy {
+                        StopButton { bot.stop() }
+                    } else if bot.notice == nil {
+                        let canSend = !bot.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        Button(action: { bot.submit() }) {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(canSend ? Palette.ground : Palette.faint)
+                                .frame(width: 24, height: 24)
+                                .background(canSend ? Palette.ink : Palette.wash, in: Circle())
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSend)
+                        .help("Send")
+                        Text("Auto")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.faint)
+                        Switch(on: $bot.auto)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!canSend)
-                    .help("Send")
-                    Text("Auto")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.faint)
-                    Switch(on: $bot.auto)
                 }
+                .padding(.vertical, 12)
+                Text("AI — may be wrong · \(bot.place)")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Palette.faint)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 10)
             }
+            .frame(maxWidth: browser.prefs.chatWide ? .infinity : 720, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            Text("AI — may be wrong · \(bot.place)")
-                .font(.system(size: 10.5))
-                .foregroundStyle(Palette.faint)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Palette.ground)
