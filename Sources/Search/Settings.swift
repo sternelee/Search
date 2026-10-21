@@ -550,7 +550,7 @@ struct SettingsPanel: View {
     private var terminal: some View {
         VStack(alignment: .leading, spacing: 18) {
             Card {
-                Line("Font", "Every terminal draws with this face") {
+                Line("Font", "Every terminal draws with this face", below: true) {
                     Picker("", selection: $prefs.terminalFont) {
                         Text("System Mono").tag("")
                         ForEach(TerminalLook.faces) { face in

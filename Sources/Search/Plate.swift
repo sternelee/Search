@@ -101,36 +101,69 @@ struct Rule: View {
 }
 
 /// One thing to set or do: what it is on the left, the control on the right.
+///
+/// `below` puts the detail on a line of its own under the title and the
+/// control, rather than in the left column beside the control: a control tall
+/// enough to centre against a two-line column (a font menu, for one) then
+/// lines up with the title it belongs to, and the sentence under both has the
+/// whole width to be read in.
 struct Line<Control: View>: View {
     let title: String
     let detail: String?
+    let below: Bool
     @ViewBuilder let control: () -> Control
 
-    init(_ title: String, _ detail: String? = nil, @ViewBuilder control: @escaping () -> Control) {
+    init(
+        _ title: String, _ detail: String? = nil, below: Bool = false,
+        @ViewBuilder control: @escaping () -> Control
+    ) {
         self.title = title
         self.detail = detail
+        self.below = below
         self.control = control
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.ink)
-                if let detail {
-                    Text(detail)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Palette.muted)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
+        Group {
+            if below, detail != nil {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .center, spacing: 16) {
+                        heading
+                        Spacer(minLength: 8)
+                        control()
+                    }
+                    note
+                }
+            } else {
+                HStack(alignment: .center, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        heading
+                        note
+                    }
+                    Spacer(minLength: 8)
+                    control()
                 }
             }
-            Spacer(minLength: 8)
-            control()
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+    }
+
+    private var heading: some View {
+        Text(title)
+            .font(.system(size: 13))
+            .foregroundStyle(Palette.ink)
+    }
+
+    @ViewBuilder
+    private var note: some View {
+        if let detail {
+            Text(detail)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Palette.muted)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
