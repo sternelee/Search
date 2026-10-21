@@ -602,6 +602,64 @@ final class TerminalRenderTests: XCTestCase {
         XCTAssertGreaterThan(inky, empty * 9 / 10, "the squares behind the words are the theme's ink, not its ground; painted \(inky) of \(empty)")
     }
 
+    // MARK: - colour
+
+    /// An emoji is not painted in the theme's ink: it brings the colours it
+    /// comes in, sampled from the colour atlas rather than tinted coverage.
+    func testAnEmojiPaintsItsOwnColours() throws {
+        let paint = try renderer()
+        var row = Row(width: 10)
+        row.cells[0] = Cell(char: "🧠", wide: true)
+        let scene = Terminal.Scene(
+            lines: [row, Row(width: 10)], caret: nil,
+            width: 10, height: 2, back: 0
+        )
+        paint.refresh(scene: scene, selection: nil, strong: true)
+        let pixels = try pixels(of: paint)
+
+        var chromatic = 0
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let red = Int(pixels[offset]), green = Int(pixels[offset + 1]), blue = Int(pixels[offset + 2])
+            let most = max(red, max(green, blue)), least = min(red, min(green, blue))
+            if most - least > 20 { chromatic += 1 }
+        }
+        XCTAssertGreaterThan(chromatic, 50, "the emoji paints colours of its own; painted \(chromatic) coloured pixels")
+    }
+
+    // MARK: - SGR 2
+
+    /// A faint word on a dark ground is the theme's ink at half weight, not
+    /// black at half weight: a comment drawn in the shorthand for "the
+    /// theme's own colour" used to go darker than the ground it sat on.
+    func testAFaintWordIsTheThemesInkNotBlack() throws {
+        let previous = TerminalLook.theme
+        defer { TerminalLook.theme = previous }
+        TerminalLook.theme = .dark
+
+        let paint = try renderer()
+        var ink = Ink()
+        ink.faint = true
+        var row = Row(width: 10)
+        for column in 0..<10 { row.cells[column] = Cell(char: "W", ink: ink) }
+        let scene = Terminal.Scene(
+            lines: [row, Row(width: 10)], caret: nil,
+            width: 10, height: 2, back: 0
+        )
+        paint.refresh(scene: scene, selection: nil, strong: true)
+        let pixels = try pixels(of: paint)
+        let theme = TerminalDraw.Theme.current(.dark)
+
+        var lit = 0
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let red = Double(pixels[offset]) / 255
+            let green = Double(pixels[offset + 1]) / 255
+            let blue = Double(pixels[offset + 2]) / 255
+            let ground = Double(theme.ground.x + theme.ground.y + theme.ground.z)
+            if red + green + blue > ground + 0.15 { lit += 1 }
+        }
+        XCTAssertGreaterThan(lit, 200, "a faint word is lighter than a dark ground, not blacker; painted \(lit) pixels")
+    }
+
     // MARK: - SGR 5
 
     /// A word wearing SGR 5 paints on one half of the blink and hides on

@@ -41,7 +41,7 @@ final class TerminalDraw {
     /// not whatever the theme says of a blank square.
     struct Record {
         var glyph: UInt16 = 0
-        var flags: UInt16 = 0    // 1 wide, 2 underline, 4 strike, 8 curly, 16 blink
+        var flags: UInt16 = 0    // 1 wide, 2 underline, 4 strike, 8 curly, 16 blink, 32 colour
         var fore: UInt32 = 0
         var back: UInt32 = 0
         var decoration: UInt32 = 0   // packed RGBA of the line (SGR 58), 0 for the fore's own
@@ -569,12 +569,19 @@ final class TerminalDraw {
                 record.glyph = atlas.slot(
                     square.char, bold: square.ink.bold, italic: square.ink.italic, wide: square.wide
                 )
+                if GlyphAtlas.isColour(square.char) { record.flags |= 32 }
             }
             var fore = theme.fore(square.ink.foreground)
             var back = theme.fore(square.ink.background)
             if square.ink.inverse { swap(&fore, &back) }
             if hid { record.glyph = 0 }
-            if square.ink.faint { fore = (fore & 0xFFFFFF00) | 0x80 }
+            if square.ink.faint {
+                // Zero is the square saying "the theme's ink", not black:
+                // half of black on a dark ground is a comment nobody can
+                // read, so the shorthand is resolved before it is dimmed.
+                let base = fore == 0 ? theme.packedInk : fore
+                fore = (base & 0xFFFFFF00) | 0x80
+            }
             record.fore = fore
             record.back = back
             if !hid, square.ink.underline { record.flags |= 2 }
@@ -673,6 +680,7 @@ final class TerminalDraw {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: span)
         encoder.setRenderPipelineState(glyph)
         encoder.setFragmentTexture(atlas.texture, index: 0)
+        encoder.setFragmentTexture(atlas.colourTexture, index: 1)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: span)
         encoder.endEncoding()
     }
@@ -711,6 +719,10 @@ final class TerminalDraw {
         /// colours, in the same order, over and over — so it is packed
         /// once here rather than per cell.
         let packed: [UInt32]
+        /// The theme's own ink, packed: what a square that names no colour
+        /// paints with. Kept because `fore` zero is that square's shorthand,
+        /// and a word made faint needs the colour behind the shorthand.
+        let packedInk: UInt32
 
         init(ground: simd_float4, ink: simd_float4, select: simd_float4, ansi: [simd_float4]) {
             self.ground = ground
@@ -718,6 +730,7 @@ final class TerminalDraw {
             self.select = select
             self.ansi = ansi
             self.packed = Theme.table(ansi)
+            self.packedInk = Theme.pack(ink)
         }
 
         /// The theme a look asks for. "Match the Mac" — the default — is
@@ -866,7 +879,7 @@ final class TerminalDraw {
     // One cell of the grid, as the CPU wrote it into the resident buffer.
     struct CellRecord {
         uint16_t glyph;
-        uint16_t flags;   // 1 wide, 2 underline, 4 strike, 8 curly, 16 blink
+        uint16_t flags;   // 1 wide, 2 underline, 4 strike, 8 curly, 16 blink, 32 colour
         uint32_t fore;
         uint32_t back;
         uint32_t decoration;  // packed RGBA of the line (SGR 58), 0 for the fore's own
@@ -909,6 +922,7 @@ final class TerminalDraw {
         float4 place [[position]];
         float4 tint;
         float2 uv;
+        uint colour;
     };
 
     // A triangle strip takes its vertices two at a time, so these have to
@@ -1060,6 +1074,7 @@ final class TerminalDraw {
     ) {
         GlyphOut out;
         CellRecord c = cells[iid];
+        out.colour = (c.flags & 32u) != 0u ? 1u : 0u;
         if (c.glyph == 0u) {
             out.place = float4(-2.0, -2.0, 0.0, 1.0);
             out.tint = float4(0.0);
@@ -1105,8 +1120,21 @@ final class TerminalDraw {
         return in.tint;
     }
 
-    fragment float4 glyphFragment(GlyphOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
+    fragment float4 glyphFragment(
+        GlyphOut in [[stage_in]],
+        texture2d<float> atlas [[texture(0)]],
+        texture2d<float> colourAtlas [[texture(1)]]
+    ) {
         constexpr sampler pick(mag_filter::nearest, min_filter::nearest);
+        // An emoji brings its own colours: the sample is RGBA, written
+        // premultiplied by CoreText, and the frame's tint has no say in
+        // them. Un-premultiply for the blend the pipeline was made with.
+        if (in.colour != 0u) {
+            float4 paint = colourAtlas.sample(pick, in.uv);
+            if (paint.a <= 0.004) { discard_fragment(); }
+            float3 rgb = paint.a > 0.0 ? paint.rgb / paint.a : float3(0.0);
+            return float4(rgb, paint.a * in.tint.a);
+        }
         float cover = atlas.sample(pick, in.uv).r;
         if (cover <= 0.004) { discard_fragment(); }
         return float4(in.tint.rgb, in.tint.a * cover);

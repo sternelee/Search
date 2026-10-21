@@ -76,6 +76,10 @@ struct GlyphCut {
     var across: Int
     var down: Int
     var bytes: [UInt8]
+    /// Whether this is a colour glyph — an emoji, drawn with the colours
+    /// it comes in rather than as coverage to be tinted — and so belongs
+    /// in the colour atlas rather than the coverage one.
+    var colour = false
     /// The generation it was cut for. A cut of any other is not this
     /// atlas's and is let go where it is found.
     var generation: UInt64
@@ -89,6 +93,12 @@ final class GlyphAtlas {
 
     /// The glyphs in the atlas, as the shaders read it.
     private(set) var texture: MTLTexture
+    /// The colour glyphs — emoji and the like, whose own colours are part
+    /// of the drawing rather than a tint over coverage. Made the first
+    /// time one is asked for, so a terminal that never prints an emoji
+    /// never pays for the room; the same slots, the same side, RGBA
+    /// instead of one channel.
+    private(set) var colourTexture: MTLTexture?
     /// One slot, in device pixels, and how many of them fit across.
     private(set) var across = 1
     private(set) var down = 1
@@ -135,6 +145,8 @@ final class GlyphAtlas {
     /// may read it. True of a texture the moment it is made, and of every
     /// one after it.
     private var wiping = true
+    /// The same, for the colour atlas, which is made on demand.
+    private var colourWiping = true
 
     /// Called on the main thread when a glyph has landed. Whoever draws sets
     /// it to ask for a frame: a slot this frame named and had no coverage
@@ -186,6 +198,10 @@ final class GlyphAtlas {
         if !first {
             guard let fresh = GlyphAtlas.make(device) else { return }
             texture = fresh
+            // The colour atlas went with the old generation too; the next
+            // emoji asked for makes a fresh one.
+            colourTexture = nil
+            colourWiping = true
             // Nothing has been cut into it and nothing is in it: the frames
             // that name a slot from here until the prewarm below lands read
             // it as empty because `wipe` writes the emptiness, not because
@@ -200,10 +216,10 @@ final class GlyphAtlas {
     /// CPU access to it at all, which is the point — and why a glyph can be
     /// cut on another thread and still arrive in the frame that asked for
     /// it.
-    private static func make(_ device: MTLDevice) -> MTLTexture? {
+    private static func make(_ device: MTLDevice, format: MTLPixelFormat = .r8Unorm) -> MTLTexture? {
         let shape = MTLTextureDescriptor()
         shape.textureType = .type2D
-        shape.pixelFormat = .r8Unorm
+        shape.pixelFormat = format
         shape.width = side
         shape.height = side
         shape.storageMode = .private
@@ -212,6 +228,22 @@ final class GlyphAtlas {
     }
 
     // MARK: - asking for a glyph
+
+    /// Whether a character is drawn in colour: the emoji Apple's colour
+    /// face draws, and the sequences that ask for emoji presentation. A
+    /// text symbol that has a monochrome form is left as text unless its
+    /// variation selector asks otherwise.
+    nonisolated static func isColour(_ char: Character) -> Bool {
+        let scalars = char.unicodeScalars
+        if scalars.contains(where: { $0.value == 0xFE0F }) { return true }
+        guard let first = scalars.first else { return false }
+        switch first.value {
+        case 0x1F000...0x1FAFF, 0x1FC00...0x1FFFF:
+            return true
+        default:
+            return false
+        }
+    }
 
     /// The slot a glyph is drawn from — its number in the atlas plus one,
     /// zero for nothing to draw — reserving it and having it cut if this is
@@ -222,10 +254,15 @@ final class GlyphAtlas {
         if let had = given[key] { return had }
         guard box.busy < GlyphAtlas.backlog, let seat = reserve(wide: key.style & 4 != 0) else { return 0 }
         given[key] = UInt16(seat + 1)
+        let colour = GlyphAtlas.isColour(char)
+        if colour, colourTexture == nil {
+            colourTexture = GlyphAtlas.make(device, format: .rgba8Unorm)
+            colourWiping = true
+        }
         let job = Job(
             char: char, face: faces[Int(key.style & 3)],
             seat: seat, across: (key.style & 4 != 0 ? 2 : 1) * across, down: down,
-            generation: generation, box: box
+            colour: colour, generation: generation, box: box
         )
         box.start()
         work.async { job.run() }
@@ -264,8 +301,17 @@ final class GlyphAtlas {
     /// Does nothing when the atlas in hand has already been emptied, so a
     /// frame may call it whenever.
     func wipe(on command: MTLCommandBuffer) {
-        guard wiping else { return }
-        wiping = false
+        if wiping {
+            wiping = false
+            clear(texture, on: command)
+        }
+        if colourWiping, let colourTexture {
+            colourWiping = false
+            clear(colourTexture, on: command)
+        }
+    }
+
+    private func clear(_ texture: MTLTexture, on command: MTLCommandBuffer) {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = texture
         pass.colorAttachments[0].loadAction = .clear
@@ -300,18 +346,23 @@ final class GlyphAtlas {
         var at = 0
         for cut in cuts {
             let start = at
+            at += cut.bytes.count
+            let stride = cut.across * (cut.colour ? 4 : 1)
+            guard let target = cut.colour ? colourTexture : texture else { continue }
+
             cut.bytes.withUnsafeBytes { bytes in
                 staging.contents().advanced(by: start).copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
             }
-            at += cut.bytes.count
             blit.copy(
                 from: staging, sourceOffset: start,
-                sourceBytesPerRow: cut.across, sourceBytesPerImage: cut.across * cut.down,
+                sourceBytesPerRow: stride, sourceBytesPerImage: stride * cut.down,
                 sourceSize: MTLSize(width: cut.across, height: cut.down, depth: 1),
-                to: texture, destinationSlice: 0, destinationLevel: 0,
+                to: target, destinationSlice: 0, destinationLevel: 0,
+                // The slot's own width, not the cut's: a wide glyph is two
+                // slots wide but still starts at the first of them.
                 destinationOrigin: MTLOrigin(
-                    x: cut.seat % slotsPerRow * cut.across,
-                    y: cut.seat / slotsPerRow * cut.down,
+                    x: cut.seat % slotsPerRow * across,
+                    y: cut.seat / slotsPerRow * down,
                     z: 0
                 )
             )
@@ -355,12 +406,22 @@ final class GlyphAtlas {
                 given[key] = UInt16(seat + 1)
                 if let cut = GlyphAtlas.cut(
                     char, face: faces[Int(style)], seat: seat, across: across, down: down,
-                    generation: generation
+                    colour: false, generation: generation
                 ) {
                     box.put(cut)
                 }
             }
         }
+    }
+
+    /// How much a glyph has to be shrunk to sit whole in its slot: 1 when
+    /// it already does, which is every letter of ordinary text, and less
+    /// when its ink runs past the advance the cell was cut from — the way
+    /// the drawings in a patched icon face do. Kept apart from the drawing
+    /// so the arithmetic can be pinned without a font that has one.
+    nonisolated static func fit(_ ink: CGRect, in slot: CGSize) -> CGFloat {
+        guard ink.width > 0, ink.height > 0, slot.width > 0, slot.height > 0 else { return 1 }
+        return min(1, min(slot.width / ink.width, slot.height / ink.height))
     }
 
     /// One glyph, cut: the coverage of a character in an R8 square, white on
@@ -369,10 +430,13 @@ final class GlyphAtlas {
     /// it run on the cutting queue, and what the two callers of it share:
     /// the prewarm, here, and `Job`, on the queue.
     fileprivate nonisolated static func cut(
-        _ char: Character, face: NSFont, seat: Int, across: Int, down: Int, generation: UInt64
+        _ char: Character, face: NSFont, seat: Int, across: Int, down: Int, colour: Bool,
+        generation: UInt64
     ) -> GlyphCut? {
         guard across > 0, down > 0 else { return nil }
-        var bytes = [UInt8](repeating: 0, count: across * down)
+        // A colour glyph carries its own RGBA; a coverage glyph is one
+        // channel, tinted by the frame the way every letter is.
+        var bytes = [UInt8](repeating: 0, count: across * down * (colour ? 4 : 1))
         let marked = NSAttributedString(string: String(char), attributes: [
             .font: face,
             // A colour rather than an `NSColor`: this runs off the main
@@ -380,20 +444,49 @@ final class GlyphAtlas {
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1),
         ])
         let line = CTLineCreateWithAttributedString(marked)
-        let space = CGColorSpaceCreateDeviceGray()
+        let space = colour ? CGColorSpaceCreateDeviceRGB() : CGColorSpaceCreateDeviceGray()
+        let info = colour
+            ? CGImageAlphaInfo.premultipliedLast.rawValue
+            : CGImageAlphaInfo.none.rawValue
         // The baseline: the descent above the bitmap's floor, plus half the
         // leading — the same room the cell's height was measured from.
         let rise = -face.descender + (CGFloat(down) - face.ascender + face.descender) / 2
+        // A glyph whose ink is wider or taller than the square it has been
+        // given — an icon from a Nerd Font, whose drawings run past the
+        // advance the cell was measured from — is shrunk to fit whole. Left
+        // at its own size it is cut off at the slot's edge, which for those
+        // glyphs is half an icon and a square of nothing where the rest was.
+        let ink = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+        let fit = GlyphAtlas.fit(ink, in: CGSize(width: across, height: down))
+        // A glyph a hair over its square stays where the baseline put it:
+        // shrinking and centring for half a pixel would move ordinary
+        // letters against the ones beside them, an italic's overhang most
+        // of all. An icon that overruns by half is another thing.
+        let whole = fit < 0.9
         bytes.withUnsafeMutableBytes { raw in
             guard let page = CGContext(
                 data: raw.baseAddress, width: across, height: down,
-                bitsPerComponent: 8, bytesPerRow: across,
-                space: space, bitmapInfo: CGImageAlphaInfo.none.rawValue
+                bitsPerComponent: 8, bytesPerRow: across * (colour ? 4 : 1),
+                space: space, bitmapInfo: info
             ) else { return }
-            page.textPosition = CGPoint(x: 0, y: rise)
-            CTLineDraw(line, page)
+            if whole {
+                page.saveGState()
+                page.scaleBy(x: fit, y: fit)
+                page.textPosition = CGPoint(
+                    x: (CGFloat(across) / fit - ink.width) / 2 - ink.minX,
+                    y: (CGFloat(down) / fit - ink.height) / 2 - ink.minY
+                )
+                CTLineDraw(line, page)
+                page.restoreGState()
+            } else {
+                page.textPosition = CGPoint(x: 0, y: rise)
+                CTLineDraw(line, page)
+            }
         }
-        return GlyphCut(seat: seat, across: across, down: down, bytes: bytes, generation: generation)
+        return GlyphCut(
+            seat: seat, across: across, down: down, bytes: bytes,
+            colour: colour, generation: generation
+        )
     }
 
     /// The four ways a style is set, at the scale the atlas is cut at. On
@@ -422,25 +515,28 @@ private final class Job: @unchecked Sendable {
     private let seat: Int
     private let across: Int
     private let down: Int
+    private let colour: Bool
     private let generation: UInt64
     private let box: Landed
 
     init(
         char: Character, face: NSFont, seat: Int, across: Int, down: Int,
-        generation: UInt64, box: Landed
+        colour: Bool, generation: UInt64, box: Landed
     ) {
         self.char = char
         self.face = face
         self.seat = seat
         self.across = across
         self.down = down
+        self.colour = colour
         self.generation = generation
         self.box = box
     }
 
     func run() {
         box.finish(GlyphAtlas.cut(
-            char, face: face, seat: seat, across: across, down: down, generation: generation
+            char, face: face, seat: seat, across: across, down: down,
+            colour: colour, generation: generation
         ))
     }
 }

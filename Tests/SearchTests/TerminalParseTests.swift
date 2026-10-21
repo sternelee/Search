@@ -42,6 +42,20 @@ final class TerminalParseTests: XCTestCase {
         XCTAssertEqual(screen.rows[1].text.prefix(4), "next")
     }
 
+    /// An emoji that is more than one scalar — a heart and the variation
+    /// selector that asks for its picture — is still wide, and so is a
+    /// cluster riding on a wide base.
+    func testAnEmojiOrAWideBaseWithAMarkTakesTwoSquares() {
+        type("❤️")
+        XCTAssertTrue(screen.rows[0].cells[0].wide)
+        XCTAssertEqual(screen.x, 2, "the two squares it spans are behind the cursor")
+        screen.carriageReturn()
+        screen.eraseDisplay(2)
+        screen.move(to: 0, row: 0)
+        type("日\u{0301}")
+        XCTAssertTrue(screen.rows[0].cells[0].wide, "a wide base stays wide under its mark")
+    }
+
     func testWideCharacterPrintsAcrossTwoSquares() {
         feed("你")
         XCTAssertEqual(screen.rows[0].cells[0].char, "你")

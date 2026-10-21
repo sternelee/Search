@@ -68,6 +68,48 @@ final class TerminalAtlasTests: XCTestCase {
         }
     }
 
+    /// A glyph whose ink is wider or taller than the slot it was given is
+    /// shrunk to fit it, whole; one that already fits — every letter of
+    /// ordinary text — is left at its own size.
+    func testAGlyphWiderThanItsSlotIsShrunkToFitIt() {
+        let slot = CGSize(width: 8, height: 16)
+        XCTAssertEqual(GlyphAtlas.fit(CGRect(x: 0, y: 0, width: 8, height: 10), in: slot), 1)
+        XCTAssertEqual(GlyphAtlas.fit(CGRect(x: 0, y: 0, width: 14, height: 10), in: slot), CGFloat(8) / 14, accuracy: 0.0001)
+        XCTAssertEqual(GlyphAtlas.fit(CGRect(x: 0, y: 0, width: 8, height: 20), in: slot), CGFloat(16) / 20, accuracy: 0.0001)
+        XCTAssertEqual(GlyphAtlas.fit(CGRect(x: 0, y: 0, width: 20, height: 20), in: slot), CGFloat(8) / 20, accuracy: 0.0001,
+                       "the tighter of the two axes decides")
+    }
+
+    /// An emoji is drawn in colour, and a letter is not: the one goes into
+    /// the RGBA atlas, the other stays coverage for a frame to tint.
+    func testAnEmojiIsAskedForAsColour() {
+        XCTAssertTrue(GlyphAtlas.isColour("🧠"))
+        XCTAssertTrue(GlyphAtlas.isColour("❤️"), "a text symbol told to be an emoji")
+        XCTAssertFalse(GlyphAtlas.isColour("A"))
+        XCTAssertFalse(GlyphAtlas.isColour("日"))
+    }
+
+    /// A colour glyph is cut with four channels and lands in the colour
+    /// atlas, not the coverage one — the whole of why an emoji can show
+    /// colours a theme knows nothing about.
+    func testAColourGlyphIsCutWithItsOwnColours() throws {
+        let atlas = try atlas()
+        atlas.begin(scale: 1, cell: cell, font: face) {}
+        let named = atlas.slot("🧠", bold: false, italic: false, wide: true)
+        XCTAssertNotEqual(named, 0, "the glyph was given a slot")
+        atlas.settle()
+        let cut = try XCTUnwrap(atlas.drain().first { $0.seat == Int(named) - 1 })
+        XCTAssertTrue(cut.colour, "the emoji is a colour cut")
+        XCTAssertEqual(cut.bytes.count, cut.across * cut.down * 4, "four channels, not one")
+        XCTAssertTrue(cut.bytes.contains { $0 != 0 }, "and there is an emoji in them")
+        var chromatic = 0
+        for i in stride(from: 0, to: cut.bytes.count, by: 4) {
+            let r = Int(cut.bytes[i]), g = Int(cut.bytes[i+1]), b = Int(cut.bytes[i+2]), a = Int(cut.bytes[i+3])
+            if max(r,max(g,b)) - min(r,min(g,b)) > 10 && a > 0 { chromatic += 1 }
+        }
+        XCTAssertGreaterThan(chromatic, 20, "and the colours are its own, not one grey; \(chromatic) coloured pixels")
+    }
+
     // MARK: - reserving
 
     /// A slot is named the moment a frame asks for it, whether or not the

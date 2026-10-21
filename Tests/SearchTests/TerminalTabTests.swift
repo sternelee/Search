@@ -38,6 +38,15 @@ final class TerminalTabTests: XCTestCase {
         XCTAssertNotNil(tab.shell)
         XCTAssertTrue(tab.console === console, "the console is built once")
 
+        // Its mark is its own: asking for a site's icon must leave the
+        // terminal's in place, and coming back to the tab must not build the
+        // page it does not have.
+        XCTAssertNotNil(tab.icon, "a terminal tab wears its own mark")
+        tab.adoptIcon()
+        XCTAssertNotNil(tab.icon, "a shell's mark is not replaced by a site's")
+        tab.revive()
+        XCTAssertNil(tab.built, "coming back to a terminal does not build a page")
+
         // A shell never sleeps: it is a live process (Browser.awake guards
         // it by tab.isTerminal), and closing the tab ends it.
         XCTAssertEqual(browser.awake(because: tab), "a live shell")

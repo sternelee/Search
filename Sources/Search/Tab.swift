@@ -422,6 +422,14 @@ final class Tab: ObservableObject, Identifiable {
     /// the tab has an address, and from the page a moment after it loads.
     @Published var icon: NSImage?
 
+    /// The mark a shell tab wears: its own symbol, not a site's, and there
+    /// before the shell itself is started.
+    static let terminalMark = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+
+    /// What the row draws beside the name: a shell's symbol or a page's
+    /// icon. Asked through here so no site's icon can stand in for a shell's.
+    var mark: NSImage? { isTerminal ? Tab.terminalMark : icon }
+
     /// The letter a pinned tab is reduced to, and what a tab shows in place of
     /// an icon it doesn't have yet.
     var monogram: String {
@@ -435,6 +443,13 @@ final class Tab: ObservableObject, Identifiable {
     }
 
     func adoptIcon() {
+        // A shell's mark is its own, not a site's: where it is (OSC 7) is a
+        // file address with no favicon, and taking that for an answer would
+        // leave the tab wearing the first letter of its directory.
+        if isTerminal {
+            icon = Tab.terminalMark
+            return
+        }
         guard let site = address.flatMap(Favicons.site) else {
             icon = nil
             return
@@ -667,7 +682,7 @@ final class Tab: ObservableObject, Identifiable {
         // The shell's own icon, worn before the shell itself is started:
         // the bar shows what the tab is the moment it is restored.
         if terminal {
-            icon = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+            icon = Tab.terminalMark
         }
     }
 
@@ -1307,6 +1322,10 @@ final class Tab: ObservableObject, Identifiable {
     /// Asked anything at all, the page answers with one particular error, and
     /// the answer to that is to load it again.
     func revive() {
+        // A shell is revived by its own view, not by a page: asking a
+        // terminal tab for its web view builds one nobody shows, and loading
+        // the shell's folder into it is not a page either.
+        guard !isTerminal else { return }
         if stale {
             stale = false
             recoverFromCrash()
@@ -1369,6 +1388,7 @@ final class Tab: ObservableObject, Identifiable {
     /// page, and an address kept for it downloads the file once more
     /// whenever the tab is opened (see Browser.dropEmpty).
     func forget() {
+        guard !isTerminal else { return }
         address = nil
         icon = nil
     }

@@ -45,7 +45,6 @@ struct SettingsPanel: View {
             case .downloads: return "arrow.down.circle"
             case .privacy: return "hand.raised"
             case .ai: return "sparkles"
-            case .terminal: return "terminal"
             case .browserUse: return "globe"
             case .about: return "info.circle"
             }
@@ -554,7 +553,7 @@ struct SettingsPanel: View {
     private var terminal: some View {
         VStack(alignment: .leading, spacing: 18) {
             Card {
-                Line("Font", "Every terminal draws with this face") {
+                Line("Font", "Every terminal draws with this face", below: true) {
                     Picker("", selection: $prefs.terminalFont) {
                         Text("System Mono").tag("")
                         ForEach(TerminalLook.faces) { face in

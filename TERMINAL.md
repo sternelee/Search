@@ -2,7 +2,7 @@
 
 > 目标：在 Search 里加一个终端标签页，文字由 Metal 直接绘制。做法参考 [metalterm.dev](https://metalterm.dev/) —— 它的源码闭源，但本机装着 0.2.1，二进制、`default.metallib`、termcap 与作者的公开表述能互相印证，所以**学的是查实的机制，不是宣传数字**。代码全部自写，除 Apple 自带框架外零依赖。
 >
-> **状态：已落地。** 十三个源文件、十五个测试文件（241 个测试全绿），`./build.sh` release 通过。下面写的是**它现在的样子**，不是打算做成什么样。还没做的集中在第七节。
+> **状态：已落地。** 十三个源文件、十五个测试文件（197 个终端测试全绿，整套 258 个全绿），`swift build` 与 `./build.sh` release 通过。下面写的是**它现在的样子**，不是打算做成什么样。还没做的集中在第七节。
 
 ---
 
@@ -18,7 +18,7 @@
 
 | 学到的做法 | 在本仓库落成的形状 |
 |---|---|
-| **常驻 GPU 的字形图集**："a 200 MB log costs what an empty prompt costs" | 一张 2048² `r8Unorm`，`.storageModePrivate`，blit 写入，ASCII 预切。见 3.2 |
+| **常驻 GPU 的字形图集**："a 200 MB log costs what an empty prompt costs" | 一张 2048² `r8Unorm`，`.storageModePrivate`，blit 写入，ASCII 预切；彩色 emoji 另有同尺寸 RGBA 图集，按需创建。见 3.2 |
 | **格子要小**："a cell that stayed 20 bytes" | `Record` **16 字节**（`glyph`/`flags`/`fore`/`back`/`spare`）。稀有特性走旁表，不塞进主结构 |
 | **损伤驱动**："avoid treating every refresh as: something changed, redraw everything" | `Damage`（行集合 + `moved`）驱动格子缓存，纯滚动是 `memmove` 不是重建。见 3.2 |
 | **每个标签有自己的 display clock，可挂起** | `TerminalPacer` 用 `NSView.displayLink`，理由集为空即停表；标签不在屏上就 `detach()` |
@@ -40,19 +40,19 @@
 
 | 文件 | 职责 |
 |---|---|
-| `Terminal.swift` (612) | PTY 生命周期（`openpty` + `posix_spawn`）、读写调度、`TIOCSWINSZ`、lane（单条串行队列，解析与取景同序）、`Scene`/`look` 两个取景口、`Modes` 快照 |
-| `TerminalGrid.swift` (765) | 屏幕模型：`Cell`/`Row`、滚动缓冲（`trim()` 裁到 `scrollback`）、alt screen、滚区域、命令块区间表、超链接内联表、光标色、`Damage` |
-| `TerminalParse.swift` (681) | VT 解析器。纯逻辑，可单测 |
+| `Terminal.swift` (649) | PTY 生命周期（`openpty` + `posix_spawn`）、读写调度、`TIOCSWINSZ`、lane（单条串行队列，解析与取景同序）、`Scene`/`look` 两个取景口、`Modes` 快照 |
+| `TerminalGrid.swift` (882) | 屏幕模型：`Cell`/`Row`、滚动缓冲（`trim()` 裁到 `scrollback`）、alt screen、滚区域、命令块区间表、超链接内联表、光标色、`Damage` |
+| `TerminalParse.swift` (726) | VT 解析器。纯逻辑，可单测 |
 | `TerminalCells.swift` (168) | **3 槽的格子环**：以 `Screen.place(row)` 为键的逐行缓存，`owed` 集合，滚动走 memmove |
-| `TerminalAtlas.swift` (509) | **异步字形图集**：整数 `GlyphKey`、reserve-then-fill、后台串行切割、`generation` 换代 |
-| `TerminalDraw.swift` (1051) | Metal 渲染器：设备/队列/四个管线、一个 pass 的编码、MSL 内联、`Frame`/`Record`、`groundColor`（窗格沟的底色） |
-| `TerminalPacer.swift` (184) | 帧节奏：`NSView.displayLink`、理由集（damage/caret/once/hold）、闪烁与 hold 的相位 |
-| `TerminalView.swift` (921) | `NSView` + `CAMetalLayer`：键盘（含 IME 提交路径、DECCKM/DECKPAM）、鼠标上报与选区、滚轮、尺寸换算、焦点上报（`onFocused` 缝，窗格容器挂它）、⌘-click、命令块跳转 |
-| `TerminalMouse.swift` (162) | 四种鼠标编码的字节与坐标换算。纯逻辑，可单测 |
-| `TerminalLook.swift` (161) | 设置项的运行时镜像（`TerminalLook.font/size/theme/…`），`changed` 通知 |
-| `TerminalShell.swift` (131) | shell 集成片段的生成与注入（zsh/bash） |
+| `TerminalAtlas.swift` (621) | **异步字形图集**：整数 `GlyphKey`、reserve-then-fill、后台串行切割、`generation` 换代 |
+| `TerminalDraw.swift` (1143) | Metal 渲染器：设备/队列/四个管线、一个 pass 的编码、MSL 内联、`Frame`/`Record`、`groundColor`（窗格沟的底色） |
+| `TerminalPacer.swift` (206) | 帧节奏：`NSView.displayLink`、理由集（damage/caret/once/hold）、闪烁与 hold 的相位 |
+| `TerminalView.swift` (952) | `NSView` + `CAMetalLayer`：键盘（含 IME 提交路径、DECCKM/DECKPAM）、鼠标上报与选区、滚轮、尺寸换算、焦点上报（`onFocused` 缝，窗格容器挂它）、⌘-click、命令块跳转 |
+| `TerminalMouse.swift` (183) | 四种鼠标编码的字节与坐标换算。纯逻辑，可单测 |
+| `TerminalLook.swift` (171) | 设置项的运行时镜像（`TerminalLook.font/size/theme/…`），`changed` 通知 |
+| `TerminalShell.swift` (130) | shell 集成片段的生成与注入（zsh/bash） |
 | `TerminalFind.swift` (177) | ⌘F 滚动缓冲查找、覆盖层输入框、上下一个 |
-| `TerminalSplits.swift` (1070) | 窗格分割：`TerminalTree`（**索引竞技场**的递归二叉分割树，纯算术可单测）+ `TerminalSplits` 容器（分格/焦点/zoom/均分/轮换、title 镜像、⌘W 的逐格收缩）+ `TerminalDivider`（轴向感知分割线）。见 3.7 |
+| `TerminalSplits.swift` (1082) | 窗格分割：`TerminalTree`（**索引竞技场**的递归二叉分割树，纯算术可单测）+ `TerminalSplits` 容器（分格/焦点/zoom/均分/轮换、title 镜像、⌘W 的逐格收缩）+ `TerminalDivider`（轴向感知分割线）。见 3.7 |
 
 着色器**不是**单独文件：MSL 以 Swift 字符串内联在 `TerminalDraw.swift` 里，运行时 `device.makeLibrary(source:)` 编译（`default.metallib` 若在 bundle 里则优先用它）。这样免掉一个构建步骤，也让 Swift 侧的 `Frame`/`Record` 和 MSL 侧的定义躺在同一个文件里 —— 它们必须同步改，放在一起才改得动。
 
@@ -75,6 +75,7 @@
   - **换代**：字体、缩放、字面任一变化 → `generation &+= 1`、新纹理、旧的进 `retired` 并**留到读它的在途帧结束**（在放行 semaphore 的同一个 completion handler 里丢），否则 GPU 读已释放的纹理。切割任务带 `generation`，换代前的落地直接丢。
   - **每帧上限**：`perFrame = 512` 个落地，backlog 4096。ASCII 0x20–0x7E × 4 种样式在 init 与每次换字体时预切（约 6 ms / 376 个字形），所以 ASCII 永不闪。新 CJK 字形会闪一帧空格（~8 ms）——**这是故意的**，为了消灭它去等切割，正是这次要删掉的那个停顿。
   - `NSFontManager.convert(_:toHaveTrait:)` 只在主线程：四种字面每代在主线程解析好再交给切割队列，`CTLineDraw` 才在后台跑。
+  - **彩色字形走第二张图集**：emoji 不能是覆盖度（它的颜色是画的一部分），所以另有一张 2048² `rgba8Unorm`，首次出现彩色字形时才创建；`Record.flags` 的 bit 32 说这一格采样哪一张，片元把 CoreText 写的 premultiplied RGBA 反预乘后按同一套 alpha 混合画。宽的彩色字形（🧠 占两格）与宽 CJK 共享同一套槽位；blit 的目标起点按**基础槽宽**算，不是按 2× 宽的裁剪宽度算——旧写法会把宽字形整体右移一格。
 
 ### 3.3 帧节奏
 
@@ -92,10 +93,11 @@
 - 停表条件：不在 window 里、`isHiddenOrHasHiddenAncestor`、窗口被遮挡 → `detach()`。不在屏上的标签页不出帧，也不重启时钟 —— 后台分屏里跑 `cat` 就是这种情况。
 - **`hold` 有耐心**：`patience = 1 s`。程序崩了没关 2026，一秒后强制出帧，不能让屏幕永远停在半成品上。
 - `Timer` 全部删掉了。旧实现的 0.5 s 重复定时器只判 `window != nil`，于是**可见但没聚焦**的终端永远每秒出两帧 —— "闲置零帧"的承诺当时是破的。
+- **lane → 主线程的损伤投递也合并**：`Terminal` 用一把 `NSLock` 累积 `Damage`，同一时间只排一个 main hop；主线程取走时一次交齐。否则 10 万行就是 10 万次 `onDraw`，主线程光排队就够慢了（实测 debug 181 s，合并后 release 2.9 s）。
 
 ### 3.4 PTY 与 shell 集成
 
-- `openpty` + `posix_spawn` 起 `$SHELL`（无则 `/bin/zsh`），`login_tty` 到从端。主端 fd 挂 `DispatchSourceRead`，一次读 64 KB 循环，天然背压。
+- `openpty` + `posix_spawn` 起 `$SHELL`（无则 `/bin/zsh`），`login_tty` 到从端。主端 fd 挂 `DispatchSourceRead`；事件里用 `poll` 排空内核缓冲（复用一个 64 KB buffer，读不阻塞），读完一次投递一次损伤 —— 一行一条的程序不会变成一次事件一行。
 - **一个 lane**：解析与取景在同一条串行队列上同序执行。`scene(scroll:)` 会拷贝网格（给测试和 `TerminalFind` 用），`look(scroll:_:)` 不拷贝（在 lane 体内、在活行上跑闭包）—— 热路径走 `look`。
 - **shell 集成不碰用户 rc**：zsh 走 `ZDOTDIR` 指向 `Store.file("Terminal")` 下的目录，里面 `.zshenv/.zprofile/.zshrc/.zlogin` **每个都先 source 用户自己那份**，再装 OSC 133 钩子；bash 走 `--rcfile search.bashrc -i`。fish/sh 不包装（没有等价的、不改用户文件的注入路径，宁可没有命令块也不要动用户的配置）。
 - 尺寸变化：视图布局 → 换算行列 → `TIOCSWINSZ` → 申请一帧。
@@ -114,14 +116,29 @@
 | **菜单** | 文件 ▸ New Terminal（`⌥⌘T`，`file.newTerminal`）；标签 ▸ Next/Previous Command（`⌘↑`/`⌘↓`，仅在 `browser.active?.isTerminal == true` 时可用）；标签 ▸ Split/Focus/Nudge/Zoom/Even Terminal…（见 3.7 键位表，仅终端标签页） |
 | **AppleScript** | `address` 报 cwd，`title` 照报 |
 
-### 3.6 验收基准（原定目标，实际见下）
+### 3.6 验收基准（原定目标与实测）
+
+原定：
 
 - `cat` 大日志、118×34、连续滚动：120 Hz ≥ 119 fps、0 掉帧。GPU ≤ 0.5 ms（Metalterm 实测 0.22 ms）。
 - 10 万行 PTY 吞吐 < 80 ms；10k 行后内存增量 < 25 MB。
 - **闲置（无输出、无焦点）CPU/GPU 占用 0%，不排帧** —— 这条由 `TerminalPacerTests` 的"空集则停表"直接钉住。
 - vim/htop/ssh/tmux 功能正确（alt screen、鼠标、键序）。
 
-性能数字以 Instruments 实测为准，本节保留为回归线，不当作已量到的结论。
+**2026-10-21 实测**（macOS 27.0.1 / Apple Silicon；`swift test -c release --filter TerminalBenchTests`，118×34，帧取 200 次平均）：
+
+| 项 | 实测 | 对原定 |
+|---|---|---|
+| 100k 行经 PTY（`cat` 4.4 MB） | 2.9 s（约 34k 行/s） | **未达** < 80 ms |
+| 解析器单独吃同样 100k 行 | 3.0 s | — |
+| 一帧 118×34：`refresh`（转 Record） | 0.15 ms | ✅ 远低于 8.3 ms/帧 |
+| 一帧 118×34：`snapshot`（编码 + GPU + 等完成，含新纹理） | 1.6 ms | ✅ 保守上界 |
+| 100k 行 scrollback 的 Cell 存储 | 484 MB（进程 footprint +508 MB） | **未达** 10k 行 < 25 MB（10k 约 48 MB） |
+
+结论：**帧预算达标；吞吐和内存两条原定线没达到。** 原因在格子模型本身：`Cell` 40 字节 × 118 列 ≈ 4.7 KB/行，10 万行就是 484 MB；屏幕是行数组，每换一行要搬 34 行。滚动缓冲原先用 `Array.removeFirst`，满 10 万行后每行搬一次；等价微基准里 100k 次约 1.6 s，已换成环形 `Scrollback`（O(1)）。要到 80 ms 得把屏幕行也换成环形，并让 `Cell` 的稀有属性走旁表——那是另一轮架构工作，不是调参。
+
+- **闲置（无输出、无焦点）CPU/GPU 占用 0%，不排帧** —— 仍由 `TerminalPacerTests` 的"空集则停表"直接钉住。
+- vim/htop/ssh/tmux 功能正确（alt screen、鼠标、键序）—— 手测，不在 XCTest 里。
 
 ### 3.7 窗格分割（同一终端标签页内的多个终端）
 
@@ -186,16 +203,18 @@
 - **`storageModePrivate` 的纹理不保证是零**：换图集时实测 5760 个像素里有 4320 个是噪声，所以 `wipe()` 必须真的写。
 - **环大小 ≠ `maximumDrawableCount` 是静默的灾难**（CPU 写进 GPU 正在读的槽），所以那条 `assert` 和 `Frame` stride 的断言并排放着。
 - **图集换代时在途帧还在读旧纹理**：退役纹理必须留到读它的帧结束，不能在换代那一刻就丢。
+- **PTY master 上的 `FIONREAD` 不报可读字节**：实测内核里明明有 4.4 MB，`ioctl(FIONREAD)` 回 0，而 `read` 拿得到。排空只能靠 `poll(POLLIN)`；并且 `POLLHUP/POLLERR` 必须当"结束"处理，否则读源会对着一个空的 master 反复空转，进程退出源排在 lane 后面永远等不到。
+- **滚动缓冲满 10 万行后，`Array.removeFirst(1)` 是每行搬 10 万个元素**：等价微基准 100k 次约 1.6 s。`Scrollback` 改成环形存储，头部移动 O(1)，读出来的顺序不变。
 
 ## 七、还没做的
 
 - ~~**视觉细节**~~（已落地）：SGR 5 闪烁真正绘制（Pacer 加 `.blink` 目的，与 caret 共用同一个时钟与相位，半个周期隐藏字形；屏幕上没有闪烁字时该目的自动退场）、下划线/删除线的样式与颜色（SGR 4:3 记入 `Ink.curl`，画成加重线；58/59 记入 `Ink.line`，装饰 pass 用它）、DECSCNM 反显（`Modes.reversed`，background 与 glyph 两个 pass 一起把格子翻面，Record 的 `spare` 改名为 `decoration`）、SGR 21 修正为双下划线（`TerminalParse.swift`：不再关粗体）、隐藏格子不再画下划线。
 - **下划线样式的诚实上限**：4:4（dotted）与 4:5（dashed）在格子模型里与直线同权重绘制——一个 quad 装不下一个真正的波浪/点划线，解析层如实记账，绘制层用加重线作为简写。
 - **Kitty 键盘协议**（CSI u）：一整套编码 + 旗标状态机，单独一轮更稳。目前查询如实回答"不支持"。
-- **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、彩色 emoji 图集、平滑滚动动画。
+- **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、平滑滚动动画。
 - **Metalterm 的标志性 UX**：底部输入坞、命令块折叠、状态栏 + git、光标动效。
 - **多显示器拖拽**会引起 `contentsScale` 变化 → 整个图集换代 → 闪一下。缓解是按缩放双图集缓存，先记着不建。
-- **窗格**：pane 树随会话恢复（终端标签页本就不进会话，无落点）；`splitLeft`/`splitUp` 命令（从另一侧分右边那格即可做到）；跨窗格共享字形图集（每格约 4–6 MB，隐藏格帧时钟自停，代价是内存不是帧）；MetalTerm 式 `confirm_close` 设置项（关格确认目前无条件开，设置项后加）。
+- **窗格**：pane 树随会话恢复（会话只记终端标签页本身与位置，落点是新 shell，恢复时按单格重建，不还原布局）；`splitLeft`/`splitUp` 命令（从另一侧分右边那格即可做到）；跨窗格共享字形图集（每格约 4–6 MB，隐藏格帧时钟自停，代价是内存不是帧）；MetalTerm 式 `confirm_close` 设置项（关格确认目前无条件开，设置项后加）。
 - **终端字号**：捏合手势调字号（键盘与菜单已够，捏合在触控板上与滚动易混）；每标签/每窗格字号（面板与 Prefs 都是全局模型，全局即 MetalTerm 的 `font_size`）。
 - **MetalTerm 调研清单余项**：⌘E/⌘J 用选中文本进查找并跳到它（两键都空闲，做的话走 TerminalFind 的 `selection(in:)`）；命令时长显示（`command_duration_threshold`，UI 落点未定）。
 - **架构**：不引入 Rust 核心，不引入 libghostty。
