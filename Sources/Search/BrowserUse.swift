@@ -164,7 +164,14 @@ struct BrowserUseSettings: View {
                     Skills.folder.path
                 ) {
                     HStack(spacing: 6) {
-                        Pill("Reveal") { NSWorkspace.shared.activateFileViewerSelecting([Skills.folder]) }
+                        Pill("Reveal") {
+                            // Made on the way in: a folder revealed
+                            // before the first skill is ever made is
+                            // better than a path that isn't there.
+                            try? FileManager.default.createDirectory(
+                                at: Skills.folder, withIntermediateDirectories: true)
+                            NSWorkspace.shared.activateFileViewerSelecting([Skills.folder])
+                        }
                         Pill("Copy") { copy(Skills.folder.path) }
                     }
                 }
@@ -195,25 +202,43 @@ struct BrowserUseSettings: View {
     }
 
     /// The skills, linked into Claude Code's own folder: one symlink
-    /// apiece, never over something that's already there.
+    /// apiece, never over something that's already there. A link this
+    /// page made that has gone stale — its skill since deleted — is let
+    /// go of on the way in, or Claude Code reads a broken skill as its
+    /// own, and again every time the button is pressed.
     private func link() {
-        let claude = FileManager.default.homeDirectoryForCurrentUser
+        let files = FileManager.default
+        let claude = files.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/skills", isDirectory: true)
-        guard (try? FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)) != nil else {
+        guard (try? files.createDirectory(at: claude, withIntermediateDirectories: true)) != nil else {
             browser.announce("Couldn't make Claude Code's skills folder")
             return
+        }
+        // Ours are the ones aiming at the shelf's own folder; one is
+        // let go of only when what it aims at is gone.
+        var gone = 0
+        if let held = try? files.contentsOfDirectory(at: claude, includingPropertiesForKeys: nil) {
+            for link in held {
+                guard let aim = try? files.destinationOfSymbolicLink(atPath: link.path),
+                      aim.hasPrefix(Skills.folder.path),
+                      !files.fileExists(atPath: aim)
+                else { continue }
+                try? files.removeItem(at: link)
+                gone += 1
+            }
         }
         var linked = 0, kept = 0
         for skill in shelf {
             let to = claude.appendingPathComponent(skill.id)
-            guard !FileManager.default.fileExists(atPath: to.path) else { kept += 1; continue }
-            if (try? FileManager.default.createSymbolicLink(at: to, withDestinationURL: Skills.folder.appendingPathComponent(skill.id))) != nil {
+            guard !files.fileExists(atPath: to.path) else { kept += 1; continue }
+            if (try? files.createSymbolicLink(at: to, withDestinationURL: Skills.folder.appendingPathComponent(skill.id))) != nil {
                 linked += 1
             }
         }
         browser.announce(
-            linked > 0 ? "Linked \(linked) skill\(linked == 1 ? "" : "s") into Claude Code"
-                : kept > 0 ? "Claude Code already has these skills"
+            linked > 0 ? "Linked \(linked) skill\(linked == 1 ? "" : "s") into Claude Code\(gone > 0 ? ", and let go of \(gone) stale link\(gone == 1 ? "" : "s")" : "")"
+                : kept > 0 ? "Claude Code already has these skills\(gone > 0 ? " — \(gone) stale link\(gone == 1 ? "" : "s") let go" : "")"
+                : gone > 0 ? "Let go of \(gone) stale link\(gone == 1 ? "" : "s")"
                 : "No skills to link"
         )
     }

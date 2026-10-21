@@ -1094,6 +1094,7 @@ private struct ChoresList: View {
         case .waiting: return task.every != nil ? "waiting for its next round" : "waiting"
         case .running: return "running now"
         case .done: return "done — \(task.words ?? "")"
+        case .human: return "needs you — \(task.words ?? "")"
         case .failed: return "didn't come to it — \(task.words ?? "")"
         case .missed: return "missed — \(task.words ?? "")"
         }

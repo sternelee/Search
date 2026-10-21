@@ -77,10 +77,55 @@ FORM = FORM.replace(
     f"    {OPTIONS}</select>",
 )
 
+# A page with a shadow host of its own, a button buried under something
+# else, and a button under an overlay that lets clicks through — the
+# cases the page's own walking used to go blind to.
+SHADOW = """<!doctype html><html><head><title>shadow</title><style>
+body { font: 14px system-ui; margin: 40px } span { position: relative; display: inline-block }
+</style></head><body>
+<p id="said" hidden></p>
+<menu-bar id="bar"></menu-bar>
+<span><button id="buried">Buried</button><b style="position:absolute;left:0;top:0;right:0;bottom:0;background:#eee;z-index:1"></b></span>
+<span><button id="seen">Seen</button><b style="position:absolute;left:0;top:0;right:0;bottom:0;background:#eee;z-index:1;pointer-events:none"></b></span>
+<script>
+var bar = document.getElementById('bar');
+var root = bar.attachShadow({ mode: 'open' });
+root.innerHTML = '<label>Shadow name <input id="who"></label> <button id="go">Shadow go</button>';
+root.getElementById('go').addEventListener('click', function () {
+  var said = document.getElementById('said'); said.hidden = false;
+  said.textContent = 'shadow ' + root.getElementById('who').value;
+});
+document.getElementById('buried').addEventListener('click', function () {
+  var said = document.getElementById('said'); said.hidden = false; said.textContent = 'buried';
+});
+document.getElementById('seen').addEventListener('click', function () {
+  var said = document.getElementById('said'); said.hidden = false; said.textContent = 'seen';
+});
+</script></body></html>"""
+
 # The stand-in model: one line from the script a request at a time, in the
 # openAI way of streaming, over SSE. The script is the acts a model would
 # take to fill the form; each request carries all that has been said so far,
 # and the next line of it is the answer.
+# A page that talks: console lines, a thrown error, a fetch that comes
+# back 404 — the page's own story, kept where only the page can read it.
+TALK = """<!doctype html><html><head><title>talk</title></head><body style="font:14px system-ui;margin:40px">
+<p id="said">quiet</p>
+<script>
+console.log('hello from the page');
+console.warn('careful with this');
+setTimeout(function () { console.error('boom') }, 100);
+fetch('__BASE__/answer').then(function (r) { return r.text() }).then(function () {
+  document.getElementById('said').textContent = 'answered';
+});
+fetch('__BASE__/missing');
+var x = new XMLHttpRequest();
+x.open('GET', '__BASE__/echo');
+x.onload = function () { console.log('xhr came ' + x.status) };
+x.send();
+setTimeout(function () { throw new Error('late trouble') }, 250);
+</script></body></html>"""
+
 script = []
 seen = []
 def said(reply):
@@ -90,6 +135,14 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/form":
             body = FORM.encode()
+        elif self.path == "/shadow":
+            body = SHADOW.encode()
+        elif self.path == "/table":
+            body = TABLES.encode()
+        elif self.path == "/talk":
+            body = TALK.encode()
+        elif self.path == "/missing":
+            self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
         else:
             body = f"<!doctype html><title>{self.path.strip('/')}</title><p>{self.path}".encode()
         self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -102,6 +155,7 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
 BASE = f"http://127.0.0.1:{srv.server_port}"
+TALK = TALK.replace("__BASE__", BASE)
 
 # Only ever a probe of this world: the one this run started, or one a run
 # before left holding this world's socket. Never the Search someone is using,
@@ -223,8 +277,8 @@ def finish():
 
 def ref(snapshot, what):
     """The number a snapshot gave a thing described as `role "Name"` —
-    `textbox "First name" @3` for what."""
-    hit = re.search(rf"^{re.escape(what)}(?: \[[^\]]*\])* @\d+", snapshot, re.M)
+    `textbox "First name" @3` for what, indented or not."""
+    hit = re.search(rf"^\s*{re.escape(what)}(?: \[[^\]]*\])* @\d+", snapshot, re.M)
     return hit.group(0).rsplit(" ", 1)[1] if hit else None
 
 def wait_load(t, label, within=15):
@@ -321,6 +375,148 @@ def case_carrier(t):
     task_seen = next(m["content"] for m in seen[0]["messages"] if m["role"] == "user")
     t.ok("…and the task, with the page under it", task_seen.startswith("TASK: Sign the form up") and "THE PAGE HOLDS:" in task_seen, task_seen[:120])
 
+def case_shadow(t):
+    """what the page holds in its own shadow, and what it holds under something"""
+    setup(); launch()
+    opened = ag("open", url=f"{BASE}/shadow")
+    t.ok("the page is there", opened.get("label") == "p1", opened)
+    wait_load(t, "p1")
+
+    tree = ag("snapshot", id="p1").get("snapshot", "")
+    t.ok("a shadow host is said as its own place", "shadow @" in tree, tree)
+    t.ok("…and what it holds is walked like the page's own",
+         ref(tree, 'textbox "Shadow name"') and ref(tree, 'button "Shadow go"'), tree)
+
+    filled = ag("act", id="p1", verb="fill", target="loc=role:textbox[name='Shadow name']", text="Ada")
+    t.ok("a box inside the shadow is filled by its role and name",
+         filled.get("value") == "Ada", filled)
+    clicked = ag("act", id="p1", verb="click", target="text=Shadow go")
+    t.ok("a button inside the shadow is clicked by its words", "at" in clicked, clicked)
+    said = ag("read", id="p1", target="#said")
+    t.ok("…and the click landed, not only said so", said.get("text") == "shadow Ada", said)
+
+    buried = ag("act", id="p1", verb="click", target="text=Buried")
+    t.ok("a button under something else is refused, in words",
+         "over it" in buried.get("error", ""), buried)
+    seen = ag("act", id="p1", verb="click", target="text=Seen")
+    t.ok("…but one under an overlay that lets clicks through goes",
+         "at" in seen, seen)
+    said2 = ag("read", id="p1", target="#said")
+    t.ok("…and that click landed too", said2.get("text") == "seen", said2)
+
+
+
+# A page of tables and lists — the things a scraping task wants whole,
+# not one thing at a time.
+TABLES = """<!doctype html><html><head><title>tables</title></head><body style="font:14px system-ui;margin:40px">
+<table id="t"><thead><tr><th>Name</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Ada</td><td><a href="/ada">home</a></td></tr>
+<tr><td>Grace</td><td>away</td></tr>
+</tbody></table>
+<ul id="l"><li>one</li><li>two <b>bold</b></li><li>three</li></ul>
+<table id="big"></table>
+<script>
+  var big = document.getElementById('big');
+  var head = big.createTHead().insertRow();
+  head.insertCell().outerHTML = '<th>N</th>';
+  var body = document.createElement('tbody');
+  big.appendChild(body);
+  for (var i = 0; i < 260; i++) {
+    var tr = body.insertRow();
+    tr.insertCell().textContent = 'row ' + i;
+    tr.insertCell().textContent = 'value ' + i;
+  }
+</script>
+</body></html>"""
+
+
+def case_tables(t):
+    """a table read as its rows, a list as its items"""
+    setup(); launch()
+    opened = ag("open", url=f"{BASE}/table")
+    t.ok("the page is there", opened.get("label") == "p1", opened)
+    wait_load(t, "p1")
+
+    table = ag("read", id="p1", target="css=#t")
+    t.ok("a table comes as its header and rows",
+         table.get("header") == ["Name", "Where"]
+         and table.get("rows") == [["Ada", "home"], ["Grace", "away"]]
+         and table.get("count") == 2, table)
+    listed = ag("read", id="p1", target="css=#l")
+    t.ok("a list comes as its items",
+         listed.get("items") == ["one", "two bold", "three"]
+         and listed.get("count") == 3, listed)
+    big = ag("read", id="p1", target="css=#big")
+    t.ok("a table too long to tell whole says how much it held back",
+         big.get("count") == 260 and len(big.get("rows", [])) == 200
+         and big.get("more") == 60 and big.get("header") == ["N"],
+         {k: (v if k != "rows" else len(v)) for k, v in big.items()})
+
+    # The carrier shapes what the model is told of one: the shape, not a
+    # thousand words of flattened text.
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    script.clear(); seen.clear()
+    script.extend(["ACT read css=#t", "ANSWER done"])
+    ag("run", id="p1", provider="ollama", task="read the table")
+    asked = seen[-1]["messages"]
+    reading = next((m["content"] for m in asked if "read:" in m["content"]), "")
+    t.ok("the model is told the shape of it, shortly",
+         "a table of 2 rows" in reading and "header Name, Where" in reading, reading)
+
+
+def case_talk(t):
+    """the page's own story: console, errors, network"""
+    setup(); launch()
+    opened = ag("open", url=f"{BASE}/talk")
+    wait_load(t, "p1")
+    time.sleep(1)  # the page's late trouble is thrown at a quarter second
+
+    story = ag("console", id="p1", count=40)
+    words = story.get("text", "")
+    t.ok("the console lines are there",
+         "log: hello from the page" in words and "warn: careful" in words
+         and "error: boom" in words, words)
+    t.ok("the thrown error is there", "late trouble" in words, words)
+    t.ok("the network is there with its answers",
+         "GET /missing → 404" in words and "GET /echo → 200" in words
+         and "GET /answer → 200" in words, words)
+
+    snap = ag("snapshot", id="p1")
+    t.ok("what went badly rides along with the snapshot",
+         "The page said of itself" in snap.get("snapshot", "")
+         and "boom" in snap.get("snapshot", "")
+         and "GET /missing → 404" in snap.get("snapshot", ""),
+         snap.get("snapshot", "")[-400:])
+
+    # The carrier puts the story in the model's hands as its own verb.
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    script.clear(); seen.clear()
+    script.extend(["ACT console 40", "ANSWER done"])
+    ag("run", id="p1", provider="ollama", task="what has the page said of itself")
+    asked = seen[-1]["messages"]
+    heard = next((m["content"] for m in asked if "console:" in m["content"]), "")
+    t.ok("the model hears the page's own story",
+         "boom" in heard and "GET /missing → 404" in heard, heard)
+
+
+def case_human(t):
+    """a task that ends where only a person can go on"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    ag("open", url=f"{BASE}/form")
+    wait_load(t, "p1")
+
+    script.clear(); seen.clear()
+    script.extend(["HUMAN the sign-in wants its password"])
+    done = ag("run", id="p1", provider="ollama", task="sign me in")
+    t.ok("the run ends in a person's hands, not its steps burned",
+         done.get("human") == "the sign-in wants its password"
+         and not done.get("answer") and done.get("steps") == 1, done)
+    t.ok("…and what's needed of the person is kept, not said as an answer",
+         "answer" not in done, done)
+
+
 def case_bounds(t):
     """what is not the bench's is not touched"""
     setup(); launch()
@@ -334,7 +530,7 @@ def case_bounds(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_carrier, case_bounds]:
+    for case in [case_hands, case_carrier, case_human, case_shadow, case_tables, case_talk, case_bounds]:
         print(f"— {case.__doc__}")
         try:
             case(t)

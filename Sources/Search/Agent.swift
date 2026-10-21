@@ -111,6 +111,12 @@ enum Agent {
             Bench.shared.house(tab)
             ask(tab, ["op": "read", "target": target]) { page in answer(page) }
 
+        case "console":
+            guard let tab = pick() else { answer(["error": "no such tab"]); return }
+            let count = request["count"] as? Int ?? 30
+            Bench.shared.house(tab)
+            ask(tab, ["op": "console", "count": count]) { page in answer(page) }
+
         case "wait":
             guard let tab = pick() else { answer(["error": "no such tab"]); return }
             let seconds = min(request["seconds"] as? Double ?? 10, 60)
@@ -257,16 +263,24 @@ enum Agent {
 
         ACT VERB TARGET [TEXT]   to act on the page
         ANSWER TEXT              when the task is done, saying what was found or done
+        HUMAN WORDS              when what's left is only a person's to do, saying what's needed of them
 
-        Verbs: click, fill, press, select, check, uncheck, hover, scroll, read, clear — \
+        Verbs: click, fill, press, select, check, uncheck, hover, scroll, read, clear, console — \
         TARGET a number from the list (@12), text=Words on the thing, css=a selector, \
         or loc=role:button[name='Sign in']. fill and select take the TEXT that follows; \
         press takes a key (Enter, Tab, Escape, ArrowDown). read puts what it found in your \
-        next view. goto takes an address. wait TARGET pauses until it is there.
+        next view — a table as its rows, a list as its items. console takes a count of lines \
+        (ACT console 30) — the page's own story: its console, its errors, its network. \
+        goto takes an address. wait TARGET pauses until it is there.
 
         Take one act at a time. Prefer a number from the list you were just shown. \
         If the list is stale — a number no longer there — say ACT snapshot and you will \
         be shown the page again.
+
+        A password, a code from another place, a payment, a puzzle only a person can \
+        read — say HUMAN and the task stops there — never pretend it was done, and never \
+        spend steps on what only a person can do. Not for what's merely hard: a thing \
+        you can't find is not a person's to do — keep looking until the steps run out.
         """
 
     /// The loop of `agent run`: a task in words, a tab to do it in, a model
@@ -407,6 +421,19 @@ enum Agent {
                     answer(out)
                     return
                 }
+                // What's left is only a person's to do: said, and the run
+                // ends there — not a failure and not an answer, a hand
+                // given back, with the page left where the person can take
+                // it from.
+                if let words = act.human {
+                    var out: [String: Any] = [
+                        "human": words, "steps": step, "tab": Bench.short(tab),
+                        "url": tab.address?.absoluteString ?? "", "title": tab.title,
+                    ]
+                    if let label = Agent.label(of: tab) { out["label"] = label }
+                    answer(out)
+                    return
+                }
                 // One act, then the page again.
                 switch act.verb {
                 case "goto":
@@ -422,18 +449,43 @@ enum Agent {
                 case "wait":
                     let until = Date().addingTimeInterval(5)
                     Agent.poll(tab, until: until, ["op": "present", "target": act.target]) { _ in self.observe() }
-                case "snapshot", "read", "click", "fill", "press", "select", "check", "uncheck", "hover", "scroll", "clear", "focus":
+                case "snapshot", "read", "console", "click", "fill", "press", "select", "check", "uncheck", "hover", "scroll", "clear", "focus":
                     Bench.shared.house(tab)
                     // Reading the page is its own ask of the page, not an act on it.
-                    let ask: [String: Any] = act.verb == "read"
-                        ? ["op": "read", "target": act.target]
-                        : ["op": "act", "verb": act.verb, "target": act.target, "text": act.text]
+                    let ask: [String: Any]
+                    if act.verb == "read" {
+                        ask = ["op": "read", "target": act.target]
+                    } else if act.verb == "console" {
+                        ask = ["op": "console", "count": Int(act.target) ?? 30]
+                    } else {
+                        ask = ["op": "act", "verb": act.verb, "target": act.target, "text": act.text]
+                    }
                     Agent.ask(tab, ask) { done in
                         var reply = ""
                         if let failure = done["error"] as? String {
                             reply = "the page refused: \(failure)"
+                        } else if act.verb == "console" {
+                            reply = "console:\n\(done["text"] ?? "")"
                         } else if act.verb == "read" {
-                            reply = "read: \(done["text"] ?? "") value \(done["value"] ?? "") href \(done["href"] ?? "")"
+                            // A table or a list comes as its shape, not its
+                            // flattened text — what it holds said shortly,
+                            // the rows themselves in the answer's reply.
+                            if let rows = done["rows"] as? [[String]] {
+                                let count = done["count"] as? Int ?? rows.count
+                                let held = done["more"] as? Int ?? 0
+                                let head = done["header"] as? [String] ?? []
+                                reply = "read: a table of \(count) rows"
+                                    + (held > 0 ? " (\(held) not shown)" : "")
+                                    + (head.isEmpty ? "" : ", header \(head.joined(separator: ", "))")
+                            } else if let items = done["items"] as? [String] {
+                                let count = done["count"] as? Int ?? items.count
+                                let held = done["more"] as? Int ?? 0
+                                reply = "read: a list of \(count) items"
+                                    + (held > 0 ? " (\(held) not shown)" : "")
+                                    + ": \(items.prefix(10).joined(separator: " · "))"
+                            } else {
+                                reply = "read: \(done["text"] ?? "") value \(done["value"] ?? "") href \(done["href"] ?? "")"
+                            }
                         } else {
                             reply = "done"
                         }
@@ -460,20 +512,23 @@ enum Agent {
         }
     }
 
-    /// The one line the model was asked for: `ACT VERB TARGET [TEXT…]` or
-    /// `ANSWER TEXT`. Anything else is nothing.
-    private static func parse(_ said: String) -> (line: String, verb: String, target: String, text: String, answer: String?)? {
+    /// The one line the model was asked for: `ACT VERB TARGET [TEXT…]`,
+    /// `ANSWER TEXT`, or `HUMAN WORDS`. Anything else is nothing.
+    private static func parse(_ said: String) -> (line: String, verb: String, target: String, text: String, answer: String?, human: String?)? {
         for raw in said.split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
             let words = line.split(separator: " ", maxSplits: 3).map(String.init)
             if words.isEmpty { continue }
             let head = words[0].lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ":"))
             if head == "answer" {
-                return (line, "", "", "", words.count > 1 ? words[1...].joined(separator: " ") : "")
+                return (line, "", "", "", words.count > 1 ? words[1...].joined(separator: " ") : "", nil)
+            }
+            if head == "human" {
+                return (line, "", "", "", nil, words.count > 1 ? words[1...].joined(separator: " ") : "")
             }
             if head == "act" || head == "action" {
                 guard words.count >= 3 else { continue }
-                return (line, words[1].lowercased(), words[2], words.count > 3 ? words[3] : "", nil)
+                return (line, words[1].lowercased(), words[2], words.count > 3 ? words[3] : "", nil, nil)
             }
         }
         return nil
@@ -482,6 +537,88 @@ enum Agent {
     // MARK: - the page's side
 
     /// The script every op runs as, in the page. It keeps its refs — the
+    /// The page's own story — its console, its errors, its network — kept
+    /// where only the page can read it. A user script at document start
+    /// (see Tab.build) hooks console, the error events, fetch and XHR into a
+    /// ring the page holds; nothing is sent anywhere until an agent asks the
+    /// page for it with the `console` op, and the hooks themselves change
+    /// nothing a page does — the original console call, the original fetch,
+    /// all still happen exactly as the page meant them.
+    static let watch = """
+        window.__searchNotes = (function () {
+          var ring = [];
+          function said(x) {
+            if (typeof x === 'string') return x;
+            try { return JSON.stringify(x) } catch (e) { return String(x) }
+          }
+          function keep(kind, words) {
+            try {
+              words = said(words);
+              if (words.length > 300) words = words.slice(0, 300) + '…';
+              ring.push({ kind: kind, words: words });
+              if (ring.length > 100) ring.splice(0, ring.length - 100);
+            } catch (e) {}
+          }
+          function where(url) {
+            try {
+              var u = new URL(url, location.href);
+              return (u.host === location.host ? '' : u.origin) + u.pathname + u.search;
+            } catch (e) { return url }
+          }
+          ['log', 'info', 'warn', 'error'].forEach(function (kind) {
+            var was = console[kind];
+            console[kind] = function () {
+              var words = '';
+              try { for (var i = 0; i < arguments.length; i++) words += (i ? ' ' : '') + said(arguments[i]) } catch (e) {}
+              keep(kind, words);
+              try { was.apply(console, arguments) } catch (e) {}
+            };
+          });
+          window.addEventListener('error', function (e) {
+            keep('error', (e.message || 'an error') + (e.filename ? ' in ' + e.filename.split('/').pop() + ':' + e.lineno : ''));
+          });
+          window.addEventListener('unhandledrejection', function (e) {
+            keep('unhandled', said(e.reason && e.reason.message ? e.reason.message : e.reason));
+          });
+          try {
+            var wasFetch = window.fetch;
+            if (wasFetch) {
+              window.fetch = function (input, init) {
+                var way = (init && init.method) || (input && input.method) || 'GET';
+                var at = where(typeof input === 'string' ? input : (input && input.url) || '');
+                var began = Date.now();
+                return wasFetch.call(window, input, init).then(function (r) {
+                  keep('net', way + ' ' + at + ' → ' + r.status + ' (' + (Date.now() - began) + 'ms)');
+                  return r;
+                }, function (err) {
+                  keep('net', way + ' ' + at + ' → refused (' + said(err && err.message ? err.message : err) + ')');
+                  throw err;
+                });
+              };
+            }
+            var wasOpen = XMLHttpRequest.prototype.open;
+            var wasSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function (way, at) { this.__search = [way, at]; return wasOpen.apply(this, arguments) };
+            XMLHttpRequest.prototype.send = function () {
+              var self = this, began = Date.now();
+              this.addEventListener('loadend', function () {
+                keep('net', (self.__search ? self.__search[0] + ' ' + where(self.__search[1]) : 'request') + ' → ' + self.status + ' (' + (Date.now() - began) + 'ms)');
+              });
+              return wasSend.apply(this, arguments);
+            };
+          } catch (e) {}
+          function word(e) { return (e.kind === 'net' ? '' : e.kind + ': ') + e.words }
+          return {
+            text: function (list) { return list.map(word).join('\\n') },
+            take: function (n) { return ring.slice(-n) },
+            flagged: function (n) {
+              var worth = { warn: 1, error: 1, unhandled: 1 };
+              return ring.filter(function (e) { return worth[e.kind] || (e.kind === 'net' && / → [45]\\d\\d \\(/.test(e.words)) }).slice(-n);
+            }
+          };
+        })();
+        """
+
     /// numbers a snapshot gave out — on the window, where they last as long
     /// as the page does; a number from a page since gone elsewhere is stale,
     /// and says so. One op goes in as JSON, one object comes back: what the
@@ -604,6 +741,13 @@ enum Agent {
               if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|LINK|META|BASE|BR|WBR|HEAD)$/.test(tag)) return;
               if (!visible(el)) return;
               if (!full && !place(el)) return;
+              // A shadow host holds its own children apart from the page's —
+              // what a person sees on it — so they're walked as its own,
+              // beside whatever light children it has.
+              if (el.shadowRoot) {
+                lines.push(pad(depth) + 'shadow ' + give(el)); n++;
+                try { visitChildren(el.shadowRoot, depth + 1) } catch (e9) {}
+              }
               var role = roleOf(el);
               if (role === 'iframe' || role === 'frame') {
                 var what = short(el.getAttribute('title') || el.src || el.name || 'frame');
@@ -646,7 +790,30 @@ enum Agent {
               }
             }
             if (document.body) visit(document.body, 0);
-            return { tree: lines.join('\\n'), count: n };
+            var tree = lines.join('\\n');
+            // The page's own story rides along when it went badly: a page
+            // that just failed a fetch or threw says so beside its looks,
+            // without the agent knowing to ask.
+            try {
+              var story = window.__searchNotes ? window.__searchNotes.text(window.__searchNotes.flagged(5)) : '';
+              if (story) tree += '\\n\\nThe page said of itself:\\n' + story;
+            } catch (e7) {}
+            return { tree: tree, count: n };
+          }
+          function deep(sel) {
+            // What the page's own querySelectorAll can't see — the shadow
+            // roots' own children — walked in with the rest, so what a
+            // person sees inside a host is found like anything else.
+            var out = [], roots = [document];
+            while (roots.length) {
+              var r = roots.shift(), list;
+              try { list = r.querySelectorAll(sel) } catch (e) { continue }
+              for (var i = 0; i < list.length; i++) {
+                out.push(list[i]);
+                if (list[i].shadowRoot) roots.push(list[i].shadowRoot);
+              }
+            }
+            return out;
           }
           function resolve(target) {
             target = trim(target);
@@ -658,7 +825,7 @@ enum Agent {
             }
             if ((m = target.match(/^loc=role:([a-zA-Z]+)(?:\\[name(\\*)?=["'](.+?)["']\\])?$/))) {
               var want = m[1].toLowerCase(), part = m[2] === '*', like = m[3] || '';
-              var found = null, all = document.querySelectorAll('*');
+              var found = null, all = deep('*');
               for (var i = 0; i < all.length; i++) {
                 var e = all[i];
                 if (!visible(e)) continue;
@@ -679,7 +846,7 @@ enum Agent {
               if (rest.length > 1 && rest[0] === '"' && rest[rest.length - 1] === '"') { exact = true; rest = rest.slice(1, -1) }
               var sought = exact ? rest : trim(rest).toLowerCase();
               var hit = null;
-              var cands = document.querySelectorAll('a, button, input, select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], label, [contenteditable]');
+              var cands = deep('a, button, input, select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], label, [contenteditable]');
               for (var j = 0; j < cands.length; j++) {
                 var e2 = cands[j];
                 if (!visible(e2)) continue;
@@ -691,7 +858,7 @@ enum Agent {
                 }
               }
               if (!hit) {
-                var any = document.querySelectorAll('body *');
+                var any = deep('*');
                 for (var k = 0; k < any.length; k++) {
                   var e3 = any[k];
                   if (!visible(e3)) continue;
@@ -731,6 +898,26 @@ enum Agent {
             var r = el.getBoundingClientRect();
             return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)];
           }
+          function related(hit, el) {
+            if (hit === el) return true;
+            if (hit.contains && hit.contains(el)) return true;
+            if (el.contains && el.contains(hit)) return true;
+            // A point over a shadow tree is said back as its host; walk
+            // each side's hosts, the way a click's own trail goes.
+            for (var n = el; n; ) {
+              var r = n.getRootNode ? n.getRootNode() : null;
+              if (!(r && r.host)) break;
+              if (r.host === hit || r.host.contains(hit)) return true;
+              n = r.host;
+            }
+            for (var m = hit; m; ) {
+              var s = m.getRootNode ? m.getRootNode() : null;
+              if (!(s && s.host)) break;
+              if (s.host === el || s.host.contains(el)) return true;
+              m = s.host;
+            }
+            return false;
+          }
           function mouse(el, type) {
             var at = point(el);
             var o = { bubbles: true, cancelable: true, view: window, clientX: at[0], clientY: at[1] };
@@ -762,6 +949,14 @@ enum Agent {
             if (!el.focus) throw 'not something the page can act on';
             scrollMid(el);
             if (verb === 'click') {
+              // A click only counts if a person could make it: on what
+              // is there, not under something else, not on what is off.
+              if (el.disabled || el.getAttribute('aria-disabled') === 'true') throw 'it is disabled — not a click a person can make';
+              var spot = point(el), landed = null;
+              try { landed = el.ownerDocument.elementFromPoint(spot[0], spot[1]) } catch (e8) {}
+              if (!landed || !related(landed, el)) throw 'something else is over it — '
+                + (landed ? 'a ' + landed.tagName.toLowerCase() + (landed.innerText ? ' saying ' + JSON.stringify(landed.innerText.slice(0, 40)) : '') : 'nothing at its place — the page is ' + window.innerWidth + ' by ' + window.innerHeight + ' around its middle ' + spot[0] + ',' + spot[1])
+                + ' — not a click a person could make';
               mouse(el, 'mouseover'); mouse(el, 'mousemove');
               mouse(el, 'pointerdown'); mouse(el, 'mousedown');
               mouse(el, 'pointerup'); mouse(el, 'mouseup');
@@ -820,6 +1015,40 @@ enum Agent {
           }
           function read(target) {
             var el = resolve(target);
+            var tag = (el.tagName || '').toUpperCase();
+            // A table or a list read as what it holds — rows and cells,
+            // items — so a page's table is one read, not a walk of a
+            // hundred things: one line a row, cut where it grows past
+            // what a reply should carry.
+            if (tag === 'TABLE') {
+              var head = [], rows = [], total = 0, used = 0, more = 0;
+              var trs = el.rows || el.querySelectorAll('tr');
+              for (var i = 0; i < trs.length; i++) {
+                var cells = [], cs = trs[i].cells;
+                for (var j = 0; cs && j < cs.length && j < 40; j++) {
+                  var one = (cs[j].innerText || cs[j].textContent || '')
+                    .replace(/\\s+/g, ' ').trim().slice(0, 200);
+                  cells.push(one); used += one.length;
+                }
+                var th = 0;
+                for (var k = 0; cs && k < cs.length; k++) if (cs[k].tagName === 'TH') th++;
+                if (!head.length && th && th === cells.length && rows.length === 0) { head = cells; continue }
+                total++;
+                if (rows.length < 200 && used <= 6000) rows.push(cells); else more++;
+              }
+              return { tag: 'table', role: 'table', header: head, rows: rows, count: total, more: more };
+            }
+            if (tag === 'UL' || tag === 'OL') {
+              var items = [], count = 0, spent = 0, left = 0;
+              for (var c = el.firstElementChild; c; c = c.nextElementSibling) {
+                if (c.tagName !== 'LI') continue;
+                var each = (c.innerText || c.textContent || '')
+                  .replace(/\\s+/g, ' ').trim().slice(0, 200);
+                count++;
+                if (items.length < 200 && spent <= 6000) { items.push(each); spent += each.length } else left++;
+              }
+              return { tag: tag.toLowerCase(), role: 'list', items: items, count: count, more: left };
+            }
             var out = {
               tag: (el.tagName || '').toLowerCase(), role: roleOf(el),
               text: (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 4000),
@@ -832,6 +1061,12 @@ enum Agent {
             if (req.op === 'snapshot') return snapshot(req.full === true);
             if (req.op === 'act') { var done = act(req.verb, req.target, req.text || ''); done.ok = 1; return done }
             if (req.op === 'read') { var got = read(req.target); got.ok = 1; return got }
+            if (req.op === 'console') {
+              var notes = window.__searchNotes;
+              if (!notes) return { __error: 'this page was never made to say anything' };
+              var last = notes.take(Math.min(100, req.count || 30));
+              return { text: last.length ? notes.text(last) : '(the page has said nothing yet)' };
+            }
             if (req.op === 'present') return { present: (function () { try { return visible(resolve(req.target)) } catch (e) { return false } })() };
             if (req.op === 'contains') {
               var body = document.body ? (document.body.innerText || '') : '';

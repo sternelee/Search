@@ -598,6 +598,30 @@ def case_run(t):
              for e in ran.get("events", [])), ran.get("events"))
 
 
+def case_human(t):
+    """what's left is only a person's to do: said, the turn ends there"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    opened = cmd({"do": "open", "url": f"{BASE}/form"})
+    form_ready(opened["id"])
+    bt("use", provider="ollama")
+    bt("open", id=opened["id"])
+
+    script.clear(); seen.clear()
+    script.append('{"say": "the sign-in is in my way"}')
+    script.append('{"human": "the sign-in wants its password"}')
+    bt("ask", text="Sign me in")
+    done = until(t, lambda s: any(e["kind"] == "human" for e in s.get("events", [])))
+    t.ok("the turn ends in a person's hands, the words kept for them",
+         any(e["kind"] == "human" and e["words"] == "the sign-in wants its password"
+             for e in done.get("events", [])), done.get("events"))
+    t.ok("…nothing held, nothing working, the turn over",
+         not done.get("pending") and done.get("working") is False, done)
+    asking = words(seen, "only a person")
+    t.ok("the model was told it can hand it back",
+         "a person's to do" in asking, asking[:200])
+
+
 def case_where(t):
     """where the person has been: read for the asking, copied for the sharing"""
     setup(); launch()
@@ -1139,7 +1163,7 @@ def case_kill(t):
 
 def main():
     t = T()
-    for case in [case_hands, case_refuse, case_auto, case_always, case_close, case_goto, case_card, case_coming, case_again, case_run, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept, case_thought, case_stop, case_kill]:
+    for case in [case_hands, case_refuse, case_auto, case_always, case_close, case_goto, case_card, case_coming, case_again, case_run, case_human, case_where, case_kept, case_wrapped, case_notice, case_every, case_switched, case_page_kept, case_thought, case_stop, case_kill]:
         print(f"— {case.__doc__}")
         try:
             case(t)

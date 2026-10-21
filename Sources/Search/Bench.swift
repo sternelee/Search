@@ -3501,11 +3501,12 @@ final class Bench {
     /// Where `film float` lends the tab's stage, off every screen.
     private var hall: NSWindow?
 
-    /// A page nobody is looking at has to be somewhere to be laid out at all.
-    /// The stage takes it back the moment you pick its tab, and it comes
-    /// here again when the bench next needs it.
+    /// A page nobody is looking at has to be somewhere to be laid out at all —
+    /// a bench page, or the page a task-for-later works while it runs behind
+    /// the front one. The stage takes it back the moment you pick its tab,
+    /// and it comes here again when the bench next needs it.
     func house(_ tab: Tab) {
-        guard tab.bench, tab.web.window == nil else { return }
+        guard tab.web.window == nil else { return }
         let window = room ?? makeRoom()
         tab.web.frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         tab.web.autoresizingMask = [.width, .height]

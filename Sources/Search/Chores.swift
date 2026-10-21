@@ -18,7 +18,7 @@ final class Chores: ObservableObject {
     /// One task for a time to come: the goal in the bot's own words, the
     /// page it was set on, and what came of it when its time came.
     struct Chore: Codable, Identifiable, Equatable {
-        enum State: String, Codable { case waiting, running, done, failed, missed }
+        enum State: String, Codable { case waiting, running, done, failed, human, missed }
         var id = UUID()
         var goal: String
         var at: Date
@@ -191,6 +191,10 @@ extension Browser {
             return
         }
         let tab = open(url, foreground: false)
+        // Opened behind and never selected, the view would lay out at nothing
+        // (a page 0 by 0): no click could land on it. It lives off-screen in
+        // the bench's room until the person picks its tab.
+        Bench.shared.house(tab)
         // The page has to come in before the bot can look at it: the bot
         // works over a page, not a blank.
         Task { @MainActor [weak tab] in
@@ -210,16 +214,19 @@ extension Browser {
                 return
             }
             bot.auto = true
-            var draft = "The task the person set for this time: \(chore.goal). No one may be watching — don't draw a card, it waits for a tap that may never come, and nothing beyond the page goes (no commands, no clipboard, no tools, no history): there is no one there to allow it. Work the page, and when it's done, or when you need the person, answer with what you have."
+            var draft = "The task the person set for this time: \(chore.goal). No one may be watching — don't draw a card, it waits for a tap that may never come, and nothing beyond the page goes (no commands, no clipboard, no tools, no history): there is no one there to allow it. Work the page, and when it's done, answer with what you have; when what's left is only a person's to do — a password, a code from another place, a payment — say {\"human\": \"what's needed of them\"} and stop."
             if let every = chore.every {
                 draft += " This task comes round every \(Chores.gap(every)); this round's answer is kept for the person, and the next round is already set — answer with what this one round brought, and don't try to do the next round's work."
             }
             // Every turn's end told: what came of it goes to the task —
-            // an answer, a trouble, or a card waiting for a tap no one
-            // may ever give (a tap or a new ask carries it on).
+            // an answer, a trouble, what only a person can do, or a card
+            // waiting for a tap no one may ever give (a tap or a new ask
+            // carries it on).
             bot.onOver = { trouble in
                 if let trouble {
                     Chores.shared.finished(chore.id, state: .failed, words: trouble)
+                } else if let human = bot.events.last(where: { $0.kind == .human })?.words {
+                    Chores.shared.finished(chore.id, state: .human, words: human)
                 } else if let answer = bot.events.last(where: { $0.kind == .answer })?.words {
                     Chores.shared.finished(chore.id, state: .done, words: answer)
                 } else if let worry = bot.events.last(where: { $0.kind == .trouble })?.words {
