@@ -574,7 +574,13 @@ final class TerminalDraw {
             var back = theme.fore(square.ink.background)
             if square.ink.inverse { swap(&fore, &back) }
             if hid { record.glyph = 0 }
-            if square.ink.faint { fore = (fore & 0xFFFFFF00) | 0x80 }
+            if square.ink.faint {
+                // Zero is the square saying "the theme's ink", not black:
+                // half of black on a dark ground is a comment nobody can
+                // read, so the shorthand is resolved before it is dimmed.
+                let base = fore == 0 ? theme.packedInk : fore
+                fore = (base & 0xFFFFFF00) | 0x80
+            }
             record.fore = fore
             record.back = back
             if !hid, square.ink.underline { record.flags |= 2 }
@@ -711,6 +717,10 @@ final class TerminalDraw {
         /// colours, in the same order, over and over — so it is packed
         /// once here rather than per cell.
         let packed: [UInt32]
+        /// The theme's own ink, packed: what a square that names no colour
+        /// paints with. Kept because `fore` zero is that square's shorthand,
+        /// and a word made faint needs the colour behind the shorthand.
+        let packedInk: UInt32
 
         init(ground: simd_float4, ink: simd_float4, select: simd_float4, ansi: [simd_float4]) {
             self.ground = ground
@@ -718,6 +728,7 @@ final class TerminalDraw {
             self.select = select
             self.ansi = ansi
             self.packed = Theme.table(ansi)
+            self.packedInk = Theme.pack(ink)
         }
 
         /// The theme a look asks for. "Match the Mac" — the default — is
