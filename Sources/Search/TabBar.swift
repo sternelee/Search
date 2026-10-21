@@ -521,7 +521,7 @@ private struct TabPill: View {
                         // Its page on the way, as a tab's ring says; the
                         // letter or icon comes back once it is there.
                         Ring(size: 11)
-                    } else if prefs.glyph == .icons, let icon = tab.icon {
+                    } else if prefs.glyph == .icons, let icon = tab.mark {
                         Mark(icon: icon, letter: tab.pin ?? "", size: 16, dim: tab.asleep)
                     } else {
                         Text(tab.pin ?? "")
@@ -593,7 +593,7 @@ private struct TabPill: View {
                 } else if tab.loading {
                     Ring()
                 } else {
-                    Mark(icon: prefs.glyph == .icons ? tab.icon : nil, letter: tab.monogram, size: 15, dim: tab.asleep)
+                    Mark(icon: prefs.glyph == .icons ? tab.mark : nil, letter: tab.monogram, size: 15, dim: tab.asleep)
                 }
             }
             .frame(width: 16, height: 16)
@@ -617,8 +617,8 @@ private struct TabPill: View {
                 TabAddressField(browser: browser)
                     .frame(height: 16)
             } else {
-                if prefs.glyph == .icons, !tab.isBlank {
-                    Mark(icon: tab.icon, letter: tab.monogram, size: 15)
+                if prefs.glyph == .icons, tab.isTerminal || !tab.isBlank {
+                    Mark(icon: tab.mark, letter: tab.monogram, size: 15)
                 }
                 if tab.bench {
                     // A script's tab, not yours.
