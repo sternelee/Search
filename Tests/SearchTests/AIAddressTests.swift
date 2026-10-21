@@ -10,11 +10,15 @@ final class AIAddressTests: XCTestCase {
         super.setUp()
         AIProvider.mock = nil
         Store.settings.removeObject(forKey: AIProvider.addressesKey)
+        // A run of this test leaves keys under every host it named, and the
+        // next run must not meet them: forgetting only the host in front
+        // would leave the relay's key behind to be read as this run's.
+        AIKeys.forgetAll()
     }
 
     override func tearDown() {
         Store.settings.removeObject(forKey: AIProvider.addressesKey)
-        AIKeys.forget(.openAI)
+        AIKeys.forgetAll()
         super.tearDown()
     }
 
