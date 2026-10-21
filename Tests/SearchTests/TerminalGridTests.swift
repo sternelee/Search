@@ -274,7 +274,6 @@ final class TerminalGridTests: XCTestCase {
         XCTAssertEqual(block.last, 1)
         XCTAssertEqual(block.state, .done)
         XCTAssertEqual(block.exit, 1)
-        XCTAssertTrue(block.failed)
         screen.markPrompt()
         XCTAssertEqual(screen.blocks.count, 2)
         XCTAssertEqual(screen.blocks[1].state, .prompt)

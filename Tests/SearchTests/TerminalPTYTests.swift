@@ -51,26 +51,44 @@ final class TerminalPTYTests: XCTestCase {
         XCTAssertTrue(saw.contains("back:yo"))
     }
 
-    /// The shell's own marks (OSC 133) come back as the frame's blocks: a
-    /// command that failed leaves its span in the gutter, red (see
-    /// TerminalDraw, TerminalGrid).
-    func testMarksACommandsSpanAndFailure() {
-        let (terminal, _) = runUntilEnded(
-            TerminalCommand(argv: ["/bin/sh", "-c", "printf '\u{1b}]133;A\u{7}hi\u{1b}]133;C\u{7}\u{1b}]133;D;7\u{7}'"]))
-        let scene = terminal.scene(scroll: 0)
-        XCTAssertEqual(scene?.marks, [
-            Terminal.Scene.Mark(row: 0, span: 1, failed: true),
-        ], "a block from its prompt to its end, failed: exit 7")
+    /// The clear ⌘K has in a terminal, asked by hand (TerminalView's
+    /// clearBuffer is the view's way of it): the screen and the
+    /// scrollback wiped at a stroke — ED 3 then ED 2 — where a shell's
+    /// own `clear` only ever reaches for the screen.
+    func testClearTakesTheScrollbackWithTheScreen() {
+        let filled = XCTestExpectation(description: "the program's lines went past the screen")
+        let terminal = Terminal(
+            command: TerminalCommand(
+                argv: ["/bin/sh", "-c", "i=0; while [ $i -lt 60 ]; do echo line; i=$((i+1)); done; sleep 30"]))
+        terminal.onDraw = { [weak terminal] _, _ in
+            guard let terminal else { return }
+            let kept = terminal.look(scroll: 0) { screen, _ in screen.back.count } ?? 0
+            guard kept > 20 else { return }
+            filled.fulfill()
+        }
+        wait(for: [filled], timeout: 10)
+        terminal.onDraw = nil
+
+        terminal.clear()
+        let after = terminal.look(scroll: 0) { screen, _ in
+            (screen.back.count, screen.rows.map(\.text))
+        }
+        XCTAssertEqual(after?.0, 0, "the scrollback went with the screen")
+        XCTAssertTrue(after?.1.allSatisfy(\.isEmpty) ?? false, "and the screen is blank again")
+
+        terminal.stop()
     }
 
-    /// A command that went fine leaves the gutter alone: a stripe under
-    /// every finished block reads as a stray vertical line once the output
-    /// is tall (the drawing bug a full `ls` screen used to wear).
-    func testMarksLeaveASuccessfulCommandAlone() {
+    /// The shell's own marks (OSC 133) come back as a block in the grid: one
+    /// span, from the prompt it drew to the end of the command, with the
+    /// exit the shell printed (see TerminalGrid).
+    func testBlocksAreKeptFromTheShellsOwnMarks() {
         let (terminal, _) = runUntilEnded(
-            TerminalCommand(argv: ["/bin/sh", "-c", "printf '\u{1b}]133;A\u{7}hi\u{1b}]133;C\u{7}\u{1b}]133;D;0\u{7}'"]))
-        let scene = terminal.scene(scroll: 0)
-        XCTAssertEqual(scene?.marks, [], "a finished, successful command marks nothing")
+            TerminalCommand(argv: ["/bin/sh", "-c", "printf '\u{1b}]133;A\u{7}hi\u{1b}]133;C\u{7}\u{1b}]133;D;7\u{7}'"]))
+        let kept = terminal.look(scroll: 0) { screen, _ in screen.blocks }
+        XCTAssertEqual(kept?.count, 1, "one block, from the prompt to the end of the command")
+        XCTAssertEqual(kept?.first?.exit, 7, "the exit the shell printed")
+        XCTAssertEqual(kept?.first?.state, .done, "the command is done with")
     }
 
     func testEndsAStubbornProgramByEscalation() {

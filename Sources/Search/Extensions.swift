@@ -114,6 +114,9 @@ final class Extensions: NSObject, ObservableObject {
     /// and sites look for an extension at it. WebKit's own
     /// webkit-extension:// is what Search used before; addresses kept from
     /// then are read as the new ones.
+    /// Read while a pattern is being weighed, off the main thread and
+    /// before any window is up: constants, so they are no actor's to wait
+    /// for.
     nonisolated static let scheme = "chrome-extension"
     nonisolated static let formerScheme = "webkit-extension"
 

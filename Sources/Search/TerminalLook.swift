@@ -59,7 +59,7 @@ enum TerminalLook {
     /// The terminal's face: a fixed-pitch family's name, and the size in
     /// points it is set in. An empty family is the Mac's own monospaced one.
     static var family = ""
-    static var size: Double = 13
+    static var size: Double = home
     static var theme: TerminalTheme = .system
     static var cursor: TerminalCursor = .block
     /// Whether the cursor blinks while the keyboard is in the terminal.
@@ -106,6 +106,16 @@ enum TerminalLook {
     /// terminal leave at its edges. Both in half points and whole ones.
     static let sizes: [Double] = stride(from: 9, through: 24, by: 0.5).map { $0 }
     static let paddings: [Double] = stride(from: 0, through: 16, by: 2).map { $0 }
+
+    /// The size a face starts at, and ⌘0 goes back to.
+    static let home = 13.0
+
+    /// A face a point bigger or smaller, held within the sizes the panel
+    /// offers — the walk the keyboard takes over the same stops the panel
+    /// steps, so neither can drift past the ends the other offers.
+    static func step(_ size: Double, by step: Int) -> Double {
+        min(sizes.last ?? home, max(sizes.first ?? home, size + Double(step)))
+    }
 
     /// The face the terminal draws with. A family that cannot be had is the
     /// Mac's own rather than no terminal at all — a font that was uninstalled

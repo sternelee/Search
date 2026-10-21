@@ -567,7 +567,7 @@ struct SettingsPanel: View {
                 }
                 Rule()
                 Line("Size") {
-                    Steps(stops: TerminalLook.sizes, value: $prefs.terminalSize, home: 13) {
+                    Steps(stops: TerminalLook.sizes, value: $prefs.terminalSize, home: TerminalLook.home) {
                         String(format: "%.1f", $0)
                     }
                 }

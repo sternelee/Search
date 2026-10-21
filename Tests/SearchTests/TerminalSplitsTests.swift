@@ -336,26 +336,80 @@ final class TerminalSplitsWindowTests: XCTestCase {
         XCTAssertEqual(container.focusedView, top)
     }
 
+    /// ⌘[ and ⌘] walk the panes in reading order — the tall pane, then the
+    /// two stacked — wrapping at the ends, where a room's shape has no
+    /// arrow to name the way.
+    func testCyclingWalksTheReadingOrderAndWraps() {
+        let (container, window) = room(1000, 500)
+        defer { container.close(); window.orderOut(nil) }
+
+        container.split(across: .horizontal)
+        container.split(across: .vertical)
+        XCTAssertEqual(container.focused, 2, "the pane the L grew with")
+
+        container.cycleFocus(1)
+        XCTAssertEqual(container.focused, 0, "⌘] off the end starts again at the tall pane")
+        container.cycleFocus(1)
+        XCTAssertEqual(container.focused, 1)
+        container.cycleFocus(1)
+        XCTAssertEqual(container.focused, 2, "and the round trip lands where it began")
+
+        container.cycleFocus(-1)
+        XCTAssertEqual(container.focused, 1, "⌘[ steps back the way ⌘] came")
+        container.cycleFocus(-1)
+        XCTAssertEqual(container.focused, 0)
+        container.cycleFocus(-1)
+        XCTAssertEqual(container.focused, 2, "⌘[ off the start ends at the last pane")
+    }
+
+    /// A room of one pane has nowhere to go: the walk leaves the keys
+    /// where they are, as the arrow keys do at a wall.
+    func testAOnePaneRoomHasNothingToCycle() {
+        let (container, window) = room(1000, 500)
+        defer { container.close(); window.orderOut(nil) }
+
+        container.cycleFocus(1)
+        container.cycleFocus(-1)
+        XCTAssertEqual(container.focused, 0)
+    }
+
     /// The tab's title says the pane the keys are in — the terminal's own
-    /// name while it has set none of its own — and says the next pane's
-    /// the moment the keys move.
+    /// name while it has said no directory — with the count of the panes
+    /// beside it, and says the next pane's the moment the keys move.
     func testTheTitleFollowsTheKeys() {
         let (container, window) = room(1000, 500)
         defer { container.close(); window.orderOut(nil) }
 
         container.split(across: .horizontal)
-        XCTAssertEqual(container.title, "sleep 5 #2", "the pane that was made holds the keys")
+        XCTAssertEqual(container.title, "sleep 5 #2 (2)", "the pane that was made holds the keys, beside the one it came from")
 
         container.moveFocus(.left)
-        XCTAssertEqual(container.title, "sleep 5 #1", "and the title moved with them, not left saying the closed room's")
+        XCTAssertEqual(container.title, "sleep 5 #1 (2)", "and the title moved with them, not left saying the closed room's")
     }
 
-    /// A shell that never set a title is called by the directory it is in:
-    /// the title says where the keys are — the directory's own name, home
-    /// said as "~" — and follows the keys between panes. The shells here
-    /// say where they are the way the integration has every prompt say it
-    /// (OSC 7), and never set a title.
-    func testATitlelessShellIsCalledByItsDirectory() {
+    /// The directory names the tab even over a title the shell set of its
+    /// own (OSC 0/2) — oh-my-zsh sets one at every prompt — because the
+    /// integration has every prompt say where it is (OSC 7), and where
+    /// the keys are is what a tab is called.
+    func testTheDirectoryNamesTheTabOverAShellSetTitle() {
+        let (container, window) = room(1000, 500, onPane: { _ in
+            Terminal(command: TerminalCommand(argv: ["/bin/zsh", "-f", "-c",
+                "printf '\\033]0;My Title\\033\\\\'; printf '\\033]7;file:///tmp/rooms/search\\033\\\\'; sleep 5"]))
+        })
+        defer { container.close(); window.orderOut(nil) }
+
+        let said = expectation(description: "the shell said a title and its place")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { said.fulfill() }
+        wait(for: [said], timeout: 5)
+
+        XCTAssertEqual(container.title, "search", "the title the shell set gives way to the directory it is in")
+    }
+
+    /// A tab is called by the directory the keys are in — the directory's
+    /// own name, home said as "~" — with the count of panes beside it,
+    /// following the keys between panes. The shells here say where they
+    /// are the way the integration has every prompt say it (OSC 7).
+    func testATabIsCalledByTheDirectoryTheKeysAreIn() {
         let spoken = [
             "printf '\\033]7;file:///tmp/rooms/search\\033\\\\'; sleep 5",
             "printf '\\033]7;file://\(NSHomeDirectory())\\033\\\\'; sleep 5"
@@ -371,9 +425,9 @@ final class TerminalSplitsWindowTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { said.fulfill() }
         wait(for: [said], timeout: 5)
 
-        XCTAssertEqual(container.title, "~", "the pane that was made sits at home, and the title says so")
+        XCTAssertEqual(container.title, "~ (2)", "the pane that was made sits at home, and the title says so beside the count")
         container.moveFocus(.left)
-        XCTAssertEqual(container.title, "search", "and the keys moved back to the pane in search")
+        XCTAssertEqual(container.title, "search (2)", "and the keys moved back to the pane in search")
     }
 
     /// A pane whose shell exits on its own — the `exit` you typed, or a
@@ -396,6 +450,7 @@ final class TerminalSplitsWindowTests: XCTestCase {
         XCTAssertEqual(container.paneCount, 1, "the pane whose shell exited closed on its own")
         XCTAssertEqual(container.focusedView?.frame, CGRect(x: 0, y: 0, width: 1000, height: 500),
                        "and the pane that slept on takes the whole room")
+        XCTAssertEqual(container.title, "sleep 5", "and a room of one is a tab the way it always was, saying no number")
     }
 
     /// A nudge steps the divider a cell: the smallest move a terminal can

@@ -241,10 +241,71 @@ final class TerminalTabTests: XCTestCase {
         browser.nudgeTerminalDivider(.up)
         browser.zoomTerminalPane()
         browser.evenTerminalPanes()
+        browser.cycleTerminalFocus(1)
+        browser.clearTerminal()
 
         XCTAssertEqual(browser.terminalPanes, 0)
         XCTAssertNil(browser.active?.built, "no page was built to decline with")
         XCTAssertEqual(browser.tabs.count, 1)
+    }
+
+    /// ⌘+ and ⌘− grow a terminal's face rather than its page — one point
+    /// within the sizes the panel offers, written where the panel writes
+    /// it, so the two always agree — and ⌘0 is the face every terminal
+    /// starts in.
+    func testZoomKeysGrowTheFaceOnATerminal() throws {
+        let browser = Browser(record: WindowRecord())
+        browser.newTerminal()
+        let tab = try XCTUnwrap(browser.active)
+        _ = try XCTUnwrap(tab.console)
+
+        let held = browser.prefs.terminalSize
+        defer {
+            browser.prefs.terminalSize = held
+            tab.close()
+        }
+
+        browser.zoom(by: 1.1)
+        XCTAssertEqual(browser.prefs.terminalSize, held + 1, "one point bigger, as the panel steps")
+        browser.zoom(by: 1 / 1.1)
+        XCTAssertEqual(browser.prefs.terminalSize, held, "and one point smaller back")
+        browser.resetZoom()
+        XCTAssertEqual(browser.prefs.terminalSize, TerminalLook.home, "⌘0 goes home")
+
+        browser.prefs.terminalSize = TerminalLook.sizes.last ?? 24
+        browser.zoom(by: 1.1)
+        XCTAssertEqual(browser.prefs.terminalSize, TerminalLook.sizes.last,
+                       "held at the biggest the panel offers")
+    }
+
+    /// ⌘[ and ⌘], told apart by the tab: on a terminal they walk the panes
+    /// in reading order — the same keys a page steps its history with.
+    func testBracketsWalkThePanesOnATerminal() throws {
+        let browser = Browser(record: WindowRecord())
+        browser.newTerminal()
+        let tab = try XCTUnwrap(browser.active)
+        let console = try XCTUnwrap(tab.console)
+        let window = window(holding: console)
+
+        browser.splitTerminal(across: .horizontal)
+        browser.splitTerminal(across: .vertical)
+        XCTAssertEqual(console.focused, 2, "the pane the L grew with")
+
+        browser.forward()
+        XCTAssertEqual(console.focused, 0, "⌘] off the end starts again at the tall pane")
+        browser.forward()
+        browser.forward()
+        XCTAssertEqual(console.focused, 2, "and the round trip lands where it began")
+        browser.back()
+        XCTAssertEqual(console.focused, 1, "⌘[ steps back the way ⌘] came")
+
+        // The command's own way there, as the menu runs it.
+        let next = try XCTUnwrap(Command.all.first { $0.id == "tabs.focusTerminalNext" })
+        next.run(browser)
+        XCTAssertEqual(console.focused, 2)
+
+        tab.close()
+        window.orderOut(nil)
     }
 
     /// ⌘D, two meanings told apart by the tab: the Duplicate command itself

@@ -341,7 +341,6 @@ final class TerminalView: NSView, NSTextInputClient {
         lift = min(lift, scene.back)
         links = scene.links
         linked = scene.links.isEmpty ? [] : runs(of: scene)
-        // A link under the pointer with ⌘ held is drawn underlined — and
         // it is drawn here, by marking the copy of the scene the frame is
         // about to read, rather than by teaching the renderer about
         // hover: a scene handed over is this view's to decorate, and an
@@ -353,11 +352,30 @@ final class TerminalView: NSView, NSTextInputClient {
         // has not seen before — so the row is converted again with the
         // underline on it, and converted back when the hover moves on.
         if let hovering { underline(hovering, in: &scene) }
+        // Words wearing SGR 5 keep blinking while any are on the screen,
+        // which is a question the scene answers as it is read — a frame
+        // that finds none asks for no more of them, and one that finds
+        // some holds the reason until the next flip carries it away. The
+        // scan is the rows the frame is already reading, not another
+        // look at the screen.
+        var blinking = false
+        for line in scene.lines {
+            if line.cells.contains(where: { $0.ink.blink }) {
+                blinking = true
+                break
+            }
+        }
+        if blinking {
+            pacer.want(.blink)
+        } else {
+            pacer.dropBlink()
+        }
         paint.update(
             scene: scene, damage: owed, selection: selection(in: scene),
             strong: window?.firstResponder === self,
-            cursor: pacer.caretShown, marks: scene.marks,
-            finds: finds(in: scene), found: found(in: scene)
+            cursor: pacer.caretShown,
+            finds: finds(in: scene), found: found(in: scene),
+            reversed: modes.reversed, blinking: pacer.blinkShown
         )
         paint.render()
         owed = Damage()
@@ -916,6 +934,19 @@ final class TerminalView: NSView, NSTextInputClient {
         guard went != lift else { return }
         lift = went
         pick = nil                        // a selection means nothing once the scene moves
+        present()
+    }
+
+    /// ⇧⌘K: the screen and the scrollback gone at a stroke (Terminal.clear).
+    /// The wipe is done on the lane, where nothing the reader path does will
+    /// account for it, so the frame is told to say everything again — the
+    /// same debt a new look runs up (see lookChanged) — and the view is
+    /// settled back on the living line, there being nothing left to lift to.
+    func clearBuffer() {
+        terminal.clear()
+        lift = 0
+        pick = nil
+        paint?.repaint()
         present()
     }
 }

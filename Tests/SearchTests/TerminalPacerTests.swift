@@ -112,4 +112,55 @@ final class TerminalPacerTests: XCTestCase {
         XCTAssertTrue(pacer.caretShown)
         XCTAssertEqual(frames(), 1, "the frames already drawn are not undrawn")
     }
+
+    // MARK: - the words that blink (SGR 5)
+
+    /// Words wearing SGR 5 keep the clock while any are on the screen, and
+    /// flip on the caret's own half-second — the same phase, one clock, so
+    /// a terminal never blinks two things at two rates.
+    func testBlinkingWordsKeepTheClockAndFlipWithTheCaret() {
+        let (pacer, frames) = bare()
+        pacer.want(.blink)
+        // The ask drew nothing — a blink is a reason to tick, not a frame
+        // on its own — and the phase starts with the clock, which this
+        // anchor takes over from the moment the ask was made.
+        XCTAssertTrue(pacer.blinkShown, "the words start shown")
+        let start = CACurrentMediaTime()
+        pacer.tick(now: start)
+        XCTAssertEqual(frames(), 0, "a blink on its own draws nothing until it flips")
+
+        pacer.tick(now: start + 0.4)
+        XCTAssertTrue(pacer.blinkShown, "inside the half-second, nothing flips")
+        pacer.tick(now: start + 0.5)
+        XCTAssertFalse(pacer.blinkShown, "on the half-second, the words blink off")
+        XCTAssertEqual(frames(), 1, "and the flip is a frame")
+        pacer.tick(now: start + 1.0)
+        XCTAssertTrue(pacer.blinkShown, "and on the next, back on")
+
+        // The caret flips on the same clock: started with the words, the
+        // two of them flip on the same frame.
+        pacer.want(.caret)
+        pacer.tick(now: start + 1.5)
+        XCTAssertFalse(pacer.blinkShown)
+        XCTAssertFalse(pacer.caretShown, "one flip carries both halves of the blink")
+    }
+
+    /// The last of the blinking words having left the screen, the reason
+    /// goes with it — and the frame that says so is asked for once, because
+    /// a frame drawn on the half that hides them would otherwise keep
+    /// hiding them forever.
+    func testDroppingTheBlinkDrawsOnceAndStopsTicking() {
+        let (pacer, frames) = bare()
+        pacer.want(.blink)
+        let start = CACurrentMediaTime()
+        pacer.tick(now: start)
+        pacer.tick(now: start + 0.5)
+        XCTAssertFalse(pacer.blinkShown)
+
+        let before = frames()
+        pacer.dropBlink()
+        XCTAssertTrue(pacer.blinkShown, "the words are shown again the moment the reason is gone")
+        XCTAssertEqual(frames(), before + 1, "and the frame that shows them is drawn")
+        XCTAssertTrue(pacer.purpose.isEmpty, "nothing owed: the clock stops here")
+    }
 }

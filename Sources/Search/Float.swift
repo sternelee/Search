@@ -124,8 +124,8 @@ final class Float {
         // the end of a resize by its edges, as it closes (see drop), and as
         // the app quits with it open, which closes nothing.
         let keep: (Notification.Name, AnyObject) -> NSObjectProtocol = { [weak self] name, object in
-            NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { [weak self] in
+            NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { _ in
+                MainActor.assumeIsolated {
                     if let frame = self?.restingFrame { Float.remembered = frame }
                 }
             }

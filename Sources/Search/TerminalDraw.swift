@@ -34,12 +34,17 @@ final class TerminalDraw {
     /// A cell as the GPU reads it, mirrored in the shader's CellRecord.
     /// `glyph` is a slot in the atlas plus one; zero says nothing.
     /// `fore`/`back` are packed RGBA; zero means the theme's own colour.
+    /// `decoration` is the line a cell wears — under it, through it, both,
+    /// straight or curly — and the colour the program asked the line to
+    /// wear itself (SGR 58): a different word than `fore`, because a line
+    /// without a colour of its own is the ink of the words it runs under,
+    /// not whatever the theme says of a blank square.
     struct Record {
         var glyph: UInt16 = 0
-        var flags: UInt16 = 0    // 1 wide, 2 underline, 4 strike
+        var flags: UInt16 = 0    // 1 wide, 2 underline, 4 strike, 8 curly, 16 blink
         var fore: UInt32 = 0
         var back: UInt32 = 0
-        var spare: UInt32 = 0    // reserved for command-block marks
+        var decoration: UInt32 = 0   // packed RGBA of the line (SGR 58), 0 for the fore's own
     }
 
     /// What one frame is drawn with, mirrored in the shader's Frame. The
@@ -55,6 +60,9 @@ final class TerminalDraw {
         var slots: UInt32 = 0              // slots per atlas row
         var cursorStyle: UInt32 = 0         // TerminalCursor: 0 block, 1 bar, 2 underline
         var cursorInk: UInt32 = 0           // packed RGBA of the caret, 0 for the theme's own
+        var blink = simd_float2()          // blink period, seconds; 0 = never
+        var blinking: UInt32 = 0           // 1 = words wearing SGR 5 draw on this frame
+        var reversed: UInt32 = 0            // DECSCNM: the whole screen is inverted
         var cursor = simd_float4()         // col, row, on, strong
         var selection = simd_float4()      // col0, row0, col1, row1; -1 = none
         var ground = simd_float4()
@@ -65,11 +73,9 @@ final class TerminalDraw {
     // MARK: - what it draws with
 
     let layer = CAMetalLayer()
-    /// One rect over the grid, in the mark pass: a gutter mark of a
-    /// command block, the highlight of a find, or the cursor when it is not
-    /// a block. The place is in cells — column, row, cells wide, cells tall
-    /// — and can reach outside them, into the inset, for the gutter.
-    /// Mirrored in the shaders.
+    /// One rect over the grid, in the mark pass: the highlight of a find,
+    /// or the cursor when it is not a block. The place is in cells —
+    /// column, row, cells wide, cells tall. Mirrored in the shaders.
     struct Rect {
         var place: simd_float4
         var tint: simd_float4
@@ -116,7 +122,8 @@ final class TerminalDraw {
     /// appearance, and a terminal that is being scrolled does that a
     /// hundred and twenty times a second for an answer that has not
     /// moved. `repaint` is what re-asks, and it is what both of the ways a
-    /// theme can change go through.
+    /// theme can change go through — and what a cleared screen says
+    /// everything afresh with (see TerminalView.clearBuffer).
     private var theme = Theme.current(TerminalLook.theme)
 
     // The ring of cell buffers. A frame reads its cells by instance id
@@ -175,7 +182,7 @@ final class TerminalDraw {
         glyph = face
         mark = stripe
 
-        assert(MemoryLayout<Frame>.stride == 144, "the shader's Frame and this one have come apart")
+        assert(MemoryLayout<Frame>.stride == 160, "the shader's Frame and this one have come apart")
     }
 
     /// The cell a font sets: the advance of its widest character across,
@@ -298,16 +305,17 @@ final class TerminalDraw {
     // MARK: - one frame's cells
 
     /// Everything a frame says that is not its cells: the uniforms the
-    /// shaders read, and the rects the mark pass draws — the gutter marks
-    /// of the command blocks (OSC 133), the finds a search has left in the
-    /// frame with `found` the one it is standing on, and the caret when it
-    /// is not the block the background pass draws. `cursor` is whether the
-    /// caret is showing at all, which is how a blinking cursor is left out
-    /// of the frames it blinks off in; `strong` is whether the window has
-    /// the keyboard, which halves the ink of a caret that has lost it.
+    /// shaders read, and the rects the mark pass draws — the finds a search
+    /// has left in the frame with `found` the one it is standing on, and
+    /// the caret when it is not the block the background pass draws.
+    /// `cursor` is whether the caret is showing at all, which is how a
+    /// blinking cursor is left out of the frames it blinks off in; `strong`
+    /// is whether the window has the keyboard, which halves the ink of a
+    /// caret that has lost it.
     private func begin(
         scene: Terminal.Scene, theme: Theme, selection: simd_float4?, strong: Bool, showing: Bool,
-        marks: [Terminal.Scene.Mark], finds: [simd_float4], found: simd_float4?
+        finds: [simd_float4], found: simd_float4?,
+        reversed: Bool, blinking: Bool
     ) {
         let columns = scene.width
         let lines = scene.height
@@ -332,31 +340,24 @@ final class TerminalDraw {
         frame.selection = selection ?? simd_float4(-1, -1, -1, -1)
         frame.cursorStyle = TerminalLook.cursor.word
         frame.cursorInk = theme.fore(scene.cursorInk)
+        // The frame's own two modes: DECSCNM's reversal (see `reversed:`)
+        // and the half of the blink this frame draws on (see `blinking:`).
+        // Both are uniforms rather than records for the same reason — they
+        // are things a frame knows about itself, not things a square knows
+        // about its words.
+        frame.reversed = reversed ? 1 : 0
+        frame.blinking = blinking ? 1 : 0
+        frame.blink = simd_float2(0.5, 0)
         if let caret = scene.caret, caret.y < lines, caret.x < columns {
             frame.cursor = simd_float4(
                 Swift.Float(caret.x), Swift.Float(caret.y), showing ? 1 : 0, strong ? 1 : 0
             )
         }
 
-        // The rects the mark pass draws: the gutter marks first, the
-        // finds over them. A gutter mark is a sliver of the inset — a
-        // failed command in red, a running one a wisp of the ink; a find
-        // is the cell itself, the theme's selection, the current one held
-        // harder.
+        // The rects the mark pass draws: the finds a search left, the one it
+        // is standing on over them.
         var stripes: [Rect] = []
-        stripes.reserveCapacity(marks.count + finds.count + 2)
-        // A terminal with no padding has no room to hang a gutter mark in:
-        // the sliver sits at the very edge rather than outside it.
-        let gutter = Swift.Float(max(0, TerminalDraw.inset - 1) / cell.width)
-        let sliver = Swift.Float(2 / cell.width)
-        for gutterMark in marks {
-            stripes.append(Rect(
-                place: SIMD4(gutter, Swift.Float(gutterMark.row), sliver, Swift.Float(gutterMark.span)),
-                tint: gutterMark.failed
-                    ? simd_float4(0.85, 0.19, 0.17, 0.9)
-                    : simd_float4(theme.ink.x, theme.ink.y, theme.ink.z, 0.35)
-            ))
-        }
+        stripes.reserveCapacity(finds.count + 2)
         for hit in finds {
             stripes.append(Rect(place: hit, tint: theme.select))
         }
@@ -416,7 +417,8 @@ final class TerminalDraw {
     /// worth keeping.
     func refresh(
         scene: Terminal.Scene, selection: simd_float4?, strong: Bool, cursor showing: Bool = true,
-        marks: [Terminal.Scene.Mark] = [], finds: [simd_float4] = [], found: simd_float4? = nil
+        finds: [simd_float4] = [], found: simd_float4? = nil,
+        reversed: Bool = false, blinking: Bool = true
     ) {
         let columns = scene.width
         let lines = scene.height
@@ -430,7 +432,7 @@ final class TerminalDraw {
         beginAtlas()
         begin(
             scene: scene, theme: theme, selection: selection, strong: strong, showing: showing,
-            marks: marks, finds: finds, found: found
+            finds: finds, found: found, reversed: reversed, blinking: blinking
         )
         guard let buffer = buffer(slot, columns: columns, lines: lines) else { return }
         let words = buffer.contents().assumingMemoryBound(to: Record.self)
@@ -458,8 +460,9 @@ final class TerminalDraw {
     /// that never comes costs a conversion, not a stale row.
     func update(
         scene: Terminal.Scene, damage: Damage, selection: simd_float4?, strong: Bool,
-        cursor showing: Bool = true, marks: [Terminal.Scene.Mark] = [],
-        finds: [simd_float4] = [], found: simd_float4? = nil
+        cursor showing: Bool = true,
+        finds: [simd_float4] = [], found: simd_float4? = nil,
+        reversed: Bool = false, blinking: Bool = true
     ) {
         let columns = scene.width
         let lines = scene.height
@@ -468,7 +471,7 @@ final class TerminalDraw {
         beginAtlas()
         begin(
             scene: scene, theme: theme, selection: selection, strong: strong, showing: showing,
-            marks: marks, finds: finds, found: found
+            finds: finds, found: found, reversed: reversed, blinking: blinking
         )
         guard let buffer = buffer(slot, columns: columns, lines: lines) else { return }
         let plan = book.plan(
@@ -556,6 +559,12 @@ final class TerminalDraw {
         for column in 0..<columns {
             let square = line.cells[column]
             var record = Record()
+            // A hidden word (SGR 8) wears nothing at all — not even the
+            // line under it, which every other word wears when it asks to.
+            // The colour of a hidden word is the background's, which is
+            // what hiding it means: the line is the one thing that would
+            // give it away, so it goes too.
+            let hid = square.ink.hidden
             if square.char != " " {
                 record.glyph = atlas.slot(
                     square.char, bold: square.ink.bold, italic: square.ink.italic, wide: square.wide
@@ -564,13 +573,16 @@ final class TerminalDraw {
             var fore = theme.fore(square.ink.foreground)
             var back = theme.fore(square.ink.background)
             if square.ink.inverse { swap(&fore, &back) }
-            if square.ink.hidden { record.glyph = 0 }
+            if hid { record.glyph = 0 }
             if square.ink.faint { fore = (fore & 0xFFFFFF00) | 0x80 }
             record.fore = fore
             record.back = back
-            if square.ink.underline { record.flags |= 2 }
-            if square.ink.strike { record.flags |= 4 }
+            if !hid, square.ink.underline { record.flags |= 2 }
+            if !hid, square.ink.curl { record.flags |= 8 }
+            if !hid, square.ink.strike { record.flags |= 4 }
+            if square.ink.blink { record.flags |= 16 }
             if square.wide { record.flags |= 1 }
+            record.decoration = hid ? 0 : theme.fore(square.ink.line)
             words[base + column] = record
         }
     }
@@ -844,9 +856,9 @@ final class TerminalDraw {
 
     /// The whole renderer in four instanced draws: one pass for the
     /// background a cell paints over the ground (selection and the cursor
-    /// live here), one for the gutter marks and find highlights over it, one
-    /// for the lines under and through struck words, and one for the glyphs,
-    /// each a quad sampling the atlas.
+    /// live here), one for the find highlights and the cursor's own bar or
+    /// line over them, one for the lines under and through struck words,
+    /// and one for the glyphs, each a quad sampling the atlas.
     private static let shaders = """
     #include <metal_stdlib>
     using namespace metal;
@@ -854,15 +866,14 @@ final class TerminalDraw {
     // One cell of the grid, as the CPU wrote it into the resident buffer.
     struct CellRecord {
         uint16_t glyph;
-        uint16_t flags;
+        uint16_t flags;   // 1 wide, 2 underline, 4 strike, 8 curly, 16 blink
         uint32_t fore;
         uint32_t back;
-        uint32_t spare;
+        uint32_t decoration;  // packed RGBA of the line (SGR 58), 0 for the fore's own
     };
 
     // One rect of the mark pass, as the CPU wrote it: a place in cells —
-    // column, row, cells wide, cells tall, the gutter reaching outside —
-    // and its colour.
+    // column, row, cells wide, cells tall — and its colour.
     struct RectRecord {
         float4 place;
         float4 tint;
@@ -879,6 +890,9 @@ final class TerminalDraw {
         uint slots;
         uint cursorStyle;
         uint cursorInk;
+        float2 blink;     // blink period, seconds; 0 = never
+        uint blinking;    // 1 = words wearing SGR 5 draw on this frame
+        uint reversed;    // DECSCNM: the whole screen is inverted
         float4 cursor;
         float4 selection;
         float4 ground;
@@ -915,6 +929,13 @@ final class TerminalDraw {
         );
     }
 
+    static uint32_t pack(float4 colour) {
+        return uint32_t(colour.r * 255.0 + 0.5)
+            | (uint32_t(colour.g * 255.0 + 0.5) << 8)
+            | (uint32_t(colour.b * 255.0 + 0.5) << 16)
+            | (uint32_t(clamp(colour.a, 0.0, 1.0) * 255.0 + 0.5) << 24);
+    }
+
     static float4 toClip(float2 point, float2 drawable) {
         float2 part = point / drawable;
         return float4(part.x * 2.0 - 1.0, 1.0 - part.y * 2.0, 0.0, 1.0);
@@ -941,12 +962,20 @@ final class TerminalDraw {
         uint row = iid / f.grid.x;
         bool under = underCursor(col, row, f);
         bool held = picked(col, row, f);
-        if (c.back == 0u && !under && !held) {
+        // DECSCNM turns the whole screen over: a square that named no
+        // background names one now — the ink of its own words — and one
+        // that named one names none. Every glyph is inverted to match,
+        // below, so the two passes turn a square over together.
+        uint back = c.back;
+        if (f.reversed != 0u && (c.flags & 16u) == 0u) {
+            back = c.back == 0u ? (c.fore == 0u ? pack(f.ink) : c.fore) : 0u;
+        }
+        if (back == 0u && !under && !held) {
             out.place = float4(-2.0, -2.0, 0.0, 1.0);
             out.tint = float4(0.0);
             return out;
         }
-        float4 colour = c.back == 0u ? f.ground : unpack(c.back);
+        float4 colour = back == 0u ? f.ground : unpack(back);
         if (held) {
             colour = float4(mix(colour.rgb, f.select.rgb, f.select.a), colour.a);
         }
@@ -966,9 +995,8 @@ final class TerminalDraw {
         return out;
     }
 
-    // The mark pass: one quad per rect — a command block's gutter mark,
-    // a find's highlight, the cursor when it is not a block — over the
-    // background, under the glyphs.
+    // The mark pass: one quad per rect — a find's highlight, the cursor
+    // when it is not a block — over the background, under the glyphs.
     vertex FlatOut markVertex(
         uint vid [[vertex_id]], uint iid [[instance_id]],
         constant Frame& f [[buffer(1)]], const device RectRecord* rects [[buffer(0)]]
@@ -981,29 +1009,46 @@ final class TerminalDraw {
         return out;
     }
 
-    // The lines a cell can wear: under it, or through it.
+    // The lines a cell can wear: under it — straight, or curly as a
+    // wave — or through it, in the colour the program named for the
+    // line (SGR 58) or the ink of the words it wears it under. A double
+    // line (SGR 21) is drawn as the one that carries its weight.
     vertex FlatOut decorationVertex(
         uint vid [[vertex_id]], uint iid [[instance_id]],
         constant Frame& f [[buffer(1)]], const device CellRecord* cells [[buffer(2)]]
     ) {
         FlatOut out;
         CellRecord c = cells[iid];
-        uint col = iid % f.grid.x;
-        uint row = iid / f.grid.x;
-        float high = (c.flags & 2u) != 0u ? max(f.cell.y * 0.09, 1.0)
-                  : (c.flags & 4u) != 0u ? max(f.cell.y * 0.06, 1.0)
-                  : 0.0;
-        if (high == 0.0) {
+        bool under = (c.flags & 2u) != 0u;
+        bool struck = (c.flags & 4u) != 0u;
+        bool curly = (c.flags & 8u) != 0u;
+        if (!under && !struck) {
             out.place = float4(-2.0, -2.0, 0.0, 1.0);
             out.tint = float4(0.0);
             return out;
         }
+        uint col = iid % f.grid.x;
+        uint row = iid / f.grid.x;
         bool wide = (c.flags & 1u) != 0u;
         float2 point = f.origin + float2(col, row) * f.cell;
-        point.y += (c.flags & 2u) != 0u ? f.cell.y - high : (f.cell.y - high) * 0.5;
-        point += corners[vid] * float2(wide ? 2.0 * f.cell.x : f.cell.x, high);
-        out.place = toClip(point, f.drawable);
-        out.tint = c.fore == 0u ? f.ink : unpack(c.fore);
+        float across = wide ? 2.0 * f.cell.x : f.cell.x;
+        float4 tint = c.decoration == 0u ? (c.fore == 0u ? f.ink : unpack(c.fore)) : unpack(c.decoration);
+        if (under) {
+            // A curly line (4:3) is drawn as the heavier one: the wave it
+            // names is a shape a quad cannot hold, and a line that carries
+            // more weight is the honest shorthand for it at cell sizes.
+            // A double line (SGR 21) is drawn as the one that carries its
+            // weight, which is the straight one.
+            float high = curly ? max(f.cell.y * 0.18, 2.0) : max(f.cell.y * 0.09, 1.0);
+            point.y += f.cell.y - high;
+            out.place = toClip(point + corners[vid] * float2(across, high), f.drawable);
+            out.tint = tint;
+            return out;
+        }
+        float high = max(f.cell.y * 0.06, 1.0);
+        point.y += (f.cell.y - high) * 0.5;
+        out.place = toClip(point + corners[vid] * float2(across, high), f.drawable);
+        out.tint = tint;
         return out;
     }
 
@@ -1021,6 +1066,16 @@ final class TerminalDraw {
             out.uv = float2(0.0);
             return out;
         }
+        // A word wearing SGR 5 hides on the frames it blinks off —
+        // the glyph alone, and only on a screen not turned over: a
+        // blink under DECSCNM is drawn as the reversal, because a
+        // reversal says the ink of the square plainly enough.
+        if ((c.flags & 16u) != 0u && f.blinking == 0u && f.reversed == 0u) {
+            out.place = float4(-2.0, -2.0, 0.0, 1.0);
+            out.tint = float4(0.0);
+            out.uv = float2(0.0);
+            return out;
+        }
         uint col = iid % f.grid.x;
         uint row = iid / f.grid.x;
         bool wide = (c.flags & 1u) != 0u;
@@ -1032,7 +1087,16 @@ final class TerminalDraw {
         // Only a block cursor inverts the glyph it covers; a bar or a line
         // leaves the glyph alone and is drawn over the background.
         bool covered = underCursor(col, row, f) && f.cursorStyle == 0u;
-        out.tint = covered ? f.ground : (c.fore == 0u ? f.ink : unpack(c.fore));
+        if (covered) {
+            out.tint = f.ground;
+        } else if (f.reversed != 0u) {
+            // DECSCNM: a glyph that named no ink names the ground's, and
+            // one that named one goes unnamed — the glyph pass and the
+            // background pass turn a square over together.
+            out.tint = c.fore == 0u ? f.ink : f.ground;
+        } else {
+            out.tint = c.fore == 0u ? f.ink : unpack(c.fore);
+        }
         out.place = toClip(point, f.drawable);
         return out;
     }

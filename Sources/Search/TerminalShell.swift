@@ -13,8 +13,7 @@ import Foundation
 // The marks: A where a prompt starts, C where the command runs, D with the
 // exit where it ends. The parser feeds them to the grid (see
 // TerminalParse), which keeps the blocks by place (see TerminalGrid), and
-// the renderer draws the one thing about a block a glance wants to know:
-// a red gutter when the command failed (see TerminalDraw).
+// the view walks those blocks to jump between commands (⌘↑, ⌘↓).
 enum TerminalShell {
 
     /// The argv and environment of a shell about to be started, wrapped

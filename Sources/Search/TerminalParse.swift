@@ -71,6 +71,12 @@ final class Parser {
 
     // The pieces of a control sequence, taken apart as they arrive.
     private var params: [Int] = []
+    /// The places a colon sat, as indices of the parameters they sat
+    /// before: the one mark a sub-parameter leaves on the sequence it
+    /// was spoken in. Colons and semicolons both end a parameter, so a
+    /// colon is a semicolon as far as the counting sequences are
+    /// concerned — and is, everywhere but SGR's styles.
+    private var colons: Set<Int> = []
     private var param = 0
     private var empty = true
     private var marker: Character?
@@ -253,6 +259,7 @@ final class Parser {
         switch byte {
         case 0x5B: // [
             params = []
+            colons = []
             param = 0
             empty = true
             marker = nil
@@ -321,7 +328,10 @@ final class Parser {
             param = param * 10 + Int(byte - 0x30)
             empty = false
         case 0x3B, 0x3A: // ; :
-            // A colon is a sub-parameter's semicolon (SGR speaks them).
+            // A colon is a sub-parameter's semicolon (SGR speaks them),
+            // and it marks the parameter it ends nothing but the one
+            // place it was spoken — see `colons`.
+            if byte == 0x3A { colons.insert(params.count) }
             params.append(empty ? -1 : min(param, 999_999))
             param = 0
             empty = true
@@ -351,6 +361,21 @@ final class Parser {
         // A parameter under the default is not nothing — the default is
         // for the missing, not a floor for the given.
         place < params.count && params[place] > 0 ? params[place] : alone
+    }
+
+    /// The first sub-parameter of the parameter at this place, if the
+    /// sequence spoke one with a colon. SGR's sub-parameters carry a
+    /// parameter's style, not another parameter: 4:3 is "underlined,
+    /// and the style of it is curly", so a colon cannot be the semicolon
+    /// it reads as in the counting sequences. The colon is kept as a mark
+    /// on the parameter that follows it, which is the only place it
+    /// differs from one — the two forms never mix in one number, so a
+    /// program that says 4:3 says it alone, and one that says 38;5;n says
+    /// no colon anywhere.
+    private func colon(_ place: Int) -> Int? {
+        let next = place + 1
+        guard colons.contains(place), next < params.count, params[next] > 0 else { return nil }
+        return params[next]
     }
 
     private func run(_ final: Character) {
@@ -485,14 +510,24 @@ final class Parser {
             case 1: ink.bold = true
             case 2: ink.faint = true
             case 3: ink.italic = true
-            case 4: ink.underline = true
+            case 4:
+                // 4:style — the style of the line, spoken as a
+                // sub-parameter. 3 is curly, the one style that carries a
+                // different weight on screen; 4 is dotted, 5 dashed, and
+                // neither of them is drawn apart from the straight one —
+                // but both answer for themselves (see DECRQM's cousin in
+                // Ink.curl), because a program that asks what it set is
+                // owed the truth, not the screen's shorthand for it.
+                ink.underline = true
+                ink.curl = colon(place) == 3
             case 5: ink.blink = true
             case 7: ink.inverse = true
             case 8: ink.hidden = true
             case 9: ink.strike = true
-            case 21, 22: ink.bold = false; ink.faint = false
+            case 21: ink.underline = true; ink.curl = false
+            case 22: ink.bold = false; ink.faint = false
             case 23: ink.italic = false
-            case 24: ink.underline = false
+            case 24: ink.underline = false; ink.curl = false
             case 25: ink.blink = false
             case 27: ink.inverse = false
             case 28: ink.hidden = false
@@ -503,23 +538,30 @@ final class Parser {
             case 49: ink.background = .plain
             case 90...97: ink.foreground = .ansi(UInt8(what - 90 + 8))
             case 100...107: ink.background = .ansi(UInt8(what - 100 + 8))
-            case 38, 48:
-                // 38;5;n the 256, 38;2;r;g;b the color itself.
+            case 38, 48, 58:
+                // 38;5;n the 256, 38;2;r;g;b the color itself, and 58 — the
+                // same two forms — the color of the line under the words,
+                // which without one is the ink of the words it runs under.
                 let count = place + 2 < params.count ? params[place + 1] : -1
                 if count == 5, place + 3 <= params.count, params[place + 2] >= 0 {
                     let paint = Paint.ansi(UInt8(params[place + 2]))
-                    if what == 38 { ink.foreground = paint } else { ink.background = paint }
+                    if what == 38 { ink.foreground = paint }
+                    else if what == 48 { ink.background = paint }
+                    else { ink.line = paint }
                     place += 2
                 } else if count == 2, place + 5 <= params.count,
                           params[place + 2] >= 0, params[place + 3] >= 0, params[place + 4] >= 0 {
                     let paint = Paint.rgb(UInt8(params[place + 2]),
                                           UInt8(min(params[place + 3], 255)),
                                           UInt8(min(params[place + 4], 255)))
-                    if what == 38 { ink.foreground = paint } else { ink.background = paint }
+                    if what == 38 { ink.foreground = paint }
+                    else if what == 48 { ink.background = paint }
+                    else { ink.line = paint }
                     place += 4
                 } else {
                     place = params.count
                 }
+            case 59: ink.line = .plain
             default: break
             }
             place += 1

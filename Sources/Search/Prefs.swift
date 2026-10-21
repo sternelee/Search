@@ -551,7 +551,7 @@ final class Preferences: ObservableObject {
         aiBases = store.dictionary(forKey: AIProvider.addressesKey) as? [String: String] ?? [:]
         commandBar = store.bool(forKey: "commandbar")
         terminalFont = store.string(forKey: "terminal.font") ?? ""
-        terminalSize = store.object(forKey: "terminal.size") as? Double ?? 13
+        terminalSize = store.object(forKey: "terminal.size") as? Double ?? TerminalLook.home
         terminalTheme = store.string(forKey: "terminal.theme").flatMap(TerminalTheme.init) ?? .system
         terminalCursor = store.string(forKey: "terminal.cursor").flatMap(TerminalCursor.init) ?? .block
         terminalBlinks = store.object(forKey: "terminal.blinks") as? Bool ?? true

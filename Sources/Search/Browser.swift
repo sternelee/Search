@@ -2677,6 +2677,12 @@ final class Browser: NSObject, ObservableObject {
     /// ⌥⌘-arrows: the keys move to the neighbouring pane, if there is one.
     func moveTerminalFocus(_ direction: TerminalDirection) { active?.console?.moveFocus(direction) }
 
+    /// ⌘[ and ⌘]: the keys walk the panes in reading order, wrapping at
+    /// the ends. The command carries the keys where a menu can show them;
+    /// the branch in back and forward is where a key pressed on a terminal
+    /// tab is told apart from a page's history.
+    func cycleTerminalFocus(_ step: Int) { active?.console?.cycleFocus(step) }
+
     /// ⌃⌘-arrows: the divider on that side of the focused pane walks one
     /// cell at a time, and stops where a pane would get too small to read.
     func nudgeTerminalDivider(_ direction: TerminalDirection) { active?.console?.nudge(direction) }
@@ -2687,6 +2693,10 @@ final class Browser: NSObject, ObservableObject {
 
     /// ⌥⌘=, or a double-click on a divider: every pane the same size.
     func evenTerminalPanes() { active?.console?.equalize() }
+
+    /// ⇧⌘K: the focused pane's screen and scrollback wiped. ⌘K stays the
+    /// browser's own — the tabs, searched.
+    func clearTerminal() { active?.console?.clearBuffer() }
 
     /// A blank tab given an extension's new tab page: the page needs a view
     /// built from that extension's configuration, so it is a new tab in the
@@ -4279,8 +4289,38 @@ final class Browser: NSObject, ObservableObject {
 
     // MARK: - the page
 
-    func zoom(by factor: CGFloat) { active?.magnify(by: factor) }
-    func resetZoom() { active?.resetZoom() }
+    /// ⌘+ and ⌘− grow a page; in a terminal they grow the face instead, the
+    /// one key told apart by the tab (as ⌘D is by duplicate).
+    func zoom(by factor: CGFloat) {
+        if let tab = active, tab.isTerminal {
+            stepTerminalFont(by: factor > 1 ? 1 : -1)
+            return
+        }
+        active?.magnify(by: factor)
+    }
+
+    /// ⌘0: the page every site starts at — or the face every terminal
+    /// starts in, whichever one you were reaching for.
+    func resetZoom() {
+        if let tab = active, tab.isTerminal {
+            prefs.terminalSize = TerminalLook.home
+            return
+        }
+        active?.resetZoom()
+    }
+
+    /// A face a point bigger or smaller, held within the sizes the panel
+    /// offers — the walk itself lives with the stops (TerminalLook.step).
+    /// It is written to Preferences — where the panel writes it — so the
+    /// keyboard and the panel always agree, and it stays put. A step that
+    /// lands where it began writes nothing: the panel's own buttons go
+    /// dark at the ends, and a key held against one should not re-say a
+    /// look that has not moved.
+    private func stepTerminalFont(by step: Int) {
+        let stepped = TerminalLook.step(prefs.terminalSize, by: step)
+        guard stepped != prefs.terminalSize else { return }
+        prefs.terminalSize = stepped
+    }
 
     /// ⌘⇧R. The article, and nothing that was arranged around it.
     func toggleReader() {
@@ -4292,8 +4332,25 @@ final class Browser: NSObject, ObservableObject {
     }
 
     func reload(fromOrigin: Bool = false) { active?.reload(fromOrigin: fromOrigin) }
-    func back() { active?.back() }
-    func forward() { active?.forward() }
+
+    /// ⌘[ and ⌘], one key with two meanings told apart by the tab (as ⌘D
+    /// is by duplicate): a page steps through its history, a terminal
+    /// walks its panes in reading order instead.
+    func back() {
+        if let tab = active, tab.isTerminal {
+            tab.console?.cycleFocus(-1)
+            return
+        }
+        active?.back()
+    }
+
+    func forward() {
+        if let tab = active, tab.isTerminal {
+            tab.console?.cycleFocus(1)
+            return
+        }
+        active?.forward()
+    }
 }
 
 // MARK: - WebKit
