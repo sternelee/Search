@@ -363,6 +363,16 @@ final class GlyphAtlas {
         }
     }
 
+    /// How much a glyph has to be shrunk to sit whole in its slot: 1 when
+    /// it already does, which is every letter of ordinary text, and less
+    /// when its ink runs past the advance the cell was cut from — the way
+    /// the drawings in a patched icon face do. Kept apart from the drawing
+    /// so the arithmetic can be pinned without a font that has one.
+    nonisolated static func fit(_ ink: CGRect, in slot: CGSize) -> CGFloat {
+        guard ink.width > 0, ink.height > 0, slot.width > 0, slot.height > 0 else { return 1 }
+        return min(1, min(slot.width / ink.width, slot.height / ink.height))
+    }
+
     /// One glyph, cut: the coverage of a character in an R8 square, white on
     /// black, drawn by CoreText on the baseline the cell's height was
     /// measured from. Nothing but its arguments is read — which is what lets
@@ -384,14 +394,37 @@ final class GlyphAtlas {
         // The baseline: the descent above the bitmap's floor, plus half the
         // leading — the same room the cell's height was measured from.
         let rise = -face.descender + (CGFloat(down) - face.ascender + face.descender) / 2
+        // A glyph whose ink is wider or taller than the square it has been
+        // given — an icon from a Nerd Font, whose drawings run past the
+        // advance the cell was measured from — is shrunk to fit whole. Left
+        // at its own size it is cut off at the slot's edge, which for those
+        // glyphs is half an icon and a square of nothing where the rest was.
+        let ink = CTLineGetBoundsWithOptions(line, [.useGlyphPathBounds])
+        let fit = GlyphAtlas.fit(ink, in: CGSize(width: across, height: down))
+        // A glyph a hair over its square stays where the baseline put it:
+        // shrinking and centring for half a pixel would move ordinary
+        // letters against the ones beside them, an italic's overhang most
+        // of all. An icon that overruns by half is another thing.
+        let whole = fit < 0.9
         bytes.withUnsafeMutableBytes { raw in
             guard let page = CGContext(
                 data: raw.baseAddress, width: across, height: down,
                 bitsPerComponent: 8, bytesPerRow: across,
                 space: space, bitmapInfo: CGImageAlphaInfo.none.rawValue
             ) else { return }
-            page.textPosition = CGPoint(x: 0, y: rise)
-            CTLineDraw(line, page)
+            if whole {
+                page.saveGState()
+                page.scaleBy(x: fit, y: fit)
+                page.textPosition = CGPoint(
+                    x: (CGFloat(across) / fit - ink.width) / 2 - ink.minX,
+                    y: (CGFloat(down) / fit - ink.height) / 2 - ink.minY
+                )
+                CTLineDraw(line, page)
+                page.restoreGState()
+            } else {
+                page.textPosition = CGPoint(x: 0, y: rise)
+                CTLineDraw(line, page)
+            }
         }
         return GlyphCut(seat: seat, across: across, down: down, bytes: bytes, generation: generation)
     }
