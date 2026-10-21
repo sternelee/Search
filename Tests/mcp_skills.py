@@ -439,10 +439,14 @@ def case_web(t):
     t.ok("the bare server let go", gone.get("removed") == "bare", gone)
     mlog.clear()
 
-    added = mcp("add", name="shelf", url=MBASE, headers={"Authorization": "Bearer shelf"})
+    # One of the headers says it is the session id itself — the one
+    # the protocol keeps its bearings by, and never the person's to
+    # displace, whatever their settings say.
+    added = mcp("add", name="shelf", url=MBASE,
+                headers={"Authorization": "Bearer shelf", "Mcp-Session-Id": "an imposter's"})
     t.ok("a server added with headers of its own",
          added.get("added") == "shelf"
-         and [d for d in mcp("list").get("servers", []) if d.get("name") == "shelf"][0].get("headers") == 1,
+         and [d for d in mcp("list").get("servers", []) if d.get("name") == "shelf"][0].get("headers") == 2,
          added)
 
     tools = mcp("tools")
@@ -459,6 +463,8 @@ def case_web(t):
          len(said) == 1 and said[0][1] is None, mlog[:2])
     t.ok("the session id kept and said back on every ask after",
          all(entry[1] == "test-session" for entry in mlog[1:]), mlog[1:])
+    t.ok("…and a header of the person's own named for it never displaces it",
+         all(entry[1] == "test-session" for entry in mlog[1:]), [e[1] for e in mlog[1:]])
     t.ok("the header said with every request, from the hello on",
          all(entry[2] == "Bearer shelf" for entry in mlog), mlog[:3])
 

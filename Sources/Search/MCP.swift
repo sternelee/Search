@@ -618,7 +618,10 @@ private actor Link {
         // The person's own headers last, so one of theirs displaces the
         // likes of an Accept if it must — but never the session id the
         // protocol keeps its bearings by, which is only ever ours.
-        for (name, worth) in config.headers ?? [:] where !name.isEmpty {
+        for (name, worth) in config.headers ?? [:]
+        where !name.isEmpty
+            && name.caseInsensitiveCompare("Mcp-Session-Id") != .orderedSame
+            && name.caseInsensitiveCompare("Mcp-Protocol-Version") != .orderedSame {
             request.setValue(worth, forHTTPHeaderField: name)
         }
         let (said, answer) = try await session.data(for: request)

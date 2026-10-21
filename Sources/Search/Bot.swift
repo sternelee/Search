@@ -584,7 +584,8 @@ final class Bot: ObservableObject, Identifiable {
         {"read": "target"}  — read one thing closely (its text, value or address)
         {"ui": [ … ]}  — draw a card: a form, a choice, a picture of what you found.\
         A card ends your turn: the person answers it with a tap, and the card goes
-        {"goto": "https://…"}  — go to an address
+        {"goto": "https://…"}  — go to an address: an act on the page the person is shown,\
+        so it waits for their Allow like an act, Auto aside
         {"wait": "target"}  — wait for something to be on the page
         {"full": true}  — you were shown only what's in view; ask for the whole page
         {"answer": "…"}  — the task is done (or can't be done); the person reads this
@@ -751,6 +752,38 @@ final class Loop {
         if held.act.verb == "note" {
             if allowed { keepNote(held.act.text) }
             else { turnedAway(held, why: "The person wouldn't have it kept. Carry on.") }
+            return
+        }
+        // A page gone to, held for the person like any act on the page:
+        // it changes what they're shown, so it's theirs to allow — let
+        // go, the page goes (see `route`).
+        if held.act.verb == "goto" {
+            let workTab = (held.tab.flatMap { id in TabsOfBrowser.all.first { $0.id == id } })
+                ?? bot.page
+            if allowed {
+                guard let workTab else {
+                    var gone = held.act
+                    gone.outcome = "the tab is gone"
+                    bot.tell(Bot.Event(kind: .act, words: "", act: gone))
+                    observe(note: "The tab that act was for is gone — the tabs are listed for you with their ids (TABS). Say it again with one of those.", full: false, first: false)
+                    return
+                }
+                if let url = URL(string: held.act.target),
+                   let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+                    workTab.go(to: url)
+                    observe(note: "You went to \(held.act.target).", full: false, first: false)
+                } else {
+                    var gone = held.act
+                    gone.outcome = "didn't work: the address wouldn't be read"
+                    bot.tell(Bot.Event(kind: .act, words: "", act: gone))
+                    observe(note: "That address wouldn't be read. Say it again.", full: false, first: false)
+                }
+            } else {
+                var refused = held.act
+                refused.outcome = "refused"
+                bot.tell(Bot.Event(kind: .act, words: "", act: refused))
+                observe(note: "The person refused your goto on \(held.act.target).", full: false, first: false)
+            }
             return
         }
         // A page act goes to the tab it was held on — the one the line came
@@ -1114,8 +1147,18 @@ final class Loop {
                 observe(note: "No page is in front to go anywhere — the tabs are listed for you with their ids (TABS); say it again with a tab.", full: false, first: false)
                 return
             }
-            work.go(to: url)
-            observe(note: "You went to \(address).", full: false, first: false)
+            // Going to an address is an act on the page the person is
+            // shown — it changes what they see — so it waits for their
+            // Allow like any act, Auto aside and an Always over it.
+            if bot.auto || bot.alwaysPage {
+                work.go(to: url)
+                observe(note: "You went to \(address).", full: false, first: false)
+            } else {
+                bot.pending = Bot.Pending(
+                    act: Bot.Act(verb: "goto", target: address, text: ""),
+                    tab: work.id
+                )
+            }
             return
         }
         if let target = line["wait"] as? String {
