@@ -665,6 +665,12 @@ struct SettingsPanel: View {
                     Rule()
                     Line(trouble, "Nothing changed — the file is where it said it wouldn't be") { EmptyView() }
                 }
+                if islandMore {
+                    ForEach(islandAgents.dropFirst(3)) { agent in
+                        Rule()
+                        islandRow(agent)
+                    }
+                }
                 Rule()
                 Line(
                     "More agents",
@@ -674,12 +680,6 @@ struct SettingsPanel: View {
                 ) {
                     Pill(islandMore ? "Show less" : "Show more", filled: !islandMore) {
                         withAnimation(Motion.quick) { islandMore.toggle() }
-                    }
-                }
-                if islandMore {
-                    ForEach(islandAgents.dropFirst(3)) { agent in
-                        Rule()
-                        islandRow(agent)
                     }
                 }
             }
