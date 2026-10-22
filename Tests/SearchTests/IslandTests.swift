@@ -315,6 +315,33 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(bytes[0], Data("{}".utf8), "answered with nothing, the cue to ask in person")
     }
 
+    // MARK: - the bar's place
+
+    /// The bar sits where it's dragged and holds the width it's given:
+    /// both kept inside the window, whatever the drag said (see
+    /// IslandPlace — the bar's own math, kept from a window so it can
+    /// be held to here).
+    func testTheBarKeepsItsPlaceAndWidthInsideTheWindow() {
+        // The width: no narrower than 220, no wider than 720 — or the
+        // room less a breath each side. A room too narrow for the
+        // narrowest is overruled — the bar is never nothing.
+        XCTAssertEqual(IslandPlace.width(360, room: 1000), 360, "a middle width is kept as it is")
+        XCTAssertEqual(IslandPlace.width(100, room: 1000), 220, "too narrow is the narrowest")
+        XCTAssertEqual(IslandPlace.width(2000, room: 1000), 720, "too wide is the widest")
+        XCTAssertEqual(IslandPlace.width(2000, room: 500), 472, "a narrow window wins over the widest")
+        XCTAssertEqual(IslandPlace.width(100, room: 300), 220, "a window too narrow is overruled")
+        // The place: the left edge for a center said as a share of the
+        // room, a breath (fourteen) in from each edge it can't cross.
+        XCTAssertEqual(IslandPlace.left(center: 0.5, width: 360, room: 1000), 320, "the middle of the room")
+        XCTAssertEqual(IslandPlace.left(center: 0.0, width: 360, room: 1000), 14, "the far left stops a breath in")
+        XCTAssertEqual(IslandPlace.left(center: 1.0, width: 360, room: 1000), 626, "the far right stops a breath in")
+        XCTAssertEqual(IslandPlace.left(center: 1.0, width: 360, room: 380), 10, "a room with no room centers the bar")
+        // And the share is the say-so kept, whatever width and place.
+        XCTAssertEqual(IslandPlace.center(left: 320, width: 360, room: 1000), 0.5, accuracy: 0.001, "the middle goes back as a half")
+        XCTAssertEqual(IslandPlace.center(left: 14, width: 220, room: 1000), 0.124, accuracy: 0.001, "the left edge says where the center is")
+        XCTAssertEqual(IslandPlace.center(left: 14, width: 220, room: 0), 0.5, "a room of nothing keeps the middle it had")
+    }
+
     // MARK: - the socket
 
     /// The bridge's ask is carried whole over the socket, and the

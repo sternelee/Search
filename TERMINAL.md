@@ -258,9 +258,14 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
    文件夹里用户自己的文件永远不碰。`PermissionRequest` 的 timeout 装成 86400（一天，
    毫秒家 ×1000）。事件名在 `Island.swift` 读入时归一到横幅自己的词（BeforeTool→PreToolUse，
    afterAgentResponse→Stop，等等），小写驼峰与 PascalCase 都认。
-3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部居中，所有标签
-   页可见；列出全部 session；`asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、
-   窗格。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
+3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部（overlay 里的
+   `GeometryReader` 量出窗口宽度传进来），所有标签页可见；列出全部 session，每行标题是
+   **agent 名 · 目录名**（"Claude Code · search"，目录取 cwd 最后一段，没说目录就只显名字）；
+   `asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、窗格。**拖动**：整条可拖到窗口
+   任意位置，两端各有一条 6pt 的隐形边缘可拖宽窄（近端动、远端不动，窗口边缘同款）——
+   位置存成窗口宽度的份额（窗口缩放后横幅仍在里面），宽度存点数，`IslandPlace` 的纯函数
+   把两者夹在窗口内（最窄 220、最宽 720 或窗口减两侧 14pt），`@AppStorage` 记住（island.center /
+   island.width）。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
    时不显示——屏幕上正看着它，横幅只会说得比屏幕差。同理，agent 在跑的终端自己发的
    OSC 9 / 777（`.note`）不再转成 macOS 系统通知（`Browser` 的 onNotice 检查
    `Island.atWork(tty:)`）：横幅说得更好，桌面不该再重复一遍。
@@ -288,7 +293,8 @@ hook 永远不会再跑（进程被杀不会执行任何 hook），所以由终�
 `Island.retired(tty:)` 清掉该 tty 的全部 session，还开着的 hold 回一个空 `{}`，让等着的
 CLI 回自己终端去问。
 
-测试在 `Tests/SearchTests/IslandTests.swift`（21 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
+测试在 `Tests/SearchTests/IslandTests.swift`（23 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
 Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 session）、各形状 settings 的合并与卸载
 （Claude/Codex/Qwen/Droid/Gemini/Cursor/Grok/Copilot/Pi/OMP）、桥接脚本写出且可执行、session 状态转移、
-`Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent。
+`Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent、
+横幅位置与宽度夹在窗口内（IslandPlace 纯函数）。

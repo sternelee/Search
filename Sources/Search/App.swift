@@ -484,11 +484,16 @@ struct ContentView: View {
         // The agents' notch, over every tab (see IslandBar): under the
         // strip when there is one, at the window's own top when there
         // isn't. Not in a page's fullscreen — there is no top to be over.
+        // The bar is told how wide the window is, and holds itself where
+        // it was dragged to, as wide as it was stretched (see IslandBar,
+        // IslandPlace).
         .overlay(alignment: .top) {
             if fullscreenTab == nil {
-                IslandBar()
-                    .padding(.top, band == 0 ? 8 : Metrics.strip + 6)
-                    .allowsHitTesting(true)
+                GeometryReader { room in
+                    IslandBar(room: room.size.width)
+                }
+                .padding(.top, band == 0 ? 8 : Metrics.strip + 6)
+                .allowsHitTesting(true)
             }
         }
         .animation(Motion.glide, value: browser.prefs.sidebar)
