@@ -398,7 +398,6 @@ final class TerminalDock {
 /// the terminal under it redraws at the display's own rate while a
 /// command runs, and a plate with nothing moving on it has no reason to
 /// follow.
-@MainActor
 final class TerminalDockPlate: NSView {
     /// What the last frame wanted drawn, kept to see whether the next one
     /// is worth an AppKit draw at all.
@@ -434,6 +433,12 @@ final class TerminalDockPlate: NSView {
     /// such glyph) and lands where that font's metrics put it, not where
     /// the line's digits do.
     private(set) var promptDy: CGFloat = 0
+    /// The digits' ink height, measured the same way: the caret is sized to
+    /// it, so the bar spans what the line's own glyphs span and reads as
+    /// aligned with the prompt beside it. A taller bar (the measured case:
+    /// 16pt against a 10pt ❯) towers over the prompt even with the centers
+    /// agreeing.
+    private(set) var inkH: CGFloat = 10
 
     init() {
         super.init(frame: .zero)
@@ -461,6 +466,9 @@ final class TerminalDockPlate: NSView {
         // the digits' own — a face that has it drifts elsewhere.
         caretMid = Self.inkCenter(of: "0", in: face)
         promptDy = caretMid - Self.inkCenter(of: "❯", in: face)
+        if let rows = Self.inkRows(of: "0", in: face) {
+            inkH = max(6, rows.high - rows.low)
+        }
     }
 
     /// Where a glyph's ink center lands in the plate's glyph rect — the
@@ -468,7 +476,11 @@ final class TerminalDockPlate: NSView {
     /// its ink's rows scanned, once per face. This is the same drawing
     /// the plate does, so whatever the fonts do, this is where the ink
     /// the person sees actually sits.
-    static func inkCenter(of text: String, in face: NSFont) -> CGFloat {
+    /// The first and last ink rows a glyph draws in the dock's box — the
+    /// extent the caret is sized to, because a bar taller than the digits'
+    /// own ink reads as towering over the prompt even when their centers
+    /// agree (the measured case: 16pt bar beside a 10pt ❯).
+    static func inkRows(of text: String, in face: NSFont) -> (low: CGFloat, high: CGFloat)? {
         let box = DockBox.height
         let image = NSImage(size: NSSize(width: 40, height: box))
         image.lockFocus()
@@ -482,7 +494,7 @@ final class TerminalDockPlate: NSView {
         guard
             let data = image.tiffRepresentation,
             let rep = NSBitmapImageRep(data: data)
-        else { return box / 2 }
+        else { return nil }
         let scale = CGFloat(rep.pixelsHigh) / box
         var low = -1, high = -1
         for row in 0..<rep.pixelsHigh {
@@ -493,8 +505,31 @@ final class TerminalDockPlate: NSView {
                 break
             }
         }
-        guard low >= 0 else { return box / 2 }
-        return (CGFloat(low) + CGFloat(high)) / 2 / scale
+        guard low >= 0 else { return nil }
+        // The rep reads top-down — a TIFF's rows start at the top while
+        // the lockFocus drawing that filled them ran bottom-up — so the
+        // rows have to be flipped before they mean anything on the plate.
+        // Unflipped, "0" measured 5pt high of where the plate really
+        // puts it, and every caret since sat that far off its line.
+        return (
+            box - CGFloat(high) / scale,
+            box - CGFloat(low) / scale
+        )
+    }
+
+    static func inkCenter(of text: String, in face: NSFont) -> CGFloat {
+        let box = DockBox.height
+        let image = NSImage(size: NSSize(width: 40, height: box))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 40, height: box).fill()
+        (text as NSString).draw(
+            in: NSRect(x: 5, y: (box - 15) / 2, width: 30, height: 15),
+            withAttributes: [.font: face as Any, .foregroundColor: NSColor.black]
+        )
+        image.unlockFocus()
+        guard let rows = Self.inkRows(of: text, in: face) else { return box / 2 }
+        return (rows.low + rows.high) / 2
     }
 
     /// Take a frame's model. True when it differs from the last one — a
@@ -543,8 +578,8 @@ final class TerminalDockPlate: NSView {
     func caretSpot(at column: Int) -> NSRect {
         NSRect(
             x: textX + advance * CGFloat(column) - offset,
-            y: caretMid - 8,
-            width: advance, height: 16
+            y: caretMid - inkH / 2,
+            width: advance, height: inkH
         )
     }
 
@@ -595,8 +630,8 @@ final class TerminalDockPlate: NSView {
         guard p.blink else { return }
         let headX = textX + advance * p.head - shift
         let tailX = textX + advance * p.tail - shift
-        let barY = caretMid - (bounds.height - 14) / 2
-        let band2 = NSRect(x: min(headX, tailX), y: barY, width: max(0, abs(headX - tailX)), height: bounds.height - 14)
+        let barY = caretMid - inkH / 2
+        let band2 = NSRect(x: min(headX, tailX), y: barY, width: max(0, abs(headX - tailX)), height: inkH)
         if band2.width > 0.1 {
             // Faint, and fainter the further it is stretched, like the
             // find panel's ghost: a long throw is a smudge of light.
@@ -607,9 +642,9 @@ final class TerminalDockPlate: NSView {
         }
         let width = max(1, DockBox.bar * p.squeeze)
         ink.withAlphaComponent(shown).setFill()
-        NSRect(x: tailX - width + DockBox.bar, y: barY, width: width, height: bounds.height - 14).fill()
+        NSRect(x: tailX - width + DockBox.bar, y: barY, width: width, height: inkH).fill()
         ink.withAlphaComponent(p.edge * shown).setFill()
-        NSRect(x: headX, y: barY, width: width, height: bounds.height - 14).fill()
+        NSRect(x: headX, y: barY, width: width, height: inkH).fill()
     }
 
     /// One glyph, at an alpha and a rise off the line's floor. The ink is
