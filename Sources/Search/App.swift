@@ -25,6 +25,11 @@ struct SearchApp: App {
             Session.startFresh(spaces: Spaces.read().map(\.id))
             Browsers.startFresh()
         }
+        // The island's socket, before anything could be listening for it:
+        // an agent's hook could run the moment a terminal opens, and what
+        // it says should be heard, not held until the first settings panel
+        // happens to open one (see Island).
+        Island.shared.start()
     }
 
     var body: some Scene {
@@ -476,6 +481,21 @@ struct ContentView: View {
         }
         .ignoresSafeArea()
         .background { fullscreenWatch }
+        // The agents' notch, over every tab (see IslandBar): under the
+        // strip when there is one, at the window's own top when there
+        // isn't. Not in a page's fullscreen — there is no top to be over.
+        // The bar is told how wide and tall the window is, and holds
+        // itself where it was dragged to — along the top and down from
+        // it — as wide as it was stretched (see IslandBar, IslandPlace).
+        .overlay(alignment: .top) {
+            if fullscreenTab == nil {
+                GeometryReader { room in
+                    IslandBar(room: room.size)
+                }
+                .padding(.top, band == 0 ? 8 : Metrics.strip + 6)
+                .allowsHitTesting(true)
+            }
+        }
         .animation(Motion.glide, value: browser.prefs.sidebar)
         .animation(Motion.glide, value: browser.prefs.sidePosition)
         .animation(.easeOut(duration: 0.12), value: fullscreenTab?.id)

@@ -254,3 +254,89 @@ Metalterm 的输入坞（底部 dock）按 3.1 的边界**不学**，但它的**
 - **终端字号**：捏合手势调字号（键盘与菜单已够，捏合在触控板上与滚动易混）；每标签/每窗格字号（面板与 Prefs 都是全局模型，全局即 MetalTerm 的 `font_size`）。
 - **MetalTerm 调研清单余项**：⌘E/⌘J 用选中文本进查找并跳到它（两键都空闲，做的话走 TerminalFind 的 `selection(in:)`）；命令时长显示（`command_duration_threshold`，UI 落点未定）。
 - **架构**：不引入 Rust 核心，不引入 libghostty。
+
+## 八、Agent 提醒（Island）
+
+终端里跑着 coding agent（Claude Code、Codex、Pi，以及后来的 Gemini、Cursor、Qwen Code、
+Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的标签页——agent 在干什么、
+在哪一步卡住等人、什么时候跑完，一概看不见。[CodeIsland](https://github.com/wxtsky/CodeIsland)
+给了这套问题的完整答案；这里照它的形状做了一套自己的，规模小得多，装在本浏览器里。
+
+**三件东西，两处接线。**
+
+1. **`Island.swift`** —— `IslandServer`（unix socket `/tmp/search-island-$UID.sock`，权限
+   0700，id 在路径里所以只有本人能碰；手写极简 HTTP 解析：请求行 + 头 + `Content-Length`
+   正文；`Shape` 分 `.http` / `.bare` / `.junk` 三形态）+ `Island`（session 模型：
+   `Session.Part` 四态 `working / asking / waiting / done`；事件→状态转移；tty → 窗口→标签→
+   窗格匹配；`PermissionRequest` 挂起等横幅上 Approve/Deny/不管它，其余事件即时回 `{}`）。
+2. **`IslandHooks.swift`** —— 安装/卸载：桥接脚本 `search-island.sh`（纯 sh + curl
+   `--unix-socket`，不编译第二个 target；`[ -S "$SOCK" ] || exit 0` 快退；写到 Application
+   Support，0755；除了 `X-Search-Tty` / `X-Search-Source` 还带 `X-Search-Event`——Cursor 和
+   Copilot 的话里不说自己是哪个时刻，命令里说了，头里替它们带一句）+ Pi 扩展
+   `search-island.ts`（`~/.pi/agent/extensions/` 与 `~/.omp/agent/extensions/` 同一个文件，
+   目录不存在则跳过，危险 bash 与 ask 工具映射成挂起的询问，装给哪一家脚本里就写谁的名字）。
+   十家分三种形状，形状共享一套内核：
+
+   - **Claude 形状**（settings.json 里 hooks 键，行里嵌 hooks）——Claude Code、Codex
+     （hooks.json，少一条 Notification）、Qwen Code（同 Claude 但毫秒计、每个等待都要
+     写明：说事 5000，批准 86400000——Qwen 会等一个不说"完了"的 hook）、Droid
+     （~/.factory，照抄整份契约，秒）；
+   - **嵌套形状**（无 matcher）——Gemini（settings.json，自己的事件名 BeforeTool/
+     AfterTool/BeforeAgent/AfterAgent，毫秒，每条 10000；它的 BeforeTool 是每个工具前的
+     否决而非审批，所以纯观察，不挂 hold——挂住每个工具就成了狱卒）、Grok
+     （~/.grok/hooks/ 下独立自有文件，扫整目录，秒，不挂 hold——它不等 hook 的回答）；
+   - **平铺形状**——Cursor（hooks.json，行就是一条 command，命令里带事件名）、Copilot
+     CLI（~/.copilot/hooks/ 下独立文件，顶层 `version: 1`，行是 `{type, bash, timeoutSec}`，
+     说事 5 秒）。
+
+   全部走**合并不覆盖**：按 command/bash 里含桥接路径认出自家条目，幂等重装、干净卸载，
+   用户自己的 hooks 一条不动；只有自家条目的文件清空后连文件一起带走，Grok/Copilot
+   文件夹里用户自己的文件永远不碰。`PermissionRequest` 的 timeout 装成 86400（一天，
+   毫秒家 ×1000）。事件名在 `Island.swift` 读入时归一到横幅自己的词（BeforeTool→PreToolUse，
+   afterAgentResponse→Stop，等等），小写驼峰与 PascalCase 都认。
+3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部（overlay 里的
+   `GeometryReader` 量出窗口宽与高传进来），所有标签页可见；列出全部 session，每行标题是
+   **agent 名 · 目录名**（"Claude Code · search"，目录取 cwd 最后一段，没说目录就只显名字）；
+   `asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、窗格。**拖动**：整条可沿窗口顶部
+   横向拖到任意处，也可往下拖（最深到窗口底留 14pt；`island.down` 存点数），两端各有一条 6pt
+   的隐形边缘可拖宽窄（近端动、远端不动，窗口边缘同款）——位置存成窗口宽度的份额（窗口
+   缩放后横幅仍在里面），宽度存点数，`IslandPlace` 的纯函数把两者夹在窗口内（最窄 220、
+   最宽 720 或窗口减两侧 14pt；下不越过窗口底、上不过它出发的 notch 位），`@AppStorage`
+   记住（island.center / island.width / island.down）。**每行都有 ×**：点一下把这行收走
+   （`Island.putAway`）——跑完的收了就完；跑着的、等人答话的收走后搁起来（`shelved`），
+   直到它再说了值得听的话（新开一轮、要人答应、跑完）才回来，中间的干活噪声不叫醒；
+   收走时若它正掣着一个审批，审批连同空答交回它自己的终端去问（那里还能答），关掉
+   这一行不是把问题关掉。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
+   时不显示——屏幕上正看着它，横幅只会说得比屏幕差。同理，agent 在跑的终端自己发的
+   OSC 9 / 777（`.note`）不再转成 macOS 系统通知（`Browser` 的 onNotice 检查
+   `Island.atWork(tty:)`）：横幅说得更好，桌面不该再重复一遍。
+
+接线在 `App.swift`：`SearchApp.init` 里 `Island.shared.start()`（测试运行不占真 socket，
+`Store.testing` 时各自用各自的路径）；`window_` 尾部 overlay `IslandBar()`。设置面板
+`Settings.swift` 的终端段新增 "Coding agents" 一卡，每个 agent 一行、装/卸 Pill、状态自知；
+常用的三家（Claude Code、Codex、Pi）先列，其余七家收在 Show more 后面点开才见——
+不常用的不该占着设置面板。每行共用一个开关：先写桥接再装，卸载不动桥接（自家的东西
+在自家的文件夹里，离下次被装上只隔一次点击）。
+
+**两种形态的协议。** Claude Code 与 Codex 的 hook 走 HTTP（curl 带话，头里
+`X-Search-Tty` / `X-Search-Source`）；Pi 的扩展走裸 JSON（POSIX socket，写完半关——EOF
+就是它唯一的"说完了"）。裸 JSON **解析成完整事件即算说完，EOF 仍是兜底**——这一条
+是被测试环境逼出来的：XCTest 的 runner 沙箱不让测试进程做裸 `connect`（回
+`ENOTSOCK`，而 Network.framework 自己的连接能过），且 Network 的连接又不能半关；
+"解析即说完"让任何说不完"完了"的客户端都能用，也更快听见。服务器只收一条说一回，`PermissionRequest` 原连接挂住直到人答。
+
+**安全失败。** Search 没在跑（socket 不在）→ 桥接脚本直接 `exit 0` 不输出 → CLI 落回自己
+的批准弹窗；app 退出连接断 → 同样落回。挂起的连接断了（CLI 超时走了）→ hold 放弃，
+session 退回 `waiting`，它自己的终端接着问。
+
+**终端关了，agent 随之退场。** 终端关了，里面的 agent
+hook 永远不会再跑（进程被杀不会执行任何 hook），所以由终端自己的结束替它们退场：
+`Island.retired(tty:)` 清掉该 tty 的全部 session，还开着的 hold 回一个空 `{}`，让等着的
+CLI 回自己终端去问。
+
+测试在 `Tests/SearchTests/IslandTests.swift`（23 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
+Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 session）、各形状 settings 的合并与卸载
+（Claude/Codex/Qwen/Droid/Gemini/Cursor/Grok/Copilot/Pi/OMP）、桥接脚本写出且可执行、session 状态转移、
+`Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent、
+横幅位置与宽度夹在窗口内，往下拖的深度也夹在窗口内；一行可收走，收走后只等值得
+   再听的话（IslandPlace 纯函数、shelving 语义）。

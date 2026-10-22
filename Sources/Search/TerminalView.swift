@@ -45,10 +45,15 @@ final class TerminalView: NSView, NSTextInputClient {
     /// they read them from here instead.
     private var modes = Modes()
 
-    /// What the program was last told about the keyboard (1004): true when
-    /// it heard the focus arrive. Kept because only the change is worth
-    /// sending, and the change is only a change against this.
+    /// What the terminal has last told about the keyboard (1004): true when
+    /// the program heard the focus arrive. Kept because only the change is
+    /// worth sending, and the change is only a change against this.
     private var heard = false
+
+    /// The composition the input method is building (see setMarkedText).
+    /// Non-empty while an IME is composing; cleared when it commits or
+    /// cancels.
+    private var markedText = ""
 
     /// What the terminal has changed since the last frame was drawn. The
     /// frame takes it away; where a frame only says a row again when a row
@@ -687,7 +692,11 @@ final class TerminalView: NSView, NSTextInputClient {
             terminal.send("\u{1b}" + (event.charactersIgnoringModifiers ?? words))
             return
         }
-        terminal.send(words)
+        // Route through the input system so an input method (Chinese,
+        // Japanese, …) can compose. Without an IME the system calls
+        // insertText straight back with the same characters; with one it
+        // drives setMarkedText until the user commits.
+        self.interpretKeyEvents([event])
     }
 
     // MARK: - an input method
@@ -701,10 +710,19 @@ final class TerminalView: NSView, NSTextInputClient {
         insertText(string)
     }
 
-    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        // The input method is building a composition: keep it so hasMarkedText
+        // can tell the system we are mid-composition, and so the candidate
+        // window knows where to sit (see firstRect).
+        markedText = (string as? String) ?? ""
+    }
 
-    func hasMarkedText() -> Bool { false }
-    func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    func hasMarkedText() -> Bool { !markedText.isEmpty }
+    func markedRange() -> NSRange {
+        markedText.isEmpty
+            ? NSRange(location: NSNotFound, length: 0)
+            : NSRange(location: 0, length: markedText.utf16.count)
+    }
     func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
 
     func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
@@ -733,7 +751,7 @@ final class TerminalView: NSView, NSTextInputClient {
 
     func characterIndex(for point: NSPoint) -> Int { NSNotFound }
 
-    func unmarkText() {}
+    func unmarkText() { markedText = "" }
 
     // MARK: - the hand
 
