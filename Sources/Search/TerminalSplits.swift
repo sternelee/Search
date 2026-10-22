@@ -518,6 +518,15 @@ final class TerminalSplits: NSView, ObservableObject {
     /// one running elsewhere is brought here.
     func pane(of tty: String) -> Int? { panes.first { $0.value.terminal.pty == tty }?.key }
 
+    /// Whether an agent is at work in one of this room's panes — kept
+    /// by the island, told by each terminal's own tty. A room with an
+    /// agent in it says itself in the notch over the tabs (IslandBar):
+    /// what it says on the way — OSC 9, a bell — needn't be said to the
+    /// desktop as well.
+    var agentAtWork: Bool {
+        panes.values.contains { Island.shared.atWork(tty: $0.terminal.pty) }
+    }
+
     /// The find field opens in the pane the keys are in, and walks that
     /// pane's scrollback; ⌘↑ and ⌘↓ walk its command blocks. All of it is
     /// the focused pane's, as it was the only terminal's.

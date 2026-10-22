@@ -261,7 +261,9 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
 3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部居中，所有标签
    页可见；列出全部 session；`asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、
    窗格。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
-   时不显示——屏幕上正看着它，横幅只会说得比屏幕差。
+   时不显示——屏幕上正看着它，横幅只会说得比屏幕差。同理，agent 在跑的终端自己发的
+   OSC 9 / 777（`.note`）不再转成 macOS 系统通知（`Browser` 的 onNotice 检查
+   `Island.atWork(tty:)`）：横幅说得更好，桌面不该再重复一遍。
 
 接线在 `App.swift`：`SearchApp.init` 里 `Island.shared.start()`（测试运行不占真 socket，
 `Store.testing` 时各自用各自的路径）；`window_` 尾部 overlay `IslandBar()`。设置面板

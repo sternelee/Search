@@ -245,6 +245,24 @@ final class IslandTests: XCTestCase {
         XCTAssertNil(one(), "the run over, the session goes with it")
     }
 
+    /// A terminal with an agent at work in it is the notch's to talk
+    /// about, not the desktop's: its own sayings of itself — OSC 9, a
+    /// bell — are the notch's to say again (Browser skips the Mac
+    /// notification when the island keeps a session for the terminal).
+    @MainActor
+    func testATerminalWithAnAgentInItIsTheNotchsToTalkAbout() {
+        let island = Island.shared
+        XCTAssertFalse(island.atWork(tty: nil), "no terminal, no agent")
+        XCTAssertFalse(island.atWork(tty: "/dev/ttys999"), "a terminal with nothing kept is not at work")
+        island.heard(IslandEvent(
+            source: "claude", name: "PreToolUse", session: "run-at-work",
+            tty: "/dev/ttys005", cwd: nil, tool: "Bash", call: nil, prompt: nil, words: nil
+        ))
+        XCTAssertTrue(island.atWork(tty: "/dev/ttys005"), "the terminal the agent runs in is at work")
+        island.retired(tty: "/dev/ttys005")
+        XCTAssertFalse(island.atWork(tty: "/dev/ttys005"), "the terminal gone, the work goes with it")
+    }
+
     /// A terminal's end takes its agents with it — the hooks can't say
     /// so themselves, a killed CLI never running another hook — and the
     /// holds its asking left open are handed back empty, so a CLI

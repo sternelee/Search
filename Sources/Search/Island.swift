@@ -334,6 +334,15 @@ final class Island: ObservableObject {
         return tab.madeShell?.focusedTerminal?.pty
     }
 
+    /// Whether an agent is kept for the terminal on this tty — at work
+    /// in it, saying itself to the notch over the tabs (IslandBar).
+    /// Its own saying of itself on the way — OSC 9, a bell — is the
+    /// notch's to say again, not the desktop's.
+    func atWork(tty: String?) -> Bool {
+        guard let tty, !tty.isEmpty else { return false }
+        return sessions.contains { $0.tty == tty }
+    }
+
     /// What the bar calls an agent, the names a person knows them by.
     static func name(_ source: String) -> String {
         switch source {
