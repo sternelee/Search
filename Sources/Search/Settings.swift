@@ -591,6 +591,13 @@ struct SettingsPanel: View {
                     Switch(on: $prefs.terminalBlinks)
                 }
                 Rule()
+                Line("Find Bar", "Where ⌘F's panel hangs, over the frame's top corner or its bottom") {
+                    Segmented(
+                        options: TerminalFindPlace.allCases.map { ($0, $0.title) },
+                        selection: $prefs.terminalFindPlace
+                    )
+                }
+                Rule()
                 Line("Padding", "The room left around the cells, in points") {
                     Steps(stops: TerminalLook.paddings, value: $prefs.terminalPadding, home: 4) {
                         String(format: "%.0f", $0)

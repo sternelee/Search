@@ -76,10 +76,23 @@ final class TerminalView: NSView, NSTextInputClient {
     private var anchor = (column: 0, row: 0)
 
     /// A search of the scrollback (⌘F — the field, the matches, the one
-    /// being stood on: see TerminalFind, where it all happens).
-    var findField: NSTextField?
+    /// being stood on: see TerminalFind, where it all happens). The plate
+    /// the field sits in and the two bars the motion throws are the panel's
+    /// own, and go with it.
+    var findPanel: TerminalFieldPanel?
+    var findEdge: TerminalFieldBar?
+    var findGhost: TerminalFieldSmear?
+    /// Where the panel is, and how fast it is getting there — Metalterm's
+    /// curves, walked by this view's own clock (see TerminalField).
+    let findMotion = TerminalField()
+    /// Whether a frame of a leg has already been asked for, so that one hop
+    /// through the run loop is one frame.
+    var findAsking = false
     var findings: [(row: Int, col: Int, len: Int)] = []
     var finding = -1
+
+    /// The field itself, for the search and the keyboard, or nothing.
+    var findField: NSTextField? { findPanel?.field }
 
     // MARK: - born
 
@@ -379,6 +392,10 @@ final class TerminalView: NSView, NSTextInputClient {
         )
         paint.render()
         owed = Damage()
+        // A leg of the find panel's travel is a frame like any other, so it
+        // is drawn here, off the same clock: the pacer is what keeps time,
+        // and the panel has no clock of its own.
+        if !findMotion.isAway { drawFind() }
     }
 
     /// One run of squares wearing the same hyperlink, in the frame being
@@ -518,6 +535,14 @@ final class TerminalView: NSView, NSTextInputClient {
         // look. Saying so is what makes the next frame say all of them
         // again rather than only the rows the screen has touched.
         paint?.repaint()
+        // The panel's ink comes out of the theme too, so a theme that
+        // changed is a plate and two bars that have to be told as well.
+        if let panel = findPanel {
+            panel.field.textColor = TerminalFieldPanel.word
+            findEdge?.tint(TerminalFieldPanel.word)
+            findGhost?.tint(TerminalFieldPanel.word)
+            panel.needsDisplay = true
+        }
         // Cells of a different size — a new face, or more room left at the
         // edges — fit in a different number: the layout has to be worked out
         // again, which presents the frame.

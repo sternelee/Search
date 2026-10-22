@@ -52,6 +52,7 @@
 | `TerminalLook.swift` (171) | 设置项的运行时镜像（`TerminalLook.font/size/theme/…`），`changed` 通知 |
 | `TerminalShell.swift` (130) | shell 集成片段的生成与注入（zsh/bash） |
 | `TerminalFind.swift` (177) | ⌘F 滚动缓冲查找、覆盖层输入框、上下一个 |
+| `TerminalField.swift` | 查找面板的动效引擎：Metalterm 的 `Cursor` 四条曲线（quartic 头、cubic 尾的 smear、三角 bleed、`1/(1+kv)` squash）+ 面板、亮条、smear 光带 |
 | `TerminalSplits.swift` (1082) | 窗格分割：`TerminalTree`（**索引竞技场**的递归二叉分割树，纯算术可单测）+ `TerminalSplits` 容器（分格/焦点/zoom/均分/轮换、title 镜像、⌘W 的逐格收缩）+ `TerminalDivider`（轴向感知分割线）。见 3.7 |
 
 着色器**不是**单独文件：MSL 以 Swift 字符串内联在 `TerminalDraw.swift` 里，运行时 `device.makeLibrary(source:)` 编译（`default.metallib` 若在 bundle 里则优先用它）。这样免掉一个构建步骤，也让 Swift 侧的 `Frame`/`Record` 和 MSL 侧的定义躺在同一个文件里 —— 它们必须同步改，放在一起才改得动。
@@ -167,6 +168,41 @@
 - **窗格轮换（⌘[/⌘]）**：`Browser.back()`/`forward()` 的终端分支 → `TerminalSplits.cycleFocus(_:)`：沿 `tree.panes`（阅读序）±1 环绕，复用 `focus(_:)`（换格同步重发 title/cwd）。命令 `tabs.focusTerminalPrevious/Next` 与 `tabs.back/forward` 同键，菜单双显、按标签互斥禁用 —— ⌘D 已验证的机制原样照抄。
 - **Clear Buffer（⇧⌘K）**：`Browser.clearTerminal()` → 容器转发成员 → `TerminalView.clearBuffer()` → `Terminal.clear()` 在 lane 上 ED 3（回滚）+ ED 2（屏幕）。lane 侧改动不经 reader 的 damage 记账，视图侧 `lift = 0` + `repaint()` + `present()` 整帧重说是兜底（`lookChanged` 同款）。⌘K 仍是 Search Tabs。
 
+### 3.8 查找面板的动效（Metalterm 的 `mt_gpu::motion::Cursor`）
+
+Metalterm 的输入坞（底部 dock）按 3.1 的边界**不学**，但它的**动效引擎**是数字而不是家具：`crates/mt-gpu/src/motion.rs` 的 `Cursor` 把"一个光标从一格挪到另一格"拆成四条闭式曲线，`variants.rs` 的 `CursorMotion`/`Decay`/`Keypress` 只是给它们起名字。这一轮用 `rea` 打开 Metalterm.app，靠 `nm`/`objdump`/`strings` 把 ARM64 反汇编读出来（`Cursor::update` @0x1000aa6b8、`warp_span` @0x1000ab2fc、`caret_alpha` @0x1000aa45c、`squash` @0x1000aa61c、`overlay::find::FindUi::panel_rect` @0x1000c2750），四条曲线逐个常数核对后移植到 `TerminalField.swift`，落在 **⌘F 查找面板**上（这是 terminal 模块里唯一真正的"输入框"）。
+
+| 曲线 | Metalterm 原式（反汇编逐常数核准） | 移植后落在 |
+|---|---|---|
+| **smear 的头** | `p = clamp(t / 0.17)`，`1 − (1 − p)⁴` | 面板左缘那根 2 pt 亮条的位置。17% 的行程里走完全程 → 读起来是"被扔过来"而不是"被拖过来" |
+| **smear 的尾** | `q = clamp((t − 0.05) / 0.2)`，`q < 0.5 ? 4q³ : 1 − ½(2 − 2q)³` | 面板自己的左缘。头和尾之间的**距离就是 smear**，用一条更便宜的光带填（越拉越淡，不是固定宽度） |
+
+注意除数是 **0.17 与 0.2**（不是 1.0/0.65，那是早先的误读）。
+| **bleed** | `t = clamp(e / (d · 0.2))`，`t < 0.35 ? 1 − t/0.35 : (t − 0.35)/0.65` | 面板左边缘那根条：每敲一个键**不透明 → 35% 处消失 → 回满**，即"每字形到位"的手感 |
+| **squash** | `1 / clamp(1 + v · 0.0093333…, 1, 1.3)` | 面板宽度：越快越薄，最多 23%。速度线性衰减到段末，停下即回满 |
+
+另外两条读出来但这一轮**不用**：`Cursor::update` 里 spring 分支（刚度 512、阻尼 30、≤4 ms 子步、≤16 步）与 8 样本 trail（`sin(i·0.65)·0.7`），以及 `smooth`/`smear` 的环缓冲历史。它们是**光标**跨格用的，面板跨的是点不是格。
+
+落地的形状：
+- `TerminalField`（`@MainActor final class`）：只有状态与曲线，**不画东西也不持时钟**——和 `TerminalPacer` 的分工一样。`arrive`/`leave`/`place`/`press`/`advance(at:)`/`moving(at:)` 全按传入时刻求值，所以一个 80 ms 的 bleed 能被单测一毫秒一毫秒走完。
+- **窗口 ≠ 行程**（`FieldMotion`）：写下的 `arrive = 0.44` / `leave = 0.36` / `settle = 0.40` 是 Metalterm 的 `duration`，即曲线被读的那个窗口；尾在窗口的 25% 就收完了（`FieldCurve.tail` 的 `(t − 0.05) / 0.2`），剩下的 75% 是**驻留**。所以 `moving(at:)` 与 `end(at:)` 都以 `travel = 0.25` 为准，不是 `length`——`length` 只是曲线的自变量范围。一个 0.44 的窗口是 110 ms 的行程，不是 440 ms 的。
+- **三样东西，两条曲线**：面板（plate）的左缘跑**尾**，一根 2 pt 的亮条跑**头**，两者之间的地带是**半透明的 smear 光带**——它不是一个固定宽度的条，而是那条缝本身，越拉越淡。这是读 Metalterm 时唯一必须偏离字面的一处：它的 smear 是"光标画两次"——同一个 glyph 在两个位置各画一遍，中间空着的地方自然露出终端。面板是一整块不透明的板，画两遍只会叠成一块，所以这里必须是**两个不同的物体**才能让中间那道缝看得见。
+- 面板**右缘钉死在窗口的右边距**，行程把它的**左缘往外拉**——它是从角落里被*拽出来*的，不是从窗外*滑过来*的。这一条是渲染验证逼出来的：滑进来会让板子画到窗口外面去（`TerminalView` 不裁剪子视图），而右缘固定既符合"它属于窗口右侧"，也天然不越界。
+- 帧的请求**不新开时钟**：`TerminalView.frame()` 画完 `paint.render()` 之后调 `drawFind()`；`drawFind()` 若还在动就 `DispatchQueue.main.async { present() }` 一跳回到 pacer，`findAsking` 保证一跳只换一帧。**停表纪律照旧**——曲线走完、bleed 完之后没人再要帧。
+- Reduce Motion（`Motion.reduced`）：`settle()` 一步到位，`closeFind()` 直接拆视图，不进任何腿。
+- 颜色：面板用**终端主题自己的 ground/ink**（`TerminalDraw.Theme.current`），只借 Metalterm `FindUi::draw` 的结构——0.14 ink 的发丝描边、7 pt 圆角。在终端上盖一块 app 的 chrome 会是错窗里的错盒子。`lookChanged()` 时面板、字段、两根条一起换色。
+- **几何**（`FieldBox`）取 `FindUi::panel_rect` 的**相对位置**（右缘 14 pt 内、距顶/底 12 pt、高 30 pt），**不取**它的 45·s 宽度与 13/11 pt 字号：那是它自己的字体网格，Search 的字段是 AppKit 的真输入框（IME、粘贴、选择器都要活）。矩形计算是纯函数 `FieldBox.home(wide:in:at:)`，不需要视图就能测。
+- **面板挂在窗口的哪一端是设置项**（`TerminalLook.findPlace`，设置面板「Terminal → Find Bar」，Top/Bottom，默认 Top）。这是这一轮唯一可配置的部分：底部正是 Metalterm 输入坞的位置（也是这整套动效的出处），但 3.1 不抄那个坞，而终端最底一行就是提示符和你正在敲的命令——所以放在顶部仍是默认，想放底部的人自己选。设置只改 `home.y`，smear、亮条、bleed 一概不变：它们沿面板自己的**前缘**跑，不沿窗口的纵轴。视图不是 `isFlipped`，所以顶是 `bounds.height − …`、底是 `12`；`lookChanged()` → `needsLayout` → `placeFindField()` 让改设置当场生效。
+- 计数（`1 of 9` / `none`）挂在面板右端，**增长会把左缘推出去**——那是 `place()` 的一条新腿，与进场同形但不淡入。宽度在计数变化时 `remeasure()` 量一次，不在 8.3 ms 的帧里量字符串。
+- 关窗不再是**截断**：`closeFind()` 只清 findings 并起一条离场腿，视图由走完腿的那一帧拆掉。
+
+两处**刻意的偏离**，都写在 `TerminalField.swift` 的注释里，因为不说就会被当成抄错：
+
+1. **`squash` 读的是相对斜率，不是绝对速度。** Metalterm 喂给它的是 spring 的 `velocity`，有界；面板的头部解析斜率没有界——260 pt 的板在 0.17 窗口里抛出去，起点约 20000 pt/s，会整段贴在 1.3 的钳位上下不来，末帧再"啪"地弹回 1。所以 `squeezeAt(t)` 用 `headSlope(t) = (1 − t/0.17)³`（本腿自身斜率归一化）× 钳位拐点速度，形状保住——抛出瞬间最薄、落地回满——尺度换成面板自己的。
+2. **面板的不透明度用 smoothstep，不是 Metalterm 的 `head`。** 光标一格宽，能在 1/6 的窗口里凭空出现；板有 260 pt，那样就是硬切。smoothstep 压在头部同一个 0.17 窗口里，落地时正好满不透明——滑到位再淡入是两个事件，抛出去是一个。
+
+测试 `Tests/SearchTests/TerminalFieldTests.swift`（15 个）：四条曲线各自的形状（quartic 在 17% 到顶、尾延迟 5% 且 25% 收完、bleed 的三角与 35% 的谷底、squash 的 1/1.3 地板与拐点）、fade 的 smoothstep、`squeezeAt` 的两端，引擎走一遍——未开时零帧、进场两曲线从同一处出发且末帧就位（smear 归零）、离场收尾成 away、原地不动不生成腿、中途改目标不从起点重来、敲键只 bleed 一次并在窗口末停止——以及 `FieldBox.home` 的两端：右缘钉死、两种位置同尺寸、都不越出窗口，窄帧保住两侧边距与 120 pt 下限。
+
 ## 四、协议覆盖
 
 **OSC**：`0`/`2` 标题、`7` cwd、`8` 超链接、`9` 通知、`777` 通知、`12` 光标色、`112` 恢复主题光标色、`52` 剪贴板（写）、`133` 命令块（A/B/C/D）。
@@ -212,7 +248,7 @@
 - **下划线样式的诚实上限**：4:4（dotted）与 4:5（dashed）在格子模型里与直线同权重绘制——一个 quad 装不下一个真正的波浪/点划线，解析层如实记账，绘制层用加重线作为简写。
 - **Kitty 键盘协议**（CSI u）：一整套编码 + 旗标状态机，单独一轮更稳。目前查询如实回答"不支持"。
 - **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、平滑滚动动画。
-- **Metalterm 的标志性 UX**：底部输入坞、命令块折叠、状态栏 + git、光标动效。
+- **Metalterm 的标志性 UX**：底部输入坞、命令块折叠、状态栏 + git。**光标动效已移植**（见下）。
 - **多显示器拖拽**会引起 `contentsScale` 变化 → 整个图集换代 → 闪一下。缓解是按缩放双图集缓存，先记着不建。
 - **窗格**：pane 树随会话恢复（会话只记终端标签页本身与位置，落点是新 shell，恢复时按单格重建，不还原布局）；`splitLeft`/`splitUp` 命令（从另一侧分右边那格即可做到）；跨窗格共享字形图集（每格约 4–6 MB，隐藏格帧时钟自停，代价是内存不是帧）；MetalTerm 式 `confirm_close` 设置项（关格确认目前无条件开，设置项后加）。
 - **终端字号**：捏合手势调字号（键盘与菜单已够，捏合在触控板上与滚动易混）；每标签/每窗格字号（面板与 Prefs 都是全局模型，全局即 MetalTerm 的 `font_size`）。
