@@ -219,6 +219,13 @@ final class Terminal: ObservableObject, Identifiable {
     @Published private(set) var title = ""
     /// Where the shell is (OSC 7), for the field and the file menus.
     @Published private(set) var cwd: URL?
+    /// The folder this terminal was started in, held aside for the status
+    /// bar's first frame (the shell's own report — OSC 7, every prompt —
+    /// corrects it as soon as there is one). Never put into `cwd`: that is
+    /// the folder the shell itself has said it is in, and a tab is named
+    /// by it — a guess from spawn would name the tab after the directory
+    /// before the shell — or the process running in it — ever said a word.
+    private(set) var startedIn: URL?
     /// The exit of the program, when it has ended. Zero is the good one.
     @Published private(set) var exit: Int32?
 
@@ -235,6 +242,11 @@ final class Terminal: ObservableObject, Identifiable {
     /// itself. The report says what the line is, never that it changed —
     /// the caller takes the state as it comes and works out the legs.
     var onDock: ((Dock) -> Void)?
+
+    /// The folder the shell said it is in (OSC 7, reported per prompt by
+    /// the same script that reports the dock). The status bar listens
+    /// here, because the folder is its news.
+    var onCwd: ((URL) -> Void)?
     /// The program has ended: the exit, and whether it was Search that
     /// ended it. The last thing this says about itself.
     var onEnded: ((_ exit: Int32, _ byHand: Bool) -> Void)?
@@ -298,6 +310,9 @@ final class Terminal: ObservableObject, Identifiable {
             argv, environment: environment, width: width, height: height,
             directory: directory ?? TerminalLook.startDirectory()
         )
+        // The folder the shell was started in, held aside for the status
+        // bar's first frame — see startedIn, where the comment lives.
+        startedIn = URL(fileURLWithPath: directory ?? TerminalLook.startDirectory() ?? FileManager.default.currentDirectoryPath)
         pid = made?.pid ?? 0
         // The slave's own path, so a program that runs in this terminal can
         // be told apart from one running anywhere else (see Island).
@@ -429,7 +444,9 @@ final class Terminal: ObservableObject, Identifiable {
     private func heard(_ notice: Notice) {
         switch notice {
         case .title(let said): title = said
-        case .cwd(let folder): cwd = folder
+        case .cwd(let folder):
+            cwd = folder
+            onCwd?(folder)
         case .note, .bell: onNotice?(notice)
         case .dock(let report): onDock?(report)
         }

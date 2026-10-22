@@ -67,17 +67,18 @@ enum DockBox {
     static let arrive: CFTimeInterval = 0.2
     /// How faint the suggestion ghost is.
     static let ghost: CGFloat = 0.45
-    /// The ground's opacity: less than the find panel's, because the dock
-    /// stays up while commands run, and a running command's last line is
-    /// under it — dimmed, not hidden.
+    /// The ground's opacity: the find panel's own, because the plate is
+    /// the same furniture — and the rows it stands over are the shell's
+    /// echo, blank under the veil, not a running command's last line.
     static let ground: CGFloat = 0.82
 
     /// Where the plate goes for a frame of a given size: pinned to the
-    /// bottom, spanning the width less a margin each side. Pure, so the
-    /// place can be checked without a terminal.
-    static func home(in bounds: CGRect) -> CGRect {
+    /// bottom — above the status bar, which owns the frame's own edge —
+    /// spanning the width less a margin each side. Pure, so the place can
+    /// be checked without a terminal.
+    static func home(in bounds: CGRect, above bar: CGFloat) -> CGRect {
         let width = max(120, bounds.width - margin * 2)
-        return NSRect(x: margin, y: edge, width: width, height: height)
+        return NSRect(x: margin, y: edge + bar, width: width, height: height)
     }
 }
 
@@ -152,6 +153,15 @@ final class TerminalDock {
     private var lineLeaving = false
     private var lineAt: CFTimeInterval = 0
 
+    /// When a keystroke last changed the line, and when the caret last came
+    /// to rest somewhere — Metalterm's own two clocks for the blink: the
+    /// caret is solid while the person is typing and for a moment after,
+    /// and it gives up blinking entirely once it has been left alone long
+    /// enough. A solid-on-solid caret is what "doesn't blink constantly"
+    /// means, and it is why the dock keeps these itself.
+    private var keyAt: CFTimeInterval = 0
+    private var caretAt: CFTimeInterval = 0
+
     /// The caret, on the find panel's engine — a move is a leg, a
     /// keystroke a bleed, at rest the two curves are one bar.
     let caret = TerminalField()
@@ -205,6 +215,7 @@ final class TerminalDock {
                 lineLeaving = true
                 lineAt = now
                 caret.settle(0, wide: 0)
+                caretAt = now
                 return
             }
             // A keystroke interrupts the leaving fade of the line before
@@ -228,6 +239,8 @@ final class TerminalDock {
                 if cursor != wasAt { caret.place(column, wide: 0, at: now) }
                 if said != was { caret.press(at: now) }
             }
+            if said != was { keyAt = now }
+            caretAt = now
         }
     }
 
@@ -258,6 +271,47 @@ final class TerminalDock {
     }
 
     // MARK: - what a frame is
+
+    /// The alternate screen came up: a full-screen program — nvim, less,
+    /// pi — owns the whole frame, and the dock is gone at once. No fade,
+    /// because the program's first frame is already redrawing everything
+    /// the plate stood over; and the shell's own prompt is still there
+    /// under the swap, so the next report re-arrives the plate when the
+    /// program lets go.
+    func suspend() {
+        owns = false
+        lineLeaving = false
+        dropLine(plate: true)
+    }
+
+    /// Whether the caret shows in the frame asked about. Metalterm's blink,
+    /// read from its caret's own two clocks: solid while the line is being
+    /// typed and for half a second after the last keystroke; then a sine —
+    /// not a square toggle, so it fades in and out rather than jumping —
+    /// for ten seconds of idleness, and solid again once the person has
+    /// well and truly gone. A caret on a leg never blinks, because a
+    /// moving thing is a visible thing. Reduced Motion and a caret the
+    /// person has asked not to blink are solid, plainly.
+    func blink(at now: CFTimeInterval) -> Bool {
+        if !TerminalLook.blinks || Motion.reduced { return true }
+        if caret.moving(at: now) { return true }
+        if now - keyAt < 0.5 { return true }
+        let left = now - caretAt
+        if left >= 10 { return true }
+        // A period of 1.8263637 s — Metalterm's number, a sine read against
+        // it, and a threshold of -0.35, which is what makes it a soft blink
+        // that spends more of its cycle visible than hidden.
+        return sin(left / 1.8263637 * 2 * .pi) > -0.35
+    }
+
+    /// Whether the blink needs the clock at all: from the last keystroke
+    /// to ten seconds past it. The frames the dock's own legs ask for are
+    /// frames already; this is the ones in between — solid-at-first does
+    /// not mean still, because the moment it stops being solid is a
+    /// frame nobody else owes.
+    func blinkClock(at now: CFTimeInterval) -> Bool {
+        TerminalLook.blinks && !Motion.reduced && owns && now - keyAt < 10
+    }
 
     /// Whether anything is still owed a frame: a plate arriving or
     /// leaving, a line fading out, a glyph still rising, or a caret on a
@@ -294,6 +348,14 @@ final class TerminalDock {
         if lineLeaving {
             model.line = 1 - CGFloat(FieldCurve.fade(Double(now - lineAt) / FieldMotion.leave))
             if model.line <= 0 { dropLine() }
+        }
+        // The plate outstayed the line: a command owns the rows now (or an
+        // `off` did), and the dock's invitation goes with the line — no
+        // prompt glyph hovering under a running command, waiting to be
+        // typed at. The next prompt's report re-arrives the plate.
+        if !owns, plate == .shown {
+            plate = .leaving
+            plateAt = now
         }
         model.owns = owns
         model.text = text
@@ -551,13 +613,17 @@ extension TerminalView {
     /// The plate over the frame's bottom, placed by every layout.
     func placeDock() {
         guard let plate = dockPlate else { return }
-        plate.frame = DockBox.home(in: bounds)
+        plate.frame = DockBox.home(in: bounds, above: statusBar.frame.height)
     }
 
     /// One frame of the dock: the engine's model put in the plate's
     /// picture, and the next frame asked for off the run loop while one is
     /// owed — the same hop the find panel makes, so a leg never draws a
-    /// frame inside a frame.
+    /// frame inside a frame. The caret's blink — Metalterm's own rule:
+    /// solid while the person types, a sine for ten seconds of idleness,
+    /// solid again after — is drawn here and its clock kept here, riding
+    /// the pacer's caret purpose the way the grid's blink rides it when the
+    /// grid's caret is the one on screen.
     func drawDock() {
         guard let plate = dockPlate else { return }
         let now = CACurrentMediaTime()
@@ -567,8 +633,15 @@ extension TerminalView {
             return
         }
         let model = dock.model(at: now)
-        if plate.take(model, blink: pacer.caretShown) {
+        if plate.take(model, blink: dock.blink(at: now)) {
             plate.needsDisplay = true
+        }
+        if dock.owns {
+            if dock.blinkClock(at: now) {
+                pacer.want(.caret)
+            } else {
+                pacer.settleCaret()
+            }
         }
         guard dock.moving(at: now) else { return }
         dockAsking = true

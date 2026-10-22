@@ -109,6 +109,17 @@ final class TerminalView: NSView, NSTextInputClient {
     /// command, `A` a new prompt — reach the dock as they happen.
     var dockBlock: Block.State?
 
+    /// The status bar pinned to the frame's own bottom edge: the folder
+    /// the shell is in, and what Git says of it (TerminalStatus). Scenery,
+    /// like the plate — always there, told its news by the terminal (OSC
+    /// 7), the turns of a block, and a slow tick.
+    let statusBar: TerminalStatusBar
+    /// The slow tick: git asked for again every couple of seconds, because
+    /// a branch can move without this terminal being the one that moved
+    /// it. One timer per view, gated down to nothing when there is nobody
+    /// to look or the alternate screen is up.
+    private var statusAsk: Timer?
+
     /// The field itself, for the search and the keyboard, or nothing.
     var findField: NSTextField? { findPanel?.field }
 
@@ -117,8 +128,10 @@ final class TerminalView: NSView, NSTextInputClient {
     init(terminal given: Terminal) {
         terminal = given
         paint = TerminalDraw(font: TerminalLook.face())
+        statusBar = TerminalStatusBar()
         super.init(frame: .zero)
         wantsLayer = true
+        addSubview(statusBar)
         terminal.onDraw = { [weak self] damage, modes in self?.moved(damage, modes) }
         // The dock's reports (OSC 7784) come through their own word: the
         // line the shell's editor holds, put on a plate over the bottom of
@@ -126,6 +139,14 @@ final class TerminalView: NSView, NSTextInputClient {
         // thread with the rest of the shell's output, and the frame they
         // owe is asked for the same way every other change asks.
         terminal.onDock = { [weak self] report in self?.docked(report) }
+        // The folder the shell is in (OSC 7, every prompt) is the status
+        // bar's own news, and so is whatever git says about it — asked for
+        // now, while it is asked for later on the tick.
+        terminal.onCwd = { [weak self] folder in self?.cwdChanged(folder) }
+        if let folder = terminal.cwd ?? terminal.startedIn { cwdChanged(folder) }
+        statusAsk = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.pollStatus()
+        }
         // A glyph the atlas had to cut is a square some frame drew blank
         // (see TerminalAtlas), so the frame after it is worth asking for —
         // and on a terminal that is otherwise idle there is nothing else
@@ -152,6 +173,7 @@ final class TerminalView: NSView, NSTextInputClient {
 
     deinit {
         if let watching { NotificationCenter.default.removeObserver(watching) }
+        statusAsk?.invalidate()
         MainActor.assumeIsolated { pacer.detach() }
     }
 
@@ -204,8 +226,9 @@ final class TerminalView: NSView, NSTextInputClient {
         super.layout()
         guard let paint, bounds.width > 1, bounds.height > 1 else { return }
         paint.size(bounds, scale: window?.backingScaleFactor ?? 1)
+        placeStatus()
         let width = paint.columns(for: bounds.width)
-        let height = paint.rows(for: bounds.height)
+        let height = paint.rows(for: bounds.height - statusBar.frame.height)
         if width != sized.width || height != sized.height {
             sized = (width, height)
             lift = 0
@@ -214,6 +237,24 @@ final class TerminalView: NSView, NSTextInputClient {
         placeFindField()
         placeDock()
         present()
+    }
+
+    /// The status bar's own height, always two rows of the grid: kept
+    /// whether or not a full-screen program is up, because the rows a
+    /// program has must be the rows it keeps — resizing the terminal
+    /// under nvim as it came and went would garble it, and the bar is
+    /// furniture either way.
+    private var statusBarH: CGFloat {
+        guard let paint else { return 0 }
+        return (paint.cell.height * 2).rounded()
+    }
+
+    /// The bar, pinned to the frame's own bottom edge, full width — the
+    /// grid's rows end where it begins.
+    private func placeStatus() {
+        guard bounds.width > 1, bounds.height > 1 else { return }
+        let height = min(statusBarH, (bounds.height / 3).rounded(.up))
+        statusBar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: height)
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -317,8 +358,22 @@ final class TerminalView: NSView, NSTextInputClient {
             switch state {
             case .running: dock.ran(at: now)
             case .prompt: dock.prompted(at: now)
-            case .done: break
+            // A command's own `done` turn is the status bar's news: what
+            // git says is most likely to have changed in the breath after
+            // a command than anywhere else.
+            case .done: pollStatus()
             }
+        }
+        // The alternate screen turned: taking it, a full-screen program —
+        // nvim, less, pi — owns the whole frame and the dock is gone at
+        // once (no fade: its first frame is already redrawing everything
+        // the plate stood over); either way, the status bar asks again,
+        // because a program that holds the whole frame is also a program
+        // nobody has been asking git underneath of.
+        if modes.alternate != was.alternate {
+            if modes.alternate { dock.suspend() }
+            drawDock()
+            pollStatus()
         }
         // The pointer is watched only while a program is asking to hear
         // about it (1003), so the area is put up and taken down as that
@@ -379,11 +434,15 @@ final class TerminalView: NSView, NSTextInputClient {
             return
         }
         // The caret is a reason to keep ticking only while it is blinking
-        // with the keyboard in the terminal. Any other time it simply
-        // shows, and the frame owed for something else carries it —
-        // `settleCaret` asks for one of its own, which is what puts a
-        // caret back the moment the keyboard leaves.
-        if TerminalLook.blinks, window?.firstResponder === self, caretIsLive {
+        // with the keyboard in the terminal. While the dock owns the
+        // input, the caret that blinks is the dock's own and the grid's is
+        // veiled — a caret blinking under a veil is a clock nobody is
+        // looking at — so the dock's blink rule holds the purpose instead
+        // (its frames are kept frame by frame in drawDock, which is where
+        // the blink is drawn).
+        if dock.owns, dockPlate != nil {
+            if dock.blinkClock(at: CACurrentMediaTime()) { pacer.want(.caret) }
+        } else if TerminalLook.blinks, window?.firstResponder === self, caretIsLive {
             pacer.want(.caret)
         } else {
             pacer.settleCaret()
@@ -616,6 +675,8 @@ final class TerminalView: NSView, NSTextInputClient {
         // that has to be told as well.
         dockPlate?.refont()
         dockPlate?.needsDisplay = true
+        // And the status bar's face is the look's own too — its height
+        // moves with it, and the layout that follows places it.
         // Cells of a different size — a new face, or more room left at the
         // edges — fit in a different number: the layout has to be worked out
         // again, which presents the frame.
@@ -1078,5 +1139,37 @@ final class TerminalView: NSView, NSTextInputClient {
         pick = nil
         paint?.repaint()
         present()
+    }
+}
+
+// MARK: - the status bar's news
+
+extension TerminalView {
+
+    /// The shell said where it is (OSC 7, every prompt — the same script
+    /// that reports the dock): the path goes up at once, and git is asked
+    /// for in the folder it names.
+    func cwdChanged(_ folder: URL) {
+        if statusBar.set(path: StatusBarPath.write(folder), git: nil) {
+            statusBar.needsDisplay = true
+        }
+        pollStatus()
+    }
+
+    /// Ask git what it says now. Asked when the folder changes, when a
+    /// command finishes (its `done` turn), when a full-screen program
+    /// takes the frame or lets it go, and on the slow tick — and never
+    /// while the alternate screen is up or for a terminal nobody is
+    /// looking at, which is what keeps a bar per view from being a git
+    /// per frame.
+    func pollStatus() {
+        guard window != nil, !isHiddenOrHasHiddenAncestor, !modes.alternate else { return }
+        guard let folder = terminal.cwd ?? terminal.startedIn else { return }
+        TerminalGit.read(cwd: folder) { [weak self] git in
+            guard let self else { return }
+            if statusBar.set(path: StatusBarPath.write(folder), git: git) {
+                statusBar.needsDisplay = true
+            }
+        }
     }
 }

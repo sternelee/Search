@@ -148,6 +148,10 @@ struct Modes: Equatable {
     var focus = false             // 1004: the program wants to hear the keyboard come and go
     var sync = false              // 2026: the program is holding the screen while it composes
     var visible = true            // DECTCEM: whether the caret is there at all
+    /// Whether the alternate screen is the one showing (47, 1047, 1049).
+    /// The status bar asks — a full-screen program's rows are all its own,
+    /// and git asked for in its folder is git asked for too often.
+    var alternate = false
     /// DECSCNM (DECSET ?5): the whole screen is reversed. Part of the word
     /// and not of the cells: it turns over what every square says without
     /// touching any of them — the mark of a thing that belongs in a frame,
@@ -408,14 +412,22 @@ final class Screen {
         Modes(
             mouse: mouse, mouseFormat: mouseFormat, applicationCursor: applicationCursor,
             applicationKeypad: applicationKeypad,
-            focus: focusReporting, sync: syncOutput, visible: visible, reversed: reverseVideo
+            focus: focusReporting, sync: syncOutput, visible: visible, alternate: alternate,
+            reversed: reverseVideo
         )
     }
 
     /// The alternate screen: the rows of the main one are kept here while
     /// it shows. The alternate has no scrollback — lines that leave its
     /// top are gone.
-    private(set) var alternate = false
+    private(set) var alternate = false {
+        didSet {
+            // A screen swap is a frame the program did not draw: the rows
+            // that come back are not the rows that left. Same reason as
+            // `moved` — without the frame, the swap happens in silence.
+            if alternate != oldValue { damage.moved = true }
+        }
+    }
     private var kept: (rows: [Row], x: Int, y: Int, ink: Ink, link: UInt16)?
 
     /// What has changed since it was last taken.

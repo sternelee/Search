@@ -116,8 +116,13 @@ final class TerminalDockTests: XCTestCase {
         XCTAssertFalse(dock.owns, "the command owns the rows now")
         model = dock.model(at: 1.5)
         XCTAssertEqual(model.text, "", "the line is gone from the plate")
-        XCTAssertFalse(dock.moving(at: 1.5), "the fade is spent")
-        XCTAssertTrue(dock.owed, "the plate stays for the next prompt")
+        XCTAssertEqual(model.plate, 1, accuracy: 0.01, "the read that begins the plate's leave still shows it whole")
+        // No invitation hovering under a running command: the plate
+        // leaves with the line it held.
+        model = dock.model(at: 1.55)
+        XCTAssertLessThan(model.plate, 1, "the plate leaves in its turn")
+        XCTAssertTrue(dock.moving(at: 1.56), "the leave owes its frames")
+        XCTAssertFalse(dock.moving(at: 1.7), "the leave is spent")
     }
 
     /// OSC 133 `A` — a prompt began — drops whatever the dock was holding
@@ -129,11 +134,14 @@ final class TerminalDockTests: XCTestCase {
         dock.report(.line(text: "", cursor: 0, suggestion: ""), at: 1)
         XCTAssertTrue(dock.moving(at: 1.02), "the fade is on")
         dock.prompted(at: 1.03)
-        let model = dock.model(at: 1.2)
+        var model = dock.model(at: 1.2)
         XCTAssertEqual(model.line, 1)
         XCTAssertEqual(model.text, "")
-        XCTAssertFalse(dock.moving(at: 1.2), "nothing is owed")
-        XCTAssertTrue(dock.owed, "but the plate stays")
+        XCTAssertEqual(model.plate, 1, accuracy: 0.01, "the read that begins the leave still shows it whole")
+        model = dock.model(at: 1.25)
+        XCTAssertLessThan(model.plate, 1, "the plate leaves — the next prompt's report re-arrives it")
+        XCTAssertTrue(dock.moving(at: 1.26), "the leave owes its frames")
+        XCTAssertFalse(dock.moving(at: 1.4), "the leave is spent")
     }
 
     /// `off` — the editor gave the line up: too long, or wrapped —
@@ -199,5 +207,130 @@ final class TerminalDockTests: XCTestCase {
         XCTAssertEqual(heard, .line(text: "ech;o", cursor: 3, suggestion: "."))
         parser.feed(Array("\u{1b}]7784;off\u{07}".utf8))
         XCTAssertEqual(heard, .off)
+    }
+
+    // MARK: - the blink
+
+    /// Metalterm's blink, on the dock's own two clocks: solid while the
+    /// person types and for half a second after the last keystroke; a
+    /// sine for ten seconds of idleness; solid again once they have well
+    /// and truly gone — a solid caret most of the time is what "doesn't
+    /// blink constantly" means.
+    func testTheCaretIsSolidWhileTypingAndAfterTenSecondsOfIdleness() {
+        let was = TerminalLook.blinks
+        TerminalLook.blinks = true
+        defer { TerminalLook.blinks = was }
+        let dock = TerminalDock()
+        dock.report(.line(text: "ec", cursor: 2, suggestion: ""), at: 10)
+        // Typing: solid, every frame of it.
+        XCTAssertTrue(dock.blink(at: 10.01), "solid while the line is being typed")
+        XCTAssertTrue(dock.blink(at: 10.49), "solid for half a second after")
+        // The sine: hidden on part of its cycle — 1.8263637 s a turn —
+        // which is the difference between a blink and a light that never
+        // goes out.
+        var hidden = false
+        var shown = false
+        for step in stride(from: 10.6, through: 13.0, by: 0.05) {
+            if dock.blink(at: step) { shown = true } else { hidden = true }
+        }
+        XCTAssertTrue(hidden, "the sine hides the caret on part of its cycle")
+        XCTAssertTrue(shown, "and shows it on the rest")
+        // Left alone: solid again, and the clock is spent.
+        XCTAssertTrue(dock.blink(at: 10 + 10.5), "solid after ten seconds of idleness")
+        XCTAssertFalse(dock.blinkClock(at: 10 + 10.5), "no frames owed for a caret that gave up")
+        // From the keystroke itself the clock is kept: the moment
+        // typing-solid ends — half a second in — is a frame nobody else
+        // owes.
+        XCTAssertTrue(dock.blinkClock(at: 10.05), "the clock runs from the keystroke")
+    }
+
+    /// A caret the person asked not to blink is solid plainly — and a
+    /// caret on a leg never blinks, because a moving thing is a visible
+    /// thing. (Reduced Motion is the system's own setting; a test cannot
+    /// reach in and turn it, and the branch is the same `||`.)
+    func testTheCaretBlinkFollowsTheSettingsAndTheLegs() {
+        let blinks = TerminalLook.blinks
+        TerminalLook.blinks = false
+        defer { TerminalLook.blinks = blinks }
+        let dock = TerminalDock()
+        dock.report(.line(text: "ec", cursor: 2, suggestion: ""), at: 10)
+        XCTAssertTrue(dock.blink(at: 12), "no blink asked for, no blink drawn")
+        XCTAssertFalse(dock.blinkClock(at: 12), "and no clock kept for it")
+
+        // A leg: the caret is on its way somewhere, and the blink holds
+        // off until it lands.
+        dock.report(.line(text: "echo hi", cursor: 7, suggestion: ""), at: 11)
+        XCTAssertTrue(dock.blink(at: 11.01), "a caret on a leg is visible")
+    }
+
+    // MARK: - the alternate screen
+
+    /// A full-screen program takes the frame and the dock is gone at
+    /// once — no fade, because the program's own first frame is already
+    /// redrawing everything the plate stood over — and the report that
+    /// follows its exit re-arrives the plate.
+    func testTheAlternateScreenSuspendsTheDockAndAReportBringsItBack() {
+        let dock = TerminalDock()
+        dock.report(.line(text: "nvim", cursor: 4, suggestion: ""), at: 0)
+        XCTAssertTrue(dock.owed)
+        dock.suspend()
+        XCTAssertFalse(dock.owns)
+        XCTAssertFalse(dock.owed, "the plate is gone at once")
+        XCTAssertFalse(dock.moving(at: 0.01), "nothing is owed a frame")
+        XCTAssertEqual(dock.model(at: 0.02).plate, 0, "and nothing is drawn")
+        // The program let go: the prompt's report re-arrives the plate.
+        dock.report(.line(text: "", cursor: 0, suggestion: ""), at: 5)
+        XCTAssertTrue(dock.owed)
+        XCTAssertGreaterThan(dock.model(at: 5.01).plate, 0, "the plate is arriving again")
+    }
+
+    // MARK: - the plate while a command runs
+
+    /// A command owns the rows while it runs, and the dock's invitation
+    /// goes with the line: after the accepted line has faded out where it
+    /// stood, the plate leaves too, and the next prompt's report brings
+    /// it back.
+    func testThePlateLeavesWhenACommandRunsAndReturnsWithTheNextPrompt() {
+        let dock = TerminalDock()
+        dock.report(.line(text: "cargo build", cursor: 11, suggestion: ""), at: 0)
+        dock.report(.line(text: "", cursor: 0, suggestion: ""), at: 1)
+        dock.ran(at: 1.02)
+        // The line is fading, and the plate under it leaves with it: no
+        // invitation hovering under a running command. The read that
+        // notices the command owns the rows still shows the plate whole.
+        var model = dock.model(at: 1.05)
+        XCTAssertEqual(model.plate, 1, accuracy: 0.01, "the read that begins the leave shows it whole")
+        model = dock.model(at: 1.08)
+        XCTAssertLessThan(model.plate, 1, "the plate leaves with the fading line")
+        XCTAssertFalse(dock.owns, "the command owns the rows")
+        // Spent: the dock is gone.
+        model = dock.model(at: 1.5)
+        XCTAssertEqual(model.plate, 0, "the leave is spent")
+        XCTAssertFalse(dock.owed)
+        XCTAssertFalse(dock.moving(at: 1.5))
+        // The next prompt: its report re-arrives the plate.
+        dock.prompted(at: 2)
+        dock.report(.line(text: "", cursor: 0, suggestion: ""), at: 2.01)
+        model = dock.model(at: 2.02)
+        XCTAssertGreaterThan(model.plate, 0, "the plate is back for the prompt")
+        XCTAssertLessThan(model.plate, 1, "arriving, not popped")
+        XCTAssertTrue(dock.owns)
+    }
+
+    /// A command run with no line held at all (a Ctrl-C at an empty
+    /// prompt, or a widget that never reported) still leaves the plate
+    /// in its turn: the read that notices the command owns the rows
+    /// begins the leave, and there is nothing left to fade first.
+    func testACommandRunWithNoLineTakesThePlateWithIt() {
+        let dock = TerminalDock()
+        dock.report(.line(text: "", cursor: 0, suggestion: ""), at: 0)
+        XCTAssertEqual(dock.model(at: 0.1).plate, 1, "the plate is up at the prompt")
+        dock.ran(at: 0.2)
+        var model = dock.model(at: 0.25)
+        XCTAssertEqual(model.plate, 1, accuracy: 0.01, "the read that begins the leave still shows it whole")
+        model = dock.model(at: 0.28)
+        XCTAssertLessThan(model.plate, 1, "the plate leaves with nothing to fade")
+        XCTAssertTrue(dock.moving(at: 0.285), "the plate's leave is still walking")
+        XCTAssertFalse(dock.owns)
     }
 }
