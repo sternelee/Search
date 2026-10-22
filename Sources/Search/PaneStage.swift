@@ -69,16 +69,35 @@ final class PaneStage: NSView {
     private var focused: Tab.ID?
     private var findBar: FindHost?
     private var findWidth: CGFloat?
+    /// The pill's own going, in flight: the host stays mounted until the
+    /// pill's leg has run, and a find opened again inside that window
+    /// cancels the going and the leg turns around instead.
+    private var findGoing: DispatchWorkItem?
 
     /// The controls belong to the stage so they stay above WebKit, below
     /// window panels, and follow every layout of the focused page.
     func showFind(_ browser: Browser?) {
         guard let browser else {
-            findBar?.removeFromSuperview()
-            findBar = nil
-            findWidth = nil
+            // The pill leaves on a leg of its own (see FindBar), and a host
+            // taken out of the hierarchy mid-leg would cut the leg off. The
+            // going waits for the leg; a find opened again inside the window
+            // cancels the going.
+            if findBar != nil, findGoing == nil {
+                let going = DispatchWorkItem { [weak self] in
+                    guard let self, self.findGoing != nil else { return }
+                    self.findGoing = nil
+                    self.findBar?.removeFromSuperview()
+                    self.findBar = nil
+                    self.findWidth = nil
+                }
+                findGoing = going
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + FieldMotion.leave + 0.05, execute: going)
+            }
             return
         }
+        findGoing?.cancel()
+        findGoing = nil
         if findBar == nil {
             let bar = FindHost(rootView: FindBar(browser: browser))
             findBar = bar

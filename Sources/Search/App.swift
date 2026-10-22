@@ -515,10 +515,11 @@ struct ContentView: View {
                     if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
                 }
                 .overlay(alignment: TerminalLook.findPlace == .top ? .topTrailing : .bottomTrailing) {
-                    if browser.finding {
-                        FindBar(browser: browser)
-                            .transition(.move(edge: TerminalLook.findPlace == .top ? .top : .bottom).combined(with: .opacity))
-                    }
+                    // Always mounted. The pill draws and erases itself by its
+                    // own leg (see FindBar): a leg is a curve read per frame,
+                    // and a view taken out of the hierarchy leaves instantly
+                    // whatever its transition was, which is no way to leave.
+                    FindBar(browser: browser)
                 }
                 .overlay(alignment: .topTrailing) {
                     if let assistant = browser.assisting, assistant.tab == tab.id {
