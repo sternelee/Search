@@ -12,6 +12,10 @@ enum IslandHooks {
     /// names the settings say and the settings are said by.
     static let bridgeName = "search-island.sh"
     static let piName = "search-island.ts"
+    /// The name of the file of hooks that is ours alone, in the CLIs
+    /// that look in a folder for any file of hooks (Grok's, Copilot's):
+    /// its being ours is said by it.
+    static let oursName = "search-island.json"
 
     /// The events that say something worth showing. Every CLI writes
     /// this same handful, borrowed from Claude Code; the ones that mean
@@ -25,6 +29,34 @@ enum IslandHooks {
     static let codexSaid = [
         "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
         "PermissionRequest", "Stop", "SessionEnd",
+    ]
+    /// Gemini's own handful, in its own words: it says a moment before
+    /// every tool — a veto, not an asking, for the ones that need no
+    /// person either — so all of it is sayings. Search shows what it's
+    /// doing, and Gemini asks for permissions in its own terminal, the
+    /// way it always has.
+    static let geminiSaid = [
+        "SessionStart", "BeforeAgent", "BeforeTool", "AfterTool",
+        "AfterAgent", "SessionEnd",
+    ]
+    /// Cursor's handful, lower-case and its own — the moments are the
+    /// ones the bar is built on, said its way.
+    static let cursorSaid = [
+        "beforeSubmitPrompt", "beforeShellExecution", "afterShellExecution",
+        "beforeReadFile", "afterFileEdit", "beforeMCPExecution",
+        "afterMCPExecution", "afterAgentResponse", "stop",
+    ]
+    /// Copilot CLI's handful, in its own lower-case.
+    static let copilotSaid = [
+        "sessionStart", "sessionEnd", "userPromptSubmitted",
+        "preToolUse", "postToolUse", "errorOccurred",
+    ]
+    /// Grok's: Claude Code's contract whole, minus the permission —
+    /// Grok doesn't wait on a hook's answer, so a permission said here
+    /// would be asked and dropped in one breath; its own asking serves.
+    static let grokSaid = [
+        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+        "Stop", "Notification", "SessionEnd",
     ]
     /// The one event that must be waited on: a permission, held open
     /// until a person says. Everything else goes and is done with.
@@ -61,8 +93,13 @@ enum IslandHooks {
         BODY=$(cat)
         [ -n "$BODY" ] || exit 0
 
+        # Two CLIs say no name for the moment in the saying itself — the
+        # hook was told it when it was set up, and here it is again, the
+        # second word. The folder is Search's to lean on where the saying
+        # says none of its own.
         ANSWER=$(printf '%s' "$BODY" | curl -s --unix-socket "$SOCK" \\
             -H "X-Search-Tty: $TTY" -H "X-Search-Source: ${1:-}" \\
+            -H "X-Search-Event: ${2:-}" -H "X-Search-Cwd: $PWD" \\
             -H 'Content-Type: application/json' --data-binary @- \\
             --connect-timeout 2 http://island/hook 2>/dev/null) || exit 0
 
@@ -85,23 +122,37 @@ enum IslandHooks {
         return file.path
     }
 
-    // MARK: Claude Code
+    // MARK: The shape most of them share
 
-    /// Claude Code's settings, the flat shape: every event holds a list
-    /// of matchers, each holding the hooks that run for it. Ours is one
-    /// matcher with no matcher of its own — every tool — and one command.
-    static func installClaude(_ home: URL, bridge: String) throws {
-        let file = home.appendingPathComponent("settings.json")
+    /// The shape Claude Code wrote and the families that borrowed its
+    /// contract kept — a settings file holding a hooks object, each event
+    /// holding rows, each row holding the hooks that run for it — put in
+    /// place for one CLI: which events, which file, the one event that
+    /// waits on a person (if the CLI has one), how long a wait is
+    /// counted (Gemini's and Qwen's are milliseconds, the rest seconds),
+    /// and whether the command must carry the event's own name, for the
+    /// CLIs whose sayings don't.
+    private static func put(
+        _ home: URL, file: String, source: String, events: [String],
+        held: String?, heldLong: Int, milliseconds: Bool = false,
+        carriesEvent: Bool = false, timeout: Int? = nil, bridge: String
+    ) throws {
+        let file = home.appendingPathComponent(file)
         var settings = (try? JSON.read(file)) ?? [:]
         var hooks = settings["hooks"] as? [String: Any] ?? [:]
-        for event in said {
+        for event in events {
             var rows = hooks[event] as? [[String: Any]] ?? []
             rows.removeAll { ours($0, bridge: bridge) }
-            var hook: [String: Any] = ["type": "command", "command": bridge + " claude"]
-            // The one event that waits: everything else goes and is done
-            // with, and a hook that never answers costs the CLI a hanging
-            // moment of its own.
-            if event == held { hook["timeout"] = heldLong }
+            var hook: [String: Any] = [
+                "type": "command",
+                "command": bridge + " \(source)" + (carriesEvent ? " \(event)" : ""),
+            ]
+            // A saying is answered the moment it arrives — a short
+            // leash in case it isn't, for Qwen hangs on one that doesn't
+            // say it's done. A permission is worth a wait, and a day of
+            // one: a person might well take that long.
+            if let timeout { hook["timeout"] = milliseconds ? timeout * 1000 : timeout }
+            if event == held { hook["timeout"] = milliseconds ? heldLong * 1000 : heldLong }
             rows.append(["hooks": [hook]])
             hooks[event] = rows
         }
@@ -109,15 +160,14 @@ enum IslandHooks {
         try JSON.write(settings, to: file)
     }
 
-    /// Takes Search's hooks back out of Claude Code's settings, leaving
-    /// whatever else was there — the user's own, another tool's — as it
-    /// was. An event left with nothing to run goes, and a hooks with
-    /// nothing left in it goes with it.
-    static func removeClaude(_ home: URL, bridge: String) throws {
-        let file = home.appendingPathComponent("settings.json")
+    /// The taking-back of the shared shape: ours out of each event,
+    /// theirs as it was, an event left with nothing gone, and a hooks
+    /// with nothing left in it gone with it.
+    private static func take(_ home: URL, file: String, events: [String], bridge: String) throws {
+        let file = home.appendingPathComponent(file)
         guard var settings = try? JSON.read(file) else { return }
         guard var hooks = settings["hooks"] as? [String: Any] else { return }
-        for event in said {
+        for event in events {
             guard var rows = hooks[event] as? [[String: Any]] else { continue }
             rows.removeAll { ours($0, bridge: bridge) }
             if rows.isEmpty { hooks.removeValue(forKey: event) }
@@ -128,43 +178,124 @@ enum IslandHooks {
         try JSON.write(settings, to: file)
     }
 
-    /// Whether every event of ours is in place, whatever else is beside
-    /// it. Half in place counts as not: the switches put it all back.
-    static func claudeHooked(_ home: URL, bridge: String) -> Bool {
-        guard let settings = try? JSON.read(home.appendingPathComponent("settings.json")) else { return false }
+    /// Whether every event of ours is in place in the shared shape,
+    /// whatever else is beside it. Half in place counts as not: the
+    /// switches put it all back.
+    private static func inPlace(_ home: URL, file: String, events: [String], bridge: String) -> Bool {
+        guard let settings = try? JSON.read(home.appendingPathComponent(file)) else { return false }
         guard let hooks = settings["hooks"] as? [String: Any] else { return false }
-        return said.allSatisfy { event in
+        return events.allSatisfy { event in
             guard let rows = hooks[event] as? [[String: Any]] else { return false }
             return rows.contains { ours($0, bridge: bridge) }
         }
     }
 
-    // MARK: Codex
+    // MARK: The ones that borrowed Claude Code's contract
 
-    /// Codex's hooks, one nest deeper than Claude's: the event holds a
-    /// list, each row holds the hooks that run, and no matcher comes
-    /// into it.
+    /// Claude Code's settings, in its own home (or the one it was told
+    /// to keep them in).
+    static func installClaude(_ home: URL, bridge: String) throws {
+        try put(home, file: "settings.json", source: "claude", events: said,
+                held: held, heldLong: heldLong, bridge: bridge)
+    }
+
+    static func removeClaude(_ home: URL, bridge: String) throws {
+        try take(home, file: "settings.json", events: said, bridge: bridge)
+    }
+
+    static func claudeHooked(_ home: URL, bridge: String) -> Bool {
+        inPlace(home, file: "settings.json", events: said, bridge: bridge)
+    }
+
+    /// Codex keeps its hooks one nest over, in a file of their own —
+    /// the same shape, one Notification shorter.
     static func installCodex(_ home: URL, bridge: String) throws {
-        let file = home.appendingPathComponent("hooks.json")
-        var settings = (try? JSON.read(file)) ?? [:]
-        var hooks = settings["hooks"] as? [String: Any] ?? [:]
-        for event in codexSaid {
-            var rows = hooks[event] as? [[String: Any]] ?? []
-            rows.removeAll { ours($0, bridge: bridge) }
-            var hook: [String: Any] = ["type": "command", "command": bridge + " codex"]
-            if event == held { hook["timeout"] = heldLong }
-            rows.append(["hooks": [hook]])
-            hooks[event] = rows
-        }
-        settings["hooks"] = hooks
-        try JSON.write(settings, to: file)
+        try put(home, file: "hooks.json", source: "codex", events: codexSaid,
+                held: held, heldLong: heldLong, bridge: bridge)
     }
 
     static func removeCodex(_ home: URL, bridge: String) throws {
+        try take(home, file: "hooks.json", events: codexSaid, bridge: bridge)
+    }
+
+    static func codexHooked(_ home: URL, bridge: String) -> Bool {
+        inPlace(home, file: "hooks.json", events: codexSaid, bridge: bridge)
+    }
+
+    /// Qwen Code borrowed the contract whole — the same events, the
+    /// same shape — but it counts in milliseconds and hangs on a hook
+    /// that doesn't say it's done, so every wait is said: short for the
+    /// sayings, the day for the permission.
+    static func installQwen(_ home: URL, bridge: String) throws {
+        try put(home, file: "settings.json", source: "qwen", events: said,
+                held: held, heldLong: heldLong, milliseconds: true, timeout: 5, bridge: bridge)
+    }
+
+    static func removeQwen(_ home: URL, bridge: String) throws {
+        try take(home, file: "settings.json", events: said, bridge: bridge)
+    }
+
+    static func qwenHooked(_ home: URL, bridge: String) -> Bool {
+        inPlace(home, file: "settings.json", events: said, bridge: bridge)
+    }
+
+    /// Factory's Droid took the contract as Claude wrote it, seconds
+    /// and all — the same shape, its own home.
+    static func installDroid(_ home: URL, bridge: String) throws {
+        try put(home, file: "settings.json", source: "droid", events: said,
+                held: held, heldLong: heldLong, bridge: bridge)
+    }
+
+    static func removeDroid(_ home: URL, bridge: String) throws {
+        try take(home, file: "settings.json", events: said, bridge: bridge)
+    }
+
+    static func droidHooked(_ home: URL, bridge: String) -> Bool {
+        inPlace(home, file: "settings.json", events: said, bridge: bridge)
+    }
+
+    // MARK: The ones that grew their own
+
+    /// Gemini keeps its hooks in its settings beside everything else
+    /// there, in the same nest as Claude's but its own events and its
+    /// own milliseconds — and no permission held open, for its Before
+    /// is a veto on every tool, not an asking.
+    static func installGemini(_ home: URL, bridge: String) throws {
+        try put(home, file: "settings.json", source: "gemini", events: geminiSaid,
+                held: nil, heldLong: 0, milliseconds: true, timeout: 10, bridge: bridge)
+    }
+
+    static func removeGemini(_ home: URL, bridge: String) throws {
+        try take(home, file: "settings.json", events: geminiSaid, bridge: bridge)
+    }
+
+    static func geminiHooked(_ home: URL, bridge: String) -> Bool {
+        inPlace(home, file: "settings.json", events: geminiSaid, bridge: bridge)
+    }
+
+    /// Cursor's hooks are flat — an event holds a list of commands, no
+    /// nest and no matcher — and the saying carries no name for the
+    /// moment, so the command carries it. Cursor runs a hook never
+    /// waiting on its answer, so nothing of ours holds anything open.
+    static func installCursor(_ home: URL, bridge: String) throws {
+        let file = home.appendingPathComponent("hooks.json")
+        var settings = (try? JSON.read(file)) ?? [:]
+        var hooks = settings["hooks"] as? [String: Any] ?? [:]
+        for event in cursorSaid {
+            var rows = hooks[event] as? [[String: Any]] ?? []
+            rows.removeAll { ours($0, bridge: bridge) }
+            rows.append(["command": bridge + " cursor \(event)"])
+            hooks[event] = rows
+        }
+        settings["hooks"] = hooks
+        try JSON.write(settings, to: file)
+    }
+
+    static func removeCursor(_ home: URL, bridge: String) throws {
         let file = home.appendingPathComponent("hooks.json")
         guard var settings = try? JSON.read(file) else { return }
         guard var hooks = settings["hooks"] as? [String: Any] else { return }
-        for event in codexSaid {
+        for event in cursorSaid {
             guard var rows = hooks[event] as? [[String: Any]] else { continue }
             rows.removeAll { ours($0, bridge: bridge) }
             if rows.isEmpty { hooks.removeValue(forKey: event) }
@@ -175,35 +306,135 @@ enum IslandHooks {
         try JSON.write(settings, to: file)
     }
 
-    static func codexHooked(_ home: URL, bridge: String) -> Bool {
+    static func cursorHooked(_ home: URL, bridge: String) -> Bool {
         guard let settings = try? JSON.read(home.appendingPathComponent("hooks.json")) else { return false }
         guard let hooks = settings["hooks"] as? [String: Any] else { return false }
-        return codexSaid.allSatisfy { event in
+        return cursorSaid.allSatisfy { event in
             guard let rows = hooks[event] as? [[String: Any]] else { return false }
             return rows.contains { ours($0, bridge: bridge) }
         }
     }
 
-    // MARK: Pi
+    /// Copilot CLI keeps its hooks in a versioned file of its own, flat
+    /// like Cursor's but with its waits said, its own word for the
+    /// command — and, like Cursor's, the command carries the moment's
+    /// name, for the saying doesn't. A file of ours alone, empty of
+    /// ours, is litter, and goes.
+    static func installCopilot(_ home: URL, bridge: String) throws {
+        let folder = home.appendingPathComponent("hooks", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent(oursName)
+        var settings = (try? JSON.read(file)) ?? [:]
+        if settings["version"] == nil { settings["version"] = 1 }
+        var hooks = settings["hooks"] as? [String: Any] ?? [:]
+        for event in copilotSaid {
+            var rows = hooks[event] as? [[String: Any]] ?? []
+            rows.removeAll { ours($0, bridge: bridge) }
+            rows.append([
+                "type": "command", "bash": bridge + " copilot \(event)", "timeoutSec": 5,
+            ])
+            hooks[event] = rows
+        }
+        settings["hooks"] = hooks
+        try JSON.write(settings, to: file)
+    }
+
+    static func removeCopilot(_ home: URL, bridge: String) throws {
+        let file = home.appendingPathComponent("hooks", isDirectory: true)
+            .appendingPathComponent(oursName)
+        guard var settings = try? JSON.read(file) else { return }
+        guard var hooks = settings["hooks"] as? [String: Any] else { return }
+        for event in copilotSaid {
+            guard var rows = hooks[event] as? [[String: Any]] else { continue }
+            rows.removeAll { ours($0, bridge: bridge) }
+            if rows.isEmpty { hooks.removeValue(forKey: event) }
+            else { hooks[event] = rows }
+        }
+        if hooks.isEmpty {
+            settings.removeValue(forKey: "hooks")
+            if settings.count <= 1 { try? FileManager.default.removeItem(at: file); return }
+        } else {
+            settings["hooks"] = hooks
+        }
+        try JSON.write(settings, to: file)
+    }
+
+    static func copilotHooked(_ home: URL, bridge: String) -> Bool {
+        guard let settings = try? JSON.read(
+            home.appendingPathComponent("hooks", isDirectory: true).appendingPathComponent(oursName)
+        ) else { return false }
+        guard let hooks = settings["hooks"] as? [String: Any] else { return false }
+        return copilotSaid.allSatisfy { event in
+            guard let rows = hooks[event] as? [[String: Any]] else { return false }
+            return rows.contains { ours($0, bridge: bridge) }
+        }
+    }
+
+    /// Grok reads any file of hooks in its hooks folder — ours is our
+    /// own there, in the shape it shares with Claude's, gone whole on
+    /// the taking-back. It never waits on a hook's answer, so every
+    /// wait is the five seconds it gives and no permission is asked.
+    static func installGrok(_ home: URL, bridge: String) throws {
+        let folder = home.appendingPathComponent("hooks", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try put(home, file: "hooks/" + oursName, source: "grok", events: grokSaid,
+                held: nil, heldLong: 0, timeout: 5, bridge: bridge)
+    }
+
+    static func removeGrok(_ home: URL, bridge: String) throws {
+        let file = home.appendingPathComponent("hooks", isDirectory: true).appendingPathComponent(oursName)
+        try take(home, file: "hooks/" + oursName, events: grokSaid, bridge: bridge)
+        // A file of ours alone, empty of ours, is litter.
+        if let left = try? JSON.read(file), left.isEmpty {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    static func grokHooked(_ home: URL, bridge: String) -> Bool {
+        inPlace(home, file: "hooks/" + oursName, events: grokSaid, bridge: bridge)
+    }
+
+    // MARK: Pi and Oh My Pi
 
     /// Pi runs extensions it finds on its own: the whole of Search's
-    /// side is one file in the folder it looks in. Overwritten whole on
-    /// every install, so what's there is never half of two versions.
+    /// side is one file in the folder it looks in. Oh My Pi reads the
+    /// same folder shape — the same file serves it, said for its own
+    /// source.
     static func installPi(_ home: URL, bridge: String) throws {
+        try putExtension(home, bridge: bridge, source: "pi")
+    }
+
+    static func installOmp(_ home: URL, bridge: String) throws {
+        try putExtension(home, bridge: bridge, source: "omp")
+    }
+
+    private static func putExtension(_ home: URL, bridge: String, source: String) throws {
         let folder = home.appendingPathComponent("extensions", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try piScript(bridge: bridge).write(
+        try piScript(bridge: bridge, source: source).write(
             to: folder.appendingPathComponent(piName), atomically: true, encoding: .utf8
         )
     }
 
     static func removePi(_ home: URL) throws {
+        try takeExtension(home)
+    }
+
+    static func removeOmp(_ home: URL) throws {
+        try takeExtension(home)
+    }
+
+    private static func takeExtension(_ home: URL) throws {
         let file = home.appendingPathComponent("extensions", isDirectory: true)
             .appendingPathComponent(piName)
         try? FileManager.default.removeItem(at: file)
     }
 
-    static func piHooked(_ home: URL) -> Bool {
+    static func piHooked(_ home: URL) -> Bool { extensionIn(home) }
+
+    static func ompHooked(_ home: URL) -> Bool { extensionIn(home) }
+
+    private static func extensionIn(_ home: URL) -> Bool {
         FileManager.default.fileExists(
             atPath: home.appendingPathComponent("extensions", isDirectory: true)
                 .appendingPathComponent(piName).path
@@ -214,8 +445,9 @@ enum IslandHooks {
     /// the one asking — a bash that could take something away — goes by
     /// the bridge, because an answer has to be carried back and Node's
     /// own way of ending a write closes the connection too soon for
-    /// Search to answer on.
-    static func piScript(bridge: String) -> String {
+    /// Search to answer on. Oh My Pi runs the same file, told its own
+    /// source, which the socket tells apart.
+    static func piScript(bridge: String, source: String = "pi") -> String {
         """
         // Search's agent watch (Settings > Terminal > Coding agents). What
         // pi is doing goes to Search over a socket, and what it wants to do
@@ -231,6 +463,7 @@ enum IslandHooks {
 
         const SOCKET_PATH = `/tmp/search-island-${process.getuid?.() ?? 0}.sock`;
         const BRIDGE_PATH = "\(bridge)";
+        const SOURCE = "\(source)";
         const DANGEROUS: RegExp[] = [
           /\\brm\\s+(-r[fF]|--recursive)/i,
           /\\bsudo\\b/i,
@@ -283,7 +516,7 @@ enum IslandHooks {
             try {
               const child = execFile(
                 BRIDGE_PATH,
-                ["pi"],
+                [SOURCE],
                 { timeout: 86_400_000, maxBuffer: 1_048_576 },
                 (error, stdout) => {
                   if (error) return resolve(null);
@@ -313,8 +546,8 @@ enum IslandHooks {
           ): Record<string, unknown> {
             return {
               hook_event_name,
-              session_id: `pi-${sessionId}`,
-              _source: "pi",
+              session_id: `${SOURCE}-${sessionId}`,
+              _source: SOURCE,
               _tty: tty,
               cwd,
               ...extra,
@@ -412,10 +645,15 @@ enum IslandHooks {
     /// whatever else the row says. Ours is told by what it runs, not by
     /// a name — nothing of ours is in the settings that the user would
     /// read, and this way another name on the same command is still
-    /// taken care of.
+    /// taken care of. Cursor's rows and Copilot's say the command
+    /// themselves, unnested — Copilot under its own word for it.
     private static func ours(_ row: [String: Any], bridge: String) -> Bool {
         let hooks = row["hooks"] as? [[String: Any]] ?? []
-        return hooks.contains { ($0["command"] as? String)?.contains(bridge) == true }
+        if hooks.contains(where: { ($0["command"] as? String)?.contains(bridge) == true }) { return true }
+        for field in ["command", "bash"] where (row[field] as? String)?.contains(bridge) == true {
+            return true
+        }
+        return false
     }
 }
 

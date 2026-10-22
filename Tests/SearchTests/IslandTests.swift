@@ -99,7 +99,7 @@ final class IslandTests: XCTestCase {
     /// of the ask, and the body kept whole.
     func testTheShapeTakesTheTwoAskings() {
         let body = Data(#"{"hook_event_name":"PreToolUse"}"#.utf8)
-        let head = "POST /hook HTTP/1.1\r\nX-Search-Source: claude\r\nX-Search-Tty: /dev/ttys001\r\nContent-Length: \(body.count)\r\n\r\n"
+        let head = "POST /hook HTTP/1.1\r\nX-Search-Source: claude\r\nX-Search-Tty: /dev/ttys001\r\nX-Search-Event: PreToolUse\r\nContent-Length: \(body.count)\r\n\r\n"
         var whole = Data(head.utf8)
         whole.append(body)
 
@@ -109,6 +109,7 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(call.path, "/hook", "the path is the ask's")
         XCTAssertEqual(call.source, "claude", "the source header is read")
         XCTAssertEqual(call.tty, "/dev/ttys001", "the tty header is read")
+        XCTAssertEqual(call.event, "PreToolUse", "the event header is read")
         XCTAssertEqual(call.body, body, "the body is kept to its own length, no further")
 
         // Half an ask is not an ask yet.
@@ -127,6 +128,80 @@ final class IslandTests: XCTestCase {
 
         // Nothing is not junk's opposite — nothing is nothing.
         guard case .junk = IslandServer.shape(Data()) else { return XCTFail("empty is junk") }
+    }
+
+    // MARK: - the folding of the names
+
+    /// Every CLI has its own word for where the agent stands, and the
+    /// bar has just the one vocabulary: Cursor's and Copilot's
+    /// camelCase and Gemini's words of its own are folded onto it, a
+    /// moment that isn't one (a thought mid-turn) is nothing, and
+    /// Grok's turn ended on an error is still a turn ended.
+    func testTheMomentsAreFoldedOntoTheIslandsOwnWords() {
+        // Gemini
+        XCTAssertEqual(IslandRead.moment("BeforeAgent"), "UserPromptSubmit", "gemini's turn start is a prompt")
+        XCTAssertEqual(IslandRead.moment("BeforeTool"), "PreToolUse", "gemini's tool ahead is a tool ahead")
+        XCTAssertEqual(IslandRead.moment("AfterTool"), "PostToolUse", "gemini's tool done is a tool done")
+        XCTAssertEqual(IslandRead.moment("AfterAgent"), "Stop", "gemini's turn end is a stop")
+        XCTAssertEqual(IslandRead.moment("SessionStart"), "SessionStart", "gemini borrows the shared words for the session")
+        // Cursor
+        XCTAssertEqual(IslandRead.moment("beforeSubmitPrompt"), "UserPromptSubmit", "cursor's camelCase folds the same")
+        XCTAssertEqual(IslandRead.moment("beforeShellExecution"), "PreToolUse", "cursor's shell ahead is a tool ahead")
+        XCTAssertEqual(IslandRead.moment("afterFileEdit"), "PostToolUse", "cursor's edit done is a tool done")
+        XCTAssertEqual(IslandRead.moment("afterAgentResponse"), "Stop", "cursor's answer out is a stop")
+        XCTAssertEqual(IslandRead.moment("stop"), "Stop", "cursor's own word is the shared word, lowercased")
+        XCTAssertNil(IslandRead.moment("afterAgentThought"), "a thought mid-turn is not a moment")
+        // Copilot
+        XCTAssertEqual(IslandRead.moment("sessionStart"), "SessionStart", "copilot's camelCase folds the same")
+        XCTAssertEqual(IslandRead.moment("userPromptSubmitted"), "UserPromptSubmit", "copilot's prompt is a prompt")
+        XCTAssertEqual(IslandRead.moment("preToolUse"), "PreToolUse", "copilot's tool ahead is a tool ahead")
+        XCTAssertEqual(IslandRead.moment("errorOccurred"), "Notification", "copilot's error is a thing to be told")
+        // Grok
+        XCTAssertEqual(IslandRead.moment("StopFailure"), "Stop", "grok's failed turn is still a turn ended")
+        // The shared words pass untouched, and a word nobody knows
+        // passes too — to be dropped by the keeping, not the folding.
+        XCTAssertEqual(IslandRead.moment("PermissionRequest"), "PermissionRequest", "the shared words are their own")
+        XCTAssertEqual(IslandRead.moment("Whatever"), "Whatever", "an unknown word is passed on, not invented into")
+    }
+
+    /// Cursor's and Copilot's payloads carry no name of their own —
+    /// the bridge says it for them on the request — and Copilot's
+    /// carries no session either, so the terminal it ran in says which
+    /// run it was, one run to a terminal.
+    func testASayingWithNoNameOfItsOwnIsReadByTheRequests() {
+        // Cursor: no hook_event_name in the body, the name on the
+        // request, folded with the rest.
+        let cursor = IslandRead.event(
+            body: json(["session_id": "conv-77", "cwd": "/Users/who"]),
+            source: "cursor", tty: "/dev/ttys012", event: "beforeShellExecution"
+        )
+        XCTAssertEqual(cursor?.name, "PreToolUse", "the request's name is the moment's")
+        XCTAssertEqual(cursor?.session, "conv-77", "cursor's session is its conversation")
+        XCTAssertEqual(cursor?.source, "cursor", "the source is the header's")
+
+        // Copilot: neither a name nor a session in the body — the
+        // request says both.
+        let copilot = IslandRead.event(
+            body: json(["cwd": "/Users/who"]),
+            source: "copilot", tty: "/dev/ttys013", event: "userPromptSubmitted"
+        )
+        XCTAssertEqual(copilot?.name, "UserPromptSubmit", "the request's name is the moment's")
+        XCTAssertEqual(copilot?.session, "/dev/ttys013", "a run without a session is its terminal")
+
+        // Two copilot runs in two terminals are two sessions, not one.
+        let other = IslandRead.event(
+            body: json(["cwd": "/Users/who"]),
+            source: "copilot", tty: "/dev/ttys014", event: "userPromptSubmitted"
+        )
+        XCTAssertEqual(other?.session, "/dev/ttys014", "the second terminal is the second session")
+
+        // And with neither a session nor a terminal, the one shared
+        // name holds what's left.
+        let stray = IslandRead.event(
+            body: json(["hook_event_name": "Stop"]),
+            source: nil, tty: nil
+        )
+        XCTAssertEqual(stray?.session, "default", "the last resort is the one shared name")
     }
 
     // MARK: - the keeping
@@ -325,6 +400,7 @@ final class IslandTests: XCTestCase {
         let text = try String(contentsOf: URL(fileURLWithPath: bridge), encoding: .utf8)
         XCTAssertTrue(text.contains("--unix-socket"), "the bridge speaks the socket")
         XCTAssertTrue(text.contains("X-Search-Source: ${1:-}"), "the bridge passes the source through")
+        XCTAssertTrue(text.contains("X-Search-Event: ${2:-}"), "the bridge passes the moment through for the ones that don't say it")
         XCTAssertTrue(text.contains("hookSpecificOutput"), "only a decision is worth the agent's ears")
         XCTAssertTrue(bridge.hasSuffix("/" + IslandHooks.bridgeName), "the bridge is where it was put")
         // Runs: the one permission that makes a hook a hook.
@@ -444,5 +520,206 @@ final class IslandTests: XCTestCase {
 
         try IslandHooks.removePi(home)
         XCTAssertFalse(IslandHooks.piHooked(home), "taken away whole")
+    }
+
+    /// Qwen Code borrowed Claude Code's contract whole but counts in
+    /// milliseconds and hangs on a hook that doesn't say it's done, so
+    /// every wait is said out loud: five seconds for a saying, the day
+    /// for the permission. The source is its own, and the taking-back
+    /// is as clean as the putting-in.
+    func testQwenSWaitsAreSaidAndCountedItsOwnWay() throws {
+        let home = room.appendingPathComponent("qwen", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+
+        try IslandHooks.installQwen(home, bridge: "/Where/search-island.sh")
+        XCTAssertTrue(IslandHooks.qwenHooked(home, bridge: "/Where/search-island.sh"), "installed is hooked")
+        let settings = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: home.appendingPathComponent("settings.json"))
+        ) as? [String: Any]
+        let hooks = settings?["hooks"] as? [String: Any]
+        let said = ((hooks?["SessionStart"] as? [[String: Any]])?.first?["hooks"] as? [[String: Any]])?.first
+        XCTAssertEqual(said?["command"] as? String, "/Where/search-island.sh qwen", "the bridge is told the source")
+        XCTAssertEqual(said?["timeout"] as? Int, 5000, "a saying is waited on five seconds, said in Qwen's milliseconds")
+        let held = ((hooks?["PermissionRequest"] as? [[String: Any]])?.first?["hooks"] as? [[String: Any]])?.first
+        XCTAssertEqual(held?["timeout"] as? Int, IslandHooks.heldLong * 1000, "the permission is waited on the day, in Qwen's milliseconds")
+
+        try IslandHooks.installQwen(home, bridge: "/Where/search-island.sh")
+        let again = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: home.appendingPathComponent("settings.json"))
+        ) as? [String: Any]
+        XCTAssertEqual(
+            (((again?["hooks"] as? [String: Any])?["SessionStart"] as? [[String: Any]])?.count), 1,
+            "a second install takes the place of the first"
+        )
+
+        try IslandHooks.removeQwen(home, bridge: "/Where/search-island.sh")
+        XCTAssertFalse(IslandHooks.qwenHooked(home, bridge: "/Where/search-island.sh"), "removed is unhooked")
+        let done = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: home.appendingPathComponent("settings.json"))
+        ) as? [String: Any]
+        XCTAssertNil(done?["hooks"], "nothing of ours is left, and the file was ours alone")
+    }
+
+    /// Droid took the contract as Claude wrote it, seconds and all: the
+    /// same shape, its own home, its own source.
+    func testDroidTookTheContractSecondsAndAll() throws {
+        let home = room.appendingPathComponent("factory", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+
+        try IslandHooks.installDroid(home, bridge: "/Where/search-island.sh")
+        XCTAssertTrue(IslandHooks.droidHooked(home, bridge: "/Where/search-island.sh"), "installed is hooked")
+        let hooks = (try JSONSerialization.jsonObject(
+            with: Data(contentsOf: home.appendingPathComponent("settings.json"))
+        ) as? [String: Any])?["hooks"] as? [String: Any]
+        let said = ((hooks?["SessionStart"] as? [[String: Any]])?.first?["hooks"] as? [[String: Any]])?.first
+        XCTAssertEqual(said?["command"] as? String, "/Where/search-island.sh droid", "the bridge is told the source")
+        XCTAssertNil(said?["timeout"], "a saying is not waited on — it goes and is done with")
+        let held = ((hooks?["PermissionRequest"] as? [[String: Any]])?.first?["hooks"] as? [[String: Any]])?.first
+        XCTAssertEqual(held?["timeout"] as? Int, IslandHooks.heldLong, "the permission is waited on, the day")
+
+        try IslandHooks.removeDroid(home, bridge: "/Where/search-island.sh")
+        XCTAssertFalse(IslandHooks.droidHooked(home, bridge: "/Where/search-island.sh"), "removed is unhooked")
+    }
+
+    /// Gemini is watched, not asked: its before-tool is a veto on every
+    /// tool, not a permission, so nothing of ours holds anything open
+    /// and its own asking serves. Every wait is its own ten thousand,
+    /// and its own events are the ones put in place.
+    func testGeminiIsWatchedNotAsked() throws {
+        let home = room.appendingPathComponent("gemini", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+
+        try IslandHooks.installGemini(home, bridge: "/Where/search-island.sh")
+        XCTAssertTrue(IslandHooks.geminiHooked(home, bridge: "/Where/search-island.sh"), "installed is hooked")
+        let hooks = (try JSONSerialization.jsonObject(
+            with: Data(contentsOf: home.appendingPathComponent("settings.json"))
+        ) as? [String: Any])?["hooks"] as? [String: Any]
+        let said = ((hooks?["BeforeTool"] as? [[String: Any]])?.first?["hooks"] as? [[String: Any]])?.first
+        XCTAssertEqual(said?["command"] as? String, "/Where/search-island.sh gemini", "the bridge is told the source")
+        XCTAssertEqual(said?["timeout"] as? Int, 10_000, "the wait is Gemini's own ten seconds, in its milliseconds")
+        XCTAssertNil(hooks?["PermissionRequest"], "nothing of ours is held open — Gemini asks its own way")
+
+        try IslandHooks.removeGemini(home, bridge: "/Where/search-island.sh")
+        XCTAssertFalse(IslandHooks.geminiHooked(home, bridge: "/Where/search-island.sh"), "removed is unhooked")
+    }
+
+    /// Cursor's rows are flat — a command, no nest — and the saying
+    /// carries no name for the moment, so the command carries it. What
+    /// of the user's is there stays; what of ours is in place goes.
+    func testCursorSIsFlatAndTheCommandCarriesTheMoment() throws {
+        let home = room.appendingPathComponent("cursor", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let hooks = home.appendingPathComponent("hooks.json")
+        try json([
+            "hooks": [
+                "afterFileEdit": [["command": "/Users/who/mine.sh"]],
+            ],
+        ]).write(to: hooks)
+
+        try IslandHooks.installCursor(home, bridge: "/Where/search-island.sh")
+        XCTAssertTrue(IslandHooks.cursorHooked(home, bridge: "/Where/search-island.sh"), "installed is hooked")
+        let after = try JSONSerialization.jsonObject(with: Data(contentsOf: hooks)) as? [String: Any]
+        let edit = ((after?["hooks"] as? [String: Any])?["afterFileEdit"] as? [[String: Any]])
+        XCTAssertEqual(edit?.count, 2, "ours is beside theirs")
+        XCTAssertEqual(edit?.last?["command"] as? String, "/Where/search-island.sh cursor afterFileEdit", "the moment is said by the command, for the saying doesn't")
+        XCTAssertEqual(edit?.first?["command"] as? String, "/Users/who/mine.sh", "their row is as it was")
+
+        try IslandHooks.removeCursor(home, bridge: "/Where/search-island.sh")
+        XCTAssertFalse(IslandHooks.cursorHooked(home, bridge: "/Where/search-island.sh"), "removed is unhooked")
+        let done = try JSONSerialization.jsonObject(with: Data(contentsOf: hooks)) as? [String: Any]
+        XCTAssertEqual(
+            ((done?["hooks"] as? [String: Any])?["afterFileEdit"] as? [[String: Any]])?.count, 1,
+            "their row is left, ours taken"
+        )
+    }
+
+    /// Grok's hooks are a file of ours in the folder it scans — nothing
+    /// of the user's touched, nothing of ours left, and a file empty of
+    /// ours taken away rather than left as litter.
+    func testGrokSIsAFileOfItsOwnInTheFolderItScans() throws {
+        let home = room.appendingPathComponent("grok", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent("hooks"), withIntermediateDirectories: true
+        )
+        // The user's own file in the same folder: not ours to touch.
+        try json(["hooks": ["SessionStart": [["hooks": [["command": "/Users/who/mine"]]]]]]).write(
+            to: home.appendingPathComponent("hooks").appendingPathComponent("mine.json")
+        )
+
+        try IslandHooks.installGrok(home, bridge: "/Where/search-island.sh")
+        XCTAssertTrue(IslandHooks.grokHooked(home, bridge: "/Where/search-island.sh"), "installed is hooked")
+        let ours = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: home.appendingPathComponent("hooks").appendingPathComponent(IslandHooks.oursName))
+        ) as? [String: Any]
+        let said = (((ours?["hooks"] as? [String: Any])?["SessionStart"] as? [[String: Any]])?.first?["hooks"] as? [[String: Any]])?.first
+        XCTAssertEqual(said?["command"] as? String, "/Where/search-island.sh grok", "the bridge is told the source")
+        XCTAssertEqual(said?["timeout"] as? Int, 5, "the wait is Grok's own five seconds")
+        XCTAssertNil((ours?["hooks"] as? [String: Any])?["PermissionRequest"], "no permission held open — Grok doesn't wait on one")
+
+        try IslandHooks.removeGrok(home, bridge: "/Where/search-island.sh")
+        XCTAssertFalse(IslandHooks.grokHooked(home, bridge: "/Where/search-island.sh"), "removed is unhooked")
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: home.appendingPathComponent("hooks").appendingPathComponent(IslandHooks.oursName).path
+            ), "a file of ours alone, empty of ours, is taken away"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: home.appendingPathComponent("hooks").appendingPathComponent("mine.json").path),
+            "the user's own file in the folder is untouched"
+        )
+    }
+
+    /// Copilot's waits are said its own way — its own word for the
+    /// command, its own seconds — and the moment's name rides the
+    /// command, for the saying doesn't carry it. The file is ours, but
+    /// if a hand other than ours has put something in it, that hand's
+    /// work outlives ours.
+    func testCopilotSaysTheCommandItsOwnWay() throws {
+        let home = room.appendingPathComponent("copilot", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+
+        try IslandHooks.installCopilot(home, bridge: "/Where/search-island.sh")
+        XCTAssertTrue(IslandHooks.copilotHooked(home, bridge: "/Where/search-island.sh"), "installed is hooked")
+        let file = home.appendingPathComponent("hooks").appendingPathComponent(IslandHooks.oursName)
+        let ours = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
+        XCTAssertEqual(ours?["version"] as? Int, 1, "the version is the shape Copilot reads")
+        let said = ((ours?["hooks"] as? [String: Any])?["preToolUse"] as? [[String: Any]])?.first
+        XCTAssertEqual(said?["bash"] as? String, "/Where/search-island.sh copilot preToolUse", "the command is Copilot's own word, the moment said with it")
+        XCTAssertEqual(said?["timeoutSec"] as? Int, 5, "the wait is said Copilot's way")
+
+        // A hand other than ours puts an event of its own in: the file
+        // is shared ground now, and the taking-back leaves it standing.
+        var withTheirs = ours ?? [:]
+        var hooks = withTheirs["hooks"] as? [String: Any] ?? [:]
+        hooks["userEvent"] = [["type": "command", "bash": "/Users/who/mine", "timeoutSec": 5]]
+        withTheirs["hooks"] = hooks
+        try json(withTheirs).write(to: file)
+
+        try IslandHooks.removeCopilot(home, bridge: "/Where/search-island.sh")
+        XCTAssertFalse(IslandHooks.copilotHooked(home, bridge: "/Where/search-island.sh"), "removed is unhooked")
+        let done = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
+        XCTAssertEqual(
+            ((done?["hooks"] as? [String: Any])?["userEvent"] as? [[String: Any]])?.count, 1,
+            "their hand's work outlives ours"
+        )
+    }
+
+    /// Oh My Pi runs the same extension as Pi, one home over, told its
+    /// own source so the two never answer for each other.
+    func testOhMyPiRunsTheSameFileOneHomeOver() throws {
+        let home = room.appendingPathComponent("omp", isDirectory: true)
+        XCTAssertFalse(IslandHooks.ompHooked(home), "a home that isn't there is not hooked")
+
+        try IslandHooks.installOmp(home, bridge: "/Where/search-island.sh")
+        XCTAssertTrue(IslandHooks.ompHooked(home), "the extension is the whole of being hooked")
+        let text = try String(
+            contentsOf: home.appendingPathComponent("extensions").appendingPathComponent(IslandHooks.piName),
+            encoding: .utf8
+        )
+        XCTAssertTrue(text.contains("SOURCE = \"omp\""), "the extension is told its own source")
+        XCTAssertTrue(text.contains("`${SOURCE}-${sessionId}`"), "the sessions are said by the source, so the two never answer for each other")
+
+        try IslandHooks.removeOmp(home)
+        XCTAssertFalse(IslandHooks.ompHooked(home), "taken away whole")
     }
 }

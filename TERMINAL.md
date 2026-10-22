@@ -221,7 +221,8 @@
 
 ## 八、Agent 提醒（Island）
 
-终端里跑着 coding agent（Claude Code、Codex、Pi），人却切去了别的标签页——agent 在干什么、
+终端里跑着 coding agent（Claude Code、Codex、Pi，以及后来的 Gemini、Cursor、Qwen Code、
+Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的标签页——agent 在干什么、
 在哪一步卡住等人、什么时候跑完，一概看不见。[CodeIsland](https://github.com/wxtsky/CodeIsland)
 给了这套问题的完整答案；这里照它的形状做了一套自己的，规模小得多，装在本浏览器里。
 
@@ -234,10 +235,29 @@
    窗格匹配；`PermissionRequest` 挂起等横幅上 Approve/Deny/不管它，其余事件即时回 `{}`）。
 2. **`IslandHooks.swift`** —— 安装/卸载：桥接脚本 `search-island.sh`（纯 sh + curl
    `--unix-socket`，不编译第二个 target；`[ -S "$SOCK" ] || exit 0` 快退；写到 Application
-   Support，0755）+ Pi 扩展 `search-island.ts`（`~/.pi/agent/extensions/`，目录不存在则跳过，
-   危险 bash 与 ask 工具映射成挂起的询问）。Claude 的 `settings.json` 与 Codex 的
-   `hooks.json` 都走**合并不覆盖**：按 command 里含桥接路径认出自家条目，幂等重装、干净
-   卸载，用户自己的 hooks 一条不动。`PermissionRequest` 的 timeout 装成 86400（一天）。
+   Support，0755；除了 `X-Search-Tty` / `X-Search-Source` 还带 `X-Search-Event`——Cursor 和
+   Copilot 的话里不说自己是哪个时刻，命令里说了，头里替它们带一句）+ Pi 扩展
+   `search-island.ts`（`~/.pi/agent/extensions/` 与 `~/.omp/agent/extensions/` 同一个文件，
+   目录不存在则跳过，危险 bash 与 ask 工具映射成挂起的询问，装给哪一家脚本里就写谁的名字）。
+   十家分三种形状，形状共享一套内核：
+
+   - **Claude 形状**（settings.json 里 hooks 键，行里嵌 hooks）——Claude Code、Codex
+     （hooks.json，少一条 Notification）、Qwen Code（同 Claude 但毫秒计、每个等待都要
+     写明：说事 5000，批准 86400000——Qwen 会等一个不说"完了"的 hook）、Droid
+     （~/.factory，照抄整份契约，秒）；
+   - **嵌套形状**（无 matcher）——Gemini（settings.json，自己的事件名 BeforeTool/
+     AfterTool/BeforeAgent/AfterAgent，毫秒，每条 10000；它的 BeforeTool 是每个工具前的
+     否决而非审批，所以纯观察，不挂 hold——挂住每个工具就成了狱卒）、Grok
+     （~/.grok/hooks/ 下独立自有文件，扫整目录，秒，不挂 hold——它不等 hook 的回答）；
+   - **平铺形状**——Cursor（hooks.json，行就是一条 command，命令里带事件名）、Copilot
+     CLI（~/.copilot/hooks/ 下独立文件，顶层 `version: 1`，行是 `{type, bash, timeoutSec}`，
+     说事 5 秒）。
+
+   全部走**合并不覆盖**：按 command/bash 里含桥接路径认出自家条目，幂等重装、干净卸载，
+   用户自己的 hooks 一条不动；只有自家条目的文件清空后连文件一起带走，Grok/Copilot
+   文件夹里用户自己的文件永远不碰。`PermissionRequest` 的 timeout 装成 86400（一天，
+   毫秒家 ×1000）。事件名在 `Island.swift` 读入时归一到横幅自己的词（BeforeTool→PreToolUse，
+   afterAgentResponse→Stop，等等），小写驼峰与 PascalCase 都认。
 3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部居中，所有标签
    页可见；列出全部 session；`asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、
    窗格。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
@@ -245,7 +265,10 @@
 
 接线在 `App.swift`：`SearchApp.init` 里 `Island.shared.start()`（测试运行不占真 socket，
 `Store.testing` 时各自用各自的路径）；`window_` 尾部 overlay `IslandBar()`。设置面板
-`Settings.swift` 的终端段新增 "Coding agents" 一卡，每个 agent 一行、装/卸 Pill、状态自知。
+`Settings.swift` 的终端段新增 "Coding agents" 一卡，每个 agent 一行、装/卸 Pill、状态自知；
+常用的三家（Claude Code、Codex、Pi）先列，其余七家收在 Show more 后面点开才见——
+不常用的不该占着设置面板。每行共用一个开关：先写桥接再装，卸载不动桥接（自家的东西
+在自家的文件夹里，离下次被装上只隔一次点击）。
 
 **两种形态的协议。** Claude Code 与 Codex 的 hook 走 HTTP（curl 带话，头里
 `X-Search-Tty` / `X-Search-Source`）；Pi 的扩展走裸 JSON（POSIX socket，写完半关——EOF
@@ -264,6 +287,7 @@ hook 永远不会再跑（进程被杀不会执行任何 hook），所以由终�
 `Island.retired(tty:)` 清掉该 tty 的全部 session，还开着的 hold 回一个空 `{}`，让等着的
 CLI 回自己终端去问。
 
-测试在 `Tests/SearchTests/IslandTests.swift`（12 条）：事件读取与裁词、两种 settings 的
-合并、Pi 扩展单文件、桥接脚本写出且可执行、session 状态转移、`Shape` 两形态、socket 收
-HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent。
+测试在 `Tests/SearchTests/IslandTests.swift`（21 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
+Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 session）、各形状 settings 的合并与卸载
+（Claude/Codex/Qwen/Droid/Gemini/Cursor/Grok/Copilot/Pi/OMP）、桥接脚本写出且可执行、session 状态转移、
+`Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent。

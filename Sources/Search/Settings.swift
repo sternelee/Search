@@ -656,29 +656,31 @@ struct SettingsPanel: View {
             }
             Caption("The shell and the folder are for the next terminal: a program already running is not moved.")
             Card {
-                Line(
-                    "Claude Code",
-                    islandDetail(claudeHome, "settings.json", IslandHooks.claudeHooked(claudeHome, bridge: islandBridge))
-                ) {
-                    Pill(claudeHooked ? "Remove" : "Install", filled: !claudeHooked) { islandClaude() }
-                }
+                islandRow(islandAgents[0])
                 Rule()
-                Line(
-                    "Codex",
-                    islandDetail(codexHome, "hooks.json", IslandHooks.codexHooked(codexHome, bridge: islandBridge))
-                ) {
-                    Pill(codexHooked ? "Remove" : "Install", filled: !codexHooked) { islandCodex() }
-                }
+                islandRow(islandAgents[1])
                 Rule()
-                Line(
-                    "Pi",
-                    islandDetail(piHome, "extensions/" + IslandHooks.piName, IslandHooks.piHooked(piHome))
-                ) {
-                    Pill(piHooked ? "Remove" : "Install", filled: !piHooked) { islandPi() }
-                }
+                islandRow(islandAgents[2])
                 if let trouble = islandTrouble {
                     Rule()
                     Line(trouble, "Nothing changed — the file is where it said it wouldn't be") { EmptyView() }
+                }
+                Rule()
+                Line(
+                    "More agents",
+                    islandMore
+                        ? "Gemini, Cursor, Qwen, Grok, Droid, Copilot, Oh My Pi"
+                        : "Seven more that Search can watch, each the same way"
+                ) {
+                    Pill(islandMore ? "Show less" : "Show more", filled: !islandMore) {
+                        withAnimation(Motion.quick) { islandMore.toggle() }
+                    }
+                }
+                if islandMore {
+                    ForEach(islandAgents.dropFirst(3)) { agent in
+                        Rule()
+                        islandRow(agent)
+                    }
                 }
             }
             Caption("The coding agents say what they're doing to the notch over the tabs (Island), and ask there before a run — but only in a terminal nobody is watching; answered here, they go on there. Clicking a row goes to its terminal. The hooks write nothing anywhere else, and Remove takes them back out cleanly.")
@@ -694,6 +696,10 @@ struct SettingsPanel: View {
     @State private var islandTick = false
     @State private var islandTrouble: String?
 
+    /// Whether the island's list shows the agents fewer people run —
+    /// three are enough for most, and the rest wait one click away.
+    @State private var islandMore = false
+
     /// Where each CLI keeps the settings that run hooks: their own
     /// homes, in the places they say, overridable by the environment
     /// each one says it reads.
@@ -707,15 +713,108 @@ struct SettingsPanel: View {
     }
     private var piHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.pi/agent") }
 
+    /// Oh My Pi reads the same folder shape as Pi, one home over: the
+    /// same extension serves it, said for its own source.
+    private var ompHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.omp/agent") }
+    private var geminiHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.gemini") }
+    private var cursorHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.cursor") }
+    private var qwenHome: URL {
+        ProcessInfo.processInfo.environment["QWEN_HOME"].map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.qwen")
+    }
+    private var grokHome: URL {
+        ProcessInfo.processInfo.environment["GROK_HOME"].map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.grok")
+    }
+    private var droidHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.factory") }
+    private var copilotHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.copilot") }
+
     /// Where the bridge is: the terminals' own folder in Application
     /// Support, written on the first install (the pill's work, below).
     private var islandBridge: String {
         Store.file("Terminal").appendingPathComponent(IslandHooks.bridgeName).path
     }
 
-    private var claudeHooked: Bool { IslandHooks.claudeHooked(claudeHome, bridge: islandBridge) }
-    private var codexHooked: Bool { IslandHooks.codexHooked(codexHome, bridge: islandBridge) }
-    private var piHooked: Bool { IslandHooks.piHooked(piHome) }
+    /// The island's list, first three the ones most people run. Each
+    /// row is one agent: where its settings are, whether ours are in
+    /// them, and how to put them in and take them back out — one
+    /// switch for every row, whatever the differences under each.
+    private var islandAgents: [IslandAgent] {
+        [
+            IslandAgent(
+                name: "Claude Code", home: claudeHome, file: "settings.json",
+                hooked: { IslandHooks.claudeHooked(claudeHome, bridge: $0) },
+                install: { try IslandHooks.installClaude(claudeHome, bridge: $0) },
+                remove: { try IslandHooks.removeClaude(claudeHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Codex", home: codexHome, file: "hooks.json",
+                hooked: { IslandHooks.codexHooked(codexHome, bridge: $0) },
+                install: { try IslandHooks.installCodex(codexHome, bridge: $0) },
+                remove: { try IslandHooks.removeCodex(codexHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Pi", home: piHome, file: "extensions/" + IslandHooks.piName,
+                hooked: { _ in IslandHooks.piHooked(piHome) },
+                install: { try IslandHooks.installPi(piHome, bridge: $0) },
+                remove: { _ in try IslandHooks.removePi(piHome) }
+            ),
+            IslandAgent(
+                name: "Gemini", home: geminiHome, file: "settings.json",
+                hooked: { IslandHooks.geminiHooked(geminiHome, bridge: $0) },
+                install: { try IslandHooks.installGemini(geminiHome, bridge: $0) },
+                remove: { try IslandHooks.removeGemini(geminiHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Cursor", home: cursorHome, file: "hooks.json",
+                hooked: { IslandHooks.cursorHooked(cursorHome, bridge: $0) },
+                install: { try IslandHooks.installCursor(cursorHome, bridge: $0) },
+                remove: { try IslandHooks.removeCursor(cursorHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Qwen Code", home: qwenHome, file: "settings.json",
+                hooked: { IslandHooks.qwenHooked(qwenHome, bridge: $0) },
+                install: { try IslandHooks.installQwen(qwenHome, bridge: $0) },
+                remove: { try IslandHooks.removeQwen(qwenHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Grok CLI", home: grokHome, file: "hooks/" + IslandHooks.oursName,
+                hooked: { IslandHooks.grokHooked(grokHome, bridge: $0) },
+                install: { try IslandHooks.installGrok(grokHome, bridge: $0) },
+                remove: { try IslandHooks.removeGrok(grokHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Droid", home: droidHome, file: "settings.json",
+                hooked: { IslandHooks.droidHooked(droidHome, bridge: $0) },
+                install: { try IslandHooks.installDroid(droidHome, bridge: $0) },
+                remove: { try IslandHooks.removeDroid(droidHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Copilot CLI", home: copilotHome, file: "hooks/" + IslandHooks.oursName,
+                hooked: { IslandHooks.copilotHooked(copilotHome, bridge: $0) },
+                install: { try IslandHooks.installCopilot(copilotHome, bridge: $0) },
+                remove: { try IslandHooks.removeCopilot(copilotHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Oh My Pi", home: ompHome, file: "extensions/" + IslandHooks.piName,
+                hooked: { _ in IslandHooks.ompHooked(ompHome) },
+                install: { try IslandHooks.installOmp(ompHome, bridge: $0) },
+                remove: { _ in try IslandHooks.removeOmp(ompHome) }
+            ),
+        ]
+    }
+
+    /// One row of the island's list: the agent's name, where its
+    /// settings are and whether ours are in them, and the switch that
+    /// puts them in or takes them back out.
+    @ViewBuilder
+    private func islandRow(_ agent: IslandAgent) -> some View {
+        Line(agent.name, islandDetail(agent.home, agent.file, agent.hooked(islandBridge))) {
+            Pill(agent.hooked(islandBridge) ? "Remove" : "Install", filled: !agent.hooked(islandBridge)) {
+                islandSwitch(agent)
+            }
+        }
+    }
 
     /// What each line says of its agent: where its settings are, and
     /// whether ours are in them. A home that isn't there is a CLI that
@@ -730,41 +829,17 @@ struct SettingsPanel: View {
         return "\(place)/\(file)\(hooked ? " — watched" : " — not watched")"
     }
 
-    /// The three switches: put the hooks in, or take them back out. The
-    /// bridge is written first, for an install wants it to exist; a
-    /// remove leaves it — it's ours, in our own folder, and it might be
-    /// an uninstall away from being wanted again.
-    private func islandClaude() {
+    /// The one switch every row shares: put the hooks in, or take them
+    /// back out. The bridge is written first, for an install wants it to
+    /// exist; a remove leaves it — it's ours, in our own folder, and it
+    /// might be an uninstall away from being wanted again.
+    private func islandSwitch(_ agent: IslandAgent) {
         islandTrouble = nil
         do {
-            if IslandHooks.claudeHooked(claudeHome, bridge: islandBridge) {
-                try IslandHooks.removeClaude(claudeHome, bridge: islandBridge)
+            if agent.hooked(islandBridge) {
+                try agent.remove(islandBridge)
             } else {
-                try IslandHooks.installClaude(claudeHome, bridge: IslandHooks.writeBridge(Store.file("Terminal")))
-            }
-        } catch { islandTrouble = error.localizedDescription }
-        islandTick.toggle()
-    }
-
-    private func islandCodex() {
-        islandTrouble = nil
-        do {
-            if IslandHooks.codexHooked(codexHome, bridge: islandBridge) {
-                try IslandHooks.removeCodex(codexHome, bridge: islandBridge)
-            } else {
-                try IslandHooks.installCodex(codexHome, bridge: IslandHooks.writeBridge(Store.file("Terminal")))
-            }
-        } catch { islandTrouble = error.localizedDescription }
-        islandTick.toggle()
-    }
-
-    private func islandPi() {
-        islandTrouble = nil
-        do {
-            if IslandHooks.piHooked(piHome) {
-                try IslandHooks.removePi(piHome)
-            } else {
-                try IslandHooks.installPi(piHome, bridge: IslandHooks.writeBridge(Store.file("Terminal")))
+                try agent.install(IslandHooks.writeBridge(Store.file("Terminal")))
             }
         } catch { islandTrouble = error.localizedDescription }
         islandTick.toggle()
@@ -1011,6 +1086,21 @@ struct SettingsPanel: View {
 
 /// A row of choices in a grey track, one of them lifted out in white. The
 /// white slides to the one you pick rather than appearing there.
+/// One coding agent in the island's list — the name it goes by, where
+/// its settings are, and what it is to Search to put the hooks in and
+/// take them back out. The bridge's path goes in and out of each: it
+/// is what tells ours from anyone else's in the settings, and an
+/// install writes it fresh.
+private struct IslandAgent: Identifiable {
+    let name: String
+    let home: URL
+    let file: String
+    let hooked: (String) -> Bool
+    let install: (String) throws -> Void
+    let remove: (String) throws -> Void
+    var id: String { name }
+}
+
 struct Segmented<Option: Hashable>: View {
     let options: [(Option, String)]
     @Binding var selection: Option

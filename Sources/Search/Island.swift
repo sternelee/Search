@@ -27,10 +27,14 @@ enum IslandRead {
     /// Reads a hook's saying down to what the bar needs. What doesn't
     /// name a moment (`hook_event_name`, or Codex's `event_name`) isn't
     /// a saying at all — it's dropped whole rather than half-read.
-    static func event(body: Data, source: String?, tty: String?) -> IslandEvent? {
+    static func event(body: Data, source: String?, tty: String?, event: String? = nil) -> IslandEvent? {
         guard let raw = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else { return nil }
-        guard let name = say(raw["hook_event_name"]) ?? say(raw["event_name"]) else { return nil }
-        let session = say(raw["session_id"]) ?? "default"
+        guard let said = say(raw["hook_event_name"]) ?? say(raw["event_name"]) ?? event,
+              let name = moment(said) else { return nil }
+        // A payload with no session of its own (Copilot's) is still one
+        // agent in one terminal: the tty says which, and only a payload
+        // with neither falls back to the one shared name.
+        let session = say(raw["session_id"]) ?? tty ?? "default"
         return IslandEvent(
             source: source ?? say(raw["_source"]) ?? "",
             name: name,
@@ -42,6 +46,40 @@ enum IslandRead {
             prompt: say(raw["prompt"]),
             words: say(raw["last_assistant_message"]) ?? say(raw["message"])
         )
+    }
+
+    /// Every hook's own word for where the agent stands, folded onto
+    /// the island's. Cursor and Copilot name their moments in camelCase
+    /// and Gemini has words of its own, but a bar has just the one
+    /// vocabulary; Cursor's payload carries no event name at all, so
+    /// its word comes in on the request the bridge sends it with.
+    /// Nothing worth a moment (Cursor's afterAgentThought — thinking
+    /// mid-turn) says nothing. Grok's StopFailure is a turn ended on an
+    /// error, still a turn ended, so it folds onto Stop too.
+    static func moment(_ said: String) -> String? {
+        switch said {
+        // Cursor, camelCase
+        case "beforeSubmitPrompt": return "UserPromptSubmit"
+        case "beforeShellExecution", "beforeReadFile", "beforeFileEdit", "beforeMCPExecution": return "PreToolUse"
+        case "afterShellExecution", "afterFileEdit", "afterMCPExecution": return "PostToolUse"
+        case "afterAgentThought": return nil
+        case "afterAgentResponse", "stop": return "Stop"
+        // Gemini, words of its own
+        case "BeforeAgent": return "UserPromptSubmit"
+        case "BeforeTool": return "PreToolUse"
+        case "AfterTool": return "PostToolUse"
+        case "AfterAgent": return "Stop"
+        // Copilot CLI, camelCase
+        case "sessionStart": return "SessionStart"
+        case "sessionEnd": return "SessionEnd"
+        case "userPromptSubmitted": return "UserPromptSubmit"
+        case "preToolUse": return "PreToolUse"
+        case "postToolUse": return "PostToolUse"
+        case "errorOccurred": return "Notification"
+        // Grok
+        case "StopFailure": return "Stop"
+        default: return said
+        }
     }
 
     /// A tool's input, said as a line a person can read at a glance: the
@@ -355,15 +393,17 @@ final class IslandServer {
         let answer: (Data) -> Void
     }
 
-    /// The bridge's HTTP request, read by hand: the path, the two
-    /// headers the bridge knows and the body doesn't, and the body
-    /// itself. curl writes exactly one request on exactly one
-    /// connection, so a request whole by its own length is the whole
-    /// conversation.
+    /// The bridge's HTTP request, read by hand: the path, the three
+    /// headers the bridge knows and the body doesn't (the event comes on
+    /// the request because Cursor's and Copilot's payloads carry no
+    /// name of their own), and the body itself. curl writes exactly one
+    /// request on exactly one connection, so a request whole by its own
+    /// length is the whole conversation.
     struct Call {
         let path: String
         let source: String?
         let tty: String?
+        let event: String?
         let body: Data
     }
 
@@ -499,6 +539,7 @@ final class IslandServer {
         var path = ""
         var source: String?
         var tty: String?
+        var event: String?
         var length = 0
         for (i, line) in lines.enumerated() {
             if i == 0 {
@@ -512,6 +553,7 @@ final class IslandServer {
             switch parts[0].lowercased() {
             case "x-search-source": source = value
             case "x-search-tty": tty = value
+            case "x-search-event": event = value
             case "content-length": length = Int(value) ?? 0
             default: break
             }
@@ -519,7 +561,7 @@ final class IslandServer {
         let body = data[head.upperBound...]
         let whole = body.count >= max(length, 0)
         let call = Call(
-            path: path, source: source, tty: tty,
+            path: path, source: source, tty: tty, event: event,
             body: Data(body.prefix(max(length, 0)))
         )
         return .http(call, whole: whole)
@@ -529,13 +571,13 @@ final class IslandServer {
     /// never whole — it exists so a still-coming request has a shape to
     /// be held in.
     private static func partial() -> Call {
-        Call(path: "", source: nil, tty: nil, body: Data())
+        Call(path: "", source: nil, tty: nil, event: nil, body: Data())
     }
 
     // MARK: Answering
 
     private func take(_ connection: NWConnection, call: Call) {
-        guard let event = IslandRead.event(body: call.body, source: call.source, tty: call.tty) else {
+        guard let event = IslandRead.event(body: call.body, source: call.source, tty: call.tty, event: call.event) else {
             reply(connection, with: Data("{}".utf8))
             return
         }
