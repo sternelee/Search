@@ -333,4 +333,25 @@ final class TerminalDockTests: XCTestCase {
         XCTAssertTrue(dock.moving(at: 0.285), "the plate's leave is still walking")
         XCTAssertFalse(dock.owns)
     }
+
+    /// The plate's vertical line-up. The prompt's ❯ is drawn from a
+    /// fallback font — the mono face has no such glyph — and its ink
+    /// sits wherever that font's metrics put it, which is not where the
+    /// line's digits sit (SF Mono's fallback rides ~1pt high). The
+    /// digits' drawn ink is measured and the caret and the prompt are
+    /// both put on it, so the three read on one height.
+    func testThePromptAndCaretSitOnTheDigitsInk() {
+        let plate = TerminalDockPlate()
+        let face = TerminalLook.face(size: 12)
+        let digits = TerminalDockPlate.inkCenter(of: "0", in: face)
+        let prompt = TerminalDockPlate.inkCenter(of: "\u{276f}", in: face)
+        // The digits sit near the plate's middle — a measure that
+        // wandered anywhere else is a bug in the measure itself.
+        XCTAssertEqual(digits, plate.caretMid, accuracy: 0.01)
+        XCTAssertGreaterThan(digits, 10)
+        XCTAssertLessThan(digits, 20)
+        // The correction carries the prompt's ink onto the digits' own
+        // center — a sign flipped in the correction doubles here.
+        XCTAssertEqual(prompt + plate.promptDy, digits, accuracy: 0.01)
+    }
 }

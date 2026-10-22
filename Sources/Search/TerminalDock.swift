@@ -425,6 +425,15 @@ final class TerminalDockPlate: NSView {
     /// One cell's width in it, measured once per face rather than asked
     /// again every glyph.
     private(set) var advance: CGFloat = 0
+    /// The line's own ink center, measured off the drawn digits — the one
+    /// height the caret and the prompt are both put on, so the three read
+    /// on a line the way the person reads them against each other.
+    private(set) var caretMid: CGFloat = DockBox.height / 2
+    /// How far the prompt glyph sits off that height, measured rather than
+    /// guessed: the ❯ comes from a fallback font (the mono face has no
+    /// such glyph) and lands where that font's metrics put it, not where
+    /// the line's digits do.
+    private(set) var promptDy: CGFloat = 0
 
     init() {
         super.init(frame: .zero)
@@ -445,6 +454,47 @@ final class TerminalDockPlate: NSView {
 
     private func remeasure() {
         advance = ("0" as NSString).size(withAttributes: [.font: face as Any]).width.rounded(.up)
+        // The digits' ink, drawn and scanned, becomes the height the
+        // caret and the prompt are put on. Measured rather than derived
+        // because no font metric survives a fallback: SF Mono has no ❯,
+        // and the font that supplies it puts its ink ~1pt high next to
+        // the digits' own — a face that has it drifts elsewhere.
+        caretMid = Self.inkCenter(of: "0", in: face)
+        promptDy = caretMid - Self.inkCenter(of: "❯", in: face)
+    }
+
+    /// Where a glyph's ink center lands in the plate's glyph rect — the
+    /// glyph drawn into an offscreen plate the size of the real one and
+    /// its ink's rows scanned, once per face. This is the same drawing
+    /// the plate does, so whatever the fonts do, this is where the ink
+    /// the person sees actually sits.
+    static func inkCenter(of text: String, in face: NSFont) -> CGFloat {
+        let box = DockBox.height
+        let image = NSImage(size: NSSize(width: 40, height: box))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 40, height: box).fill()
+        (text as NSString).draw(
+            in: NSRect(x: 5, y: (box - 15) / 2, width: 30, height: 15),
+            withAttributes: [.font: face as Any, .foregroundColor: NSColor.black]
+        )
+        image.unlockFocus()
+        guard
+            let data = image.tiffRepresentation,
+            let rep = NSBitmapImageRep(data: data)
+        else { return box / 2 }
+        let scale = CGFloat(rep.pixelsHigh) / box
+        var low = -1, high = -1
+        for row in 0..<rep.pixelsHigh {
+            for col in 0..<rep.pixelsWide
+            where (rep.colorAt(x: col, y: row)?.redComponent ?? 1) < 0.5 {
+                if low == -1 { low = row }
+                high = row
+                break
+            }
+        }
+        guard low >= 0 else { return box / 2 }
+        return (CGFloat(low) + CGFloat(high)) / 2 / scale
     }
 
     /// Take a frame's model. True when it differs from the last one — a
@@ -493,7 +543,7 @@ final class TerminalDockPlate: NSView {
     func caretSpot(at column: Int) -> NSRect {
         NSRect(
             x: textX + advance * CGFloat(column) - offset,
-            y: (bounds.height - 16) / 2,
+            y: caretMid - 8,
             width: advance, height: 16
         )
     }
@@ -518,7 +568,7 @@ final class TerminalDockPlate: NSView {
         // The prompt glyph, where Metalterm's own sits: at the left of
         // the ground, and the line after it.
         let shown = p.plate * p.line
-        drawGlyph("❯", at: DockBox.pad, alpha: 0.55, rise: 0, shown: shown)
+        drawGlyph("❯", at: DockBox.pad, alpha: 0.55, rise: 0, shown: shown, dy: promptDy)
         let band = bounds.width - textX - DockBox.pad
         let shift = offset
         for (index, char) in p.text.enumerated() {
@@ -545,7 +595,8 @@ final class TerminalDockPlate: NSView {
         guard p.blink else { return }
         let headX = textX + advance * p.head - shift
         let tailX = textX + advance * p.tail - shift
-        let band2 = NSRect(x: min(headX, tailX), y: 7, width: max(0, abs(headX - tailX)), height: bounds.height - 14)
+        let barY = caretMid - (bounds.height - 14) / 2
+        let band2 = NSRect(x: min(headX, tailX), y: barY, width: max(0, abs(headX - tailX)), height: bounds.height - 14)
         if band2.width > 0.1 {
             // Faint, and fainter the further it is stretched, like the
             // find panel's ghost: a long throw is a smudge of light.
@@ -556,21 +607,21 @@ final class TerminalDockPlate: NSView {
         }
         let width = max(1, DockBox.bar * p.squeeze)
         ink.withAlphaComponent(shown).setFill()
-        NSRect(x: tailX - width + DockBox.bar, y: 7, width: width, height: bounds.height - 14).fill()
+        NSRect(x: tailX - width + DockBox.bar, y: barY, width: width, height: bounds.height - 14).fill()
         ink.withAlphaComponent(p.edge * shown).setFill()
-        NSRect(x: headX, y: 7, width: width, height: bounds.height - 14).fill()
+        NSRect(x: headX, y: barY, width: width, height: bounds.height - 14).fill()
     }
 
     /// One glyph, at an alpha and a rise off the line's floor. The ink is
     /// passed in because the plate's opacity is already in it — a glyph
     /// arriving or fading rides the plate it is drawn on.
     private func drawGlyph(
-        _ char: Character, at x: CGFloat, alpha: CGFloat, rise: CGFloat, shown: CGFloat
+        _ char: Character, at x: CGFloat, alpha: CGFloat, rise: CGFloat, shown: CGFloat, dy: CGFloat = 0
     ) {
         let ink = TerminalFieldPanel.word
         (String(char) as NSString).draw(
             in: NSRect(
-                x: x, y: (bounds.height - 15) / 2 - rise,
+                x: x, y: (bounds.height - 15) / 2 - rise + dy,
                 width: advance, height: 15
             ),
             withAttributes: [

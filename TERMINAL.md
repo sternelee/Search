@@ -53,7 +53,7 @@
 | `TerminalShell.swift` (876) | shell 集成片段的生成与注入（zsh/bash）：zsh 走 `ZDOTDIR` 包裹，脚本内置命令块标记（OSC 133）与输入坞上报（OSC 7784）、点击移光标/删选区小件 |
 | `TerminalFind.swift` (177) | ⌘F 滚动缓冲查找、覆盖层输入框、上下一个 |
 | `TerminalField.swift` (531) | 查找面板的动效引擎：Metalterm 的 `Cursor` 四条曲线（quartic 头、cubic 尾的 smear、三角 bleed、`1/(1+kv)` squash）+ 面板、亮条、smear 光带 |
-| `TerminalDock.swift` (661) | 底部输入坞引擎：`TerminalDock`（面板/行/每字形到达的到达台账、光标闪烁规则、alt screen 挂起）、`DockLedger`、`TerminalDockPlate`（画板）。只有状态与曲线，不持时钟 —— 与 `TerminalField` 同一个分工。见 3.9 |
+| `TerminalDock.swift` (712) | 底部输入坞引擎：`TerminalDock`（面板/行/每字形到达的到达台账、光标闪烁规则、alt screen 挂起）、`DockLedger`、`TerminalDockPlate`（画板）。只有状态与曲线，不持时钟 —— 与 `TerminalField` 同一个分工。见 3.9 |
 | `TerminalStatus.swift` (276) | 底部状态栏：`StatusBarPath`（`~` 简写与超长路径留尾）、`GitStatus`（porcelain v2 解析：分支/detached、ahead/behind、四计数）、`TerminalGit`（串行队列 + 限时跑 `git status --porcelain=v2 --branch`）、`TerminalStatusBar`（AppKit 画的一行，主题自己的 ink）。见 3.9 |
 | `TerminalSplits.swift` (1082) | 窗格分割：`TerminalTree`（**索引竞技场**的递归二叉分割树，纯算术可单测）+ `TerminalSplits` 容器（分格/焦点/zoom/均分/轮换、title 镜像、⌘W 的逐格收缩）+ `TerminalDivider`（轴向感知分割线）。见 3.7 |
 
@@ -232,6 +232,7 @@ Metalterm 的输入坞（底部 dock）当时按 3.1 的旧边界**不学**，�
 - **每字形到达**：`DockLedger` 只把**新写下的字形**标为刚到（0.2 s 的上升+淡入，`FieldCurve.fade`）；改写/删改不动旧字形的年龄 —— 不是每次重报整行重播。测试钉住：追加只标追加的那几个、改写零新到、删中间不把尾部当新的。
 - **光标**：`TerminalField` 直接复用 —— 列坐标×步进喂成点，跨列移动是一条 `place` 腿（quartic 头 + cubic 尾的 warp 拖影，驻留窗口 `FieldMotion.settle`），键击 `press` 一下三角 bleed；两根 2 pt 亮条之间的缝就是 smear 光带，落位后合一。Reduce Motion 时 `settle` 一步到位。
 - **建议 ghost**：history 建议以 0.45 透明度跟在行尾（shell 侧只在光标位行尾时才报它，从不进 `POSTDISPLAY`）。
+- **竖直对齐**：❯ 提示符、行文字、光标三者的墨水中心钉在同一高度上，而这个高度是**画出来量的**（`inkCenter(of:in:)`：把字形画进一张和画板同尺寸的离屏图，扫墨水的行）不是拿字体度量推的 —— ❯ 在等宽字体里没有，落到回退字体（fallback），SF Mono 的回退把它的墨水抬高约 1 pt，别的字体漂别处；`CTLine` 的 optical bounds 给回来的也是行盒不是墨水，所以推导必错、实测必对。量得的高度 `caretMid` 归入 `remeasure()`（换字体重测），`promptDy` 把 ❯ 挪到数字的墨水中心上。
 - **零闲置帧照旧**：坞事件走 `present()`；`frame()` 画完网格调 `drawDock()`，还在动就 `DispatchQueue.main.async` 一跳回 pacer，`dockAsking` 保证一跳一帧。板的绘制是 AppKit `draw(_:)`，`drawDock()` 每帧置 `needsDisplay`，时钟读 `CACurrentMediaTime()` 各自自洽。键盘在窗、坞接管时，pacer 的 caret 理由照旧跳帧 —— 坞光标跟着它闪。
 - **IME**：坞接管时 `firstRect(forCharacterRange:)` 返回坞上光标处的矩形（跟随 warp 落点），输入法候选框钉在板上而不是网格里。
 - **`SEARCH_INPUT_DOCK=0`** 环境变量关掉 shell 侧上报，坞自然永不出现；终端侧不设开关 —— 没有报告就没有坞，协议本身就是开关。
@@ -248,7 +249,7 @@ Metalterm 的输入坞（底部 dock）当时按 3.1 的旧边界**不学**，�
 - 左边是路径，右边是 git。路径用 shell 自己报的 `OSC 7`（每 prompt 一报，zsh 脚本本来就有），`~` 简写是 Metalterm 的写法，超长路径**留尾**（`/…/尾两级`，叶子才告诉你你在哪）；git 是 `git status --porcelain=v2 --branch` 的纯解析：分支名（detached 用前 7 位提交号）、`⇡⇣` ahead/behind、`+` staged、`~` unstaged、`?` untracked，零计数不显示，不在仓里只有路径。
 - **git 不在主线程跑**（自己的串行队列，一个进程一次，`process.wait` 限时 —— 人的 git 再慢也不许挂一个队列）：换目录时问、命令结束时问、进出 alt screen 时问、每 2 s 慢跳动一次；**alt screen 里不问**（nvim 在跑就别去碰它的仓库）、窗口不在屏上/终端藏着不问。答案有新闻才重画（`set` 回 false 就一笔都不画）。
 
-测试 `Tests/SearchTests/TerminalDockTests.swift`（16 个）+ `Tests/SearchTests/TerminalStatusTests.swift`（4 个）：上报解析与转义回并（`;` 在字段里不破帧）、首个报告起板并接管、追加只标新到、改写零新到、接受行淡出+C 撤纱+A 丢行、prompt 当场丢、`off` 塌缩与回带、warp 曲线形状、Reduce Motion 直接就位、纱从 prompt 到屏底的边界；光标闪烁的规则（键击后 0.5 s 不闪、7 s 后永久常亮、腿在走不闪、Reduce Motion 不闪、设置关了不闪）、alt screen 挂起与回带、命令/新 prompt 把板带走；路径简写与超长留尾、porcelain v2 的分支/ahead/behind/计数/detached/冲突/仓外、状态栏只在有新闻时重画。
+测试 `Tests/SearchTests/TerminalDockTests.swift`（17 个）+ `Tests/SearchTests/TerminalStatusTests.swift`（4 个）：上报解析与转义回并（`;` 在字段里不破帧）、首个报告起板并接管、追加只标新到、改写零新到、接受行淡出+C 撤纱+A 丢行、prompt 当场丢、`off` 塌缩与回带、warp 曲线形状、Reduce Motion 直接就位、纱从 prompt 到屏底的边界；光标闪烁的规则（键击后 0.5 s 不闪、7 s 后永久常亮、腿在走不闪、Reduce Motion 不闪、设置关了不闪）、alt screen 挂起与回带、命令/新 prompt 把板带走；❯/文字/光标共高度且修正不反号；路径简写与超长留尾、porcelain v2 的分支/ahead/behind/计数/detached/冲突/仓外、状态栏只在有新闻时重画。
 
 ## 四、协议覆盖
 
