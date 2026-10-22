@@ -258,4 +258,24 @@ final class TerminalFieldTests: XCTestCase {
         XCTAssertEqual(absurd.width, 120, "the floor")
         XCTAssertEqual(absurd.leading, 40 - FieldBox.margin - 120, "and it runs off the left, which is what a floor means")
     }
+
+    /// The same place, said top-down for a view that measures from the top:
+    /// a flipped pane stage, or a SwiftUI overlay's own alignment. One plate,
+    /// measured from either end, is the same plate.
+    func testThePlaceSaidTopDownIsTheSamePlace() {
+        let frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        for place in TerminalFindPlace.allCases {
+            let up = FieldBox.home(wide: 260, in: frame, at: place)
+            let down = FieldBox.top(wide: 260, in: frame, at: place)
+            XCTAssertEqual(down.leading, up.leading, "\(place)")
+            XCTAssertEqual(down.width, up.width)
+            XCTAssertEqual(down.height, up.height)
+            XCTAssertEqual(down.y, frame.height - up.y - up.height, "\(place)")
+        }
+        // Over the top corner is a small distance from the top, and over the
+        // bottom one a large one — the two ends swap over when the measurement
+        // does.
+        XCTAssertLessThan(FieldBox.top(wide: 260, in: frame, at: .top).y,
+                          FieldBox.top(wide: 260, in: frame, at: .bottom).y)
+    }
 }

@@ -193,6 +193,7 @@ Metalterm 的输入坞（底部 dock）按 3.1 的边界**不学**，但它的**
 - 颜色：面板用**终端主题自己的 ground/ink**（`TerminalDraw.Theme.current`），只借 Metalterm `FindUi::draw` 的结构——0.14 ink 的发丝描边、7 pt 圆角。在终端上盖一块 app 的 chrome 会是错窗里的错盒子。`lookChanged()` 时面板、字段、两根条一起换色。
 - **几何**（`FieldBox`）取 `FindUi::panel_rect` 的**相对位置**（右缘 14 pt 内、距顶/底 12 pt、高 30 pt），**不取**它的 45·s 宽度与 13/11 pt 字号：那是它自己的字体网格，Search 的字段是 AppKit 的真输入框（IME、粘贴、选择器都要活）。矩形计算是纯函数 `FieldBox.home(wide:in:at:)`，不需要视图就能测。
 - **面板挂在窗口的哪一端是设置项**（`TerminalLook.findPlace`，设置面板「Terminal → Find Bar」，Top/Bottom，默认 Top）。这是这一轮唯一可配置的部分：底部正是 Metalterm 输入坞的位置（也是这整套动效的出处），但 3.1 不抄那个坞，而终端最底一行就是提示符和你正在敲的命令——所以放在顶部仍是默认，想放底部的人自己选。设置只改 `home.y`，smear、亮条、bleed 一概不变：它们沿面板自己的**前缘**跑，不沿窗口的纵轴。视图不是 `isFlipped`，所以顶是 `bounds.height − …`、底是 `12`；`lookChanged()` → `needsLayout` → `placeFindField()` 让改设置当场生效。
+- **同一项设置也管网页的 ⌘F**：⌘F 在一片网页上的那个胶囊（`Find.swift` 的 `FindBar`）和分栏布局里那个宿主视图（`PaneStage` 的 `findBar`）读同一个 `TerminalLook.findPlace`，所以「Find Bar」指的是「⌘F 出现在哪」，不是「终端里那个框」。分栏那条走的是 `isFlipped` 的 `PaneStage`，因此顶是 `page.minY`、底是 `page.maxY − h`——同一个 `FieldBox` 的两个说法，`FieldBox.top` 就是把 `home` 从下往上量的结果翻成从上往下量（有单测钉住两者是同一个矩形）。过渡方向也跟着换：挂在顶部时从上方进场，挂在底部时从下方进场——贴着某一边的东西，是从那一边**离开**的。
 - 计数（`1 of 9` / `none`）挂在面板右端，**增长会把左缘推出去**——那是 `place()` 的一条新腿，与进场同形但不淡入。宽度在计数变化时 `remeasure()` 量一次，不在 8.3 ms 的帧里量字符串。
 - 关窗不再是**截断**：`closeFind()` 只清 findings 并起一条离场腿，视图由走完腿的那一帧拆掉。
 

@@ -14,6 +14,13 @@ struct FindBar: View {
         return max(40, min(160, availableWidth - (narrow ? 80 : 130)))
     }
 
+    /// Which end of the page it hangs off — the same setting the terminal's
+    /// own ⌘F panel reads, so ⌘F is in one place wherever it is pressed. It
+    /// arrives above the bar when it is over the top corner, and below it
+    /// when it is over the bottom one: a thing that lives at an edge moves
+    /// away from that edge, not towards it.
+    private var place: TerminalFindPlace { TerminalLook.findPlace }
+
     var body: some View {
         HStack(spacing: 6) {
             ZStack(alignment: .leading) {
@@ -89,13 +96,15 @@ struct FindBar: View {
             )
         )
         .shadow(color: .black.opacity(0.10), radius: 18, y: 5)
-        .padding(.top, 12)
+        .padding(place == .top ? .top : .bottom, 12)
         .padding(.trailing, 14)
         .frame(maxWidth: availableWidth == nil ? nil : .infinity,
-               maxHeight: availableWidth == nil ? nil : .infinity, alignment: .topTrailing)
+               maxHeight: availableWidth == nil ? nil : .infinity,
+               alignment: place == .top ? .topTrailing : .bottomTrailing)
         .animation(Motion.quick, value: browser.missed)
         .onAppear(perform: focus)
         .onChange(of: browser.findFocus) { _, _ in focus() }
+        .animation(Motion.quick, value: TerminalLook.findPlace)
     }
 
     /// Into the field, and once more a moment later if it didn't take: as

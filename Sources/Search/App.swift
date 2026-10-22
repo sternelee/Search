@@ -514,10 +514,10 @@ struct ContentView: View {
                 .overlay {
                     if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
                 }
-                .overlay(alignment: .topTrailing) {
+                .overlay(alignment: TerminalLook.findPlace == .top ? .topTrailing : .bottomTrailing) {
                     if browser.finding {
                         FindBar(browser: browser)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .transition(.move(edge: TerminalLook.findPlace == .top ? .top : .bottom).combined(with: .opacity))
                     }
                 }
                 .overlay(alignment: .topTrailing) {

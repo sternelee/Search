@@ -84,6 +84,10 @@ enum FieldBox {
     /// clear, and a plate further in than this sits over the first row of
     /// text at the top and the prompt at the bottom.
     static let edge: CGFloat = 12
+    /// The room left on the far side, when the panel hangs off the other end.
+    /// A terminal's frame has nothing at its bottom edge to clear, so the plate
+    /// can sit closer there; the top edge is where a window's own chrome is.
+    static let farEdge: CGFloat = 12
 
     /// Where the panel hangs when it is still, for a frame of a given size:
     /// its leading (left) edge, its own width, the band it sits over, and how
@@ -102,9 +106,19 @@ enum FieldBox {
         let width = min(wanted, max(120, bounds.width - margin * 2))
         let y: CGFloat = switch place {
         case .top: bounds.height - edge - height
-        case .bottom: edge
+        case .bottom: farEdge
         }
         return (bounds.width - margin - width, width, y, height)
+    }
+
+    /// The same place, for a box measured top-down rather than bottom-up —
+    /// a flipped view, or a SwiftUI overlay's alignment. The plate is the same
+    /// height either way, so only the top has to be worked out again.
+    static func top(
+        wide wanted: CGFloat, in bounds: CGRect, at place: TerminalFindPlace
+    ) -> (leading: CGFloat, width: CGFloat, y: CGFloat, height: CGFloat) {
+        let home = home(wide: wanted, in: bounds, at: place)
+        return (home.leading, home.width, bounds.height - home.y - home.height, home.height)
     }
 }
 

@@ -109,17 +109,28 @@ final class PaneStage: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// What a change of the terminal's look is heard through: the find pill's
+    /// end of the page comes out of the same setting the terminal's own panel
+    /// does, and it is not a thing a frame has any other reason to reread.
+    private var heard: NSObjectProtocol?
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         divider.stage = self
         addSubview(divider)
+        heard = NotificationCenter.default.addObserver(
+            forName: TerminalLook.changed, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.needsLayout = true }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
         if let monitor { NSEvent.removeMonitor(monitor) }
+        if let heard { NotificationCenter.default.removeObserver(heard) }
     }
 
     override func updateLayer() {
@@ -288,7 +299,13 @@ final class PaneStage: NSView {
                     bar.rootView.availableWidth = page.width
                 }
                 let width = min(390, page.width)
-                bar.frame = CGRect(x: page.maxX - width, y: page.minY,
+                // Over the page's top corner or its bottom one, as the setting
+                // says — the same place the terminal's own ⌘F panel takes (see
+                // TerminalLook.findPlace).
+                let y = TerminalLook.findPlace == .top
+                    ? page.minY
+                    : page.maxY - min(60, page.height)
+                bar.frame = CGRect(x: page.maxX - width, y: y,
                                    width: width, height: min(60, page.height))
             }
         }
