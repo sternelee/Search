@@ -37,7 +37,9 @@ final class TerminalView: NSView, NSTextInputClient {
     /// caret's blink is the pacer's to keep time for, not a timer's, and
     /// the timer there used to be ran on for every terminal merely on
     /// screen, whether or not any keyboard was in it.
-    private let pacer = TerminalPacer()
+    /// The frame clock: its own frames, and the caret's blink. Read by the
+    /// dock's frame too (TerminalDock), so it is not private.
+    let pacer = TerminalPacer()
 
     /// The modes the last reading left the screen in. The keyboard and the
     /// hand act between frames and cannot reach into the screen to ask
@@ -96,6 +98,17 @@ final class TerminalView: NSView, NSTextInputClient {
     var findings: [(row: Int, col: Int, len: Int)] = []
     var finding = -1
 
+    /// The input dock's engine — the shell's own line editor, reported over
+    /// OSC 7784 and walked on the find panel's curves (see TerminalDock).
+    /// The plate over the frame's bottom belongs to it, made the first time
+    /// a line is reported and gone when an `off` collapse ends.
+    let dock = TerminalDock()
+    var dockPlate: TerminalDockPlate?
+    var dockAsking = false
+    /// The state of the grid's last prompt block, so its turns — `C` a
+    /// command, `A` a new prompt — reach the dock as they happen.
+    var dockBlock: Block.State?
+
     /// The field itself, for the search and the keyboard, or nothing.
     var findField: NSTextField? { findPanel?.field }
 
@@ -107,6 +120,12 @@ final class TerminalView: NSView, NSTextInputClient {
         super.init(frame: .zero)
         wantsLayer = true
         terminal.onDraw = { [weak self] damage, modes in self?.moved(damage, modes) }
+        // The dock's reports (OSC 7784) come through their own word: the
+        // line the shell's editor holds, put on a plate over the bottom of
+        // the frame (see TerminalDock). The reports arrive on the main
+        // thread with the rest of the shell's output, and the frame they
+        // owe is asked for the same way every other change asks.
+        terminal.onDock = { [weak self] report in self?.docked(report) }
         // A glyph the atlas had to cut is a square some frame drew blank
         // (see TerminalAtlas), so the frame after it is worth asking for —
         // and on a terminal that is otherwise idle there is nothing else
@@ -193,6 +212,7 @@ final class TerminalView: NSView, NSTextInputClient {
             terminal.resize(width: width, height: height)
         }
         placeFindField()
+        placeDock()
         present()
     }
 
@@ -281,6 +301,25 @@ final class TerminalView: NSView, NSTextInputClient {
         let was = self.modes
         self.modes = modes
         owe(damage)
+        // The turns of the grid's prompt block are the dock's news too
+        // (OSC 133, carried by the lines they are written on rather than
+        // reported): `C` — a line became a command — lifts the veil at
+        // once, because the rows the plate stood over are the command's
+        // echo and history now; and `A` — a prompt began — drops whatever
+        // line the dock was still holding, because the report that follows
+        // establishes the new one. Read only when the grid says its blocks
+        // changed, which is the same damage the marks arrive on.
+        if damage.blocks,
+            let state = terminal.look(scroll: lift, { screen, _ in screen.blocks.last?.state }) ?? nil,
+            state != dockBlock {
+            dockBlock = state
+            let now = CACurrentMediaTime()
+            switch state {
+            case .running: dock.ran(at: now)
+            case .prompt: dock.prompted(at: now)
+            case .done: break
+            }
+        }
         // The pointer is watched only while a program is asking to hear
         // about it (1003), so the area is put up and taken down as that
         // comes and goes rather than left to deliver every pass of the
@@ -370,6 +409,26 @@ final class TerminalView: NSView, NSTextInputClient {
         // has not seen before — so the row is converted again with the
         // underline on it, and converted back when the hover moves on.
         if let hovering { underline(hovering, in: &scene) }
+        // The input dock's veil: while the shell's editor holds the line,
+        // the rows the shell is echoing it into are blank in this frame —
+        // the plate over the bottom is where the line is, and a prompt
+        // drawn twice is a stutter. Written here, in the copy of the scene
+        // the frame is about to read — the hover's own trick at the scale
+        // of a prompt, and for the same reason: the damage machinery makes
+        // the rows new again when the veil lifts, without the renderer
+        // having to know a veil exists. The grid's cursor goes with them —
+        // while the dock owns the input, the caret is the dock's own.
+        var veiled: Range<Int>? = nil
+        if dock.owns, lift == 0, let prompt = scene.prompt {
+            veiled = TerminalDock.veil(prompt: prompt, top: scene.top, rows: scene.lines.count)
+            if let veiled {
+                for row in veiled {
+                    for column in 0..<scene.lines[row].cells.count {
+                        scene.lines[row].cells[column] = Cell()
+                    }
+                }
+            }
+        }
         // Words wearing SGR 5 keep blinking while any are on the screen,
         // which is a question the scene answers as it is read — a frame
         // that finds none asks for no more of them, and one that finds
@@ -391,7 +450,7 @@ final class TerminalView: NSView, NSTextInputClient {
         paint.update(
             scene: scene, damage: owed, selection: selection(in: scene),
             strong: window?.firstResponder === self,
-            cursor: pacer.caretShown,
+            cursor: veiled != nil ? false : pacer.caretShown,
             finds: finds(in: scene), found: found(in: scene),
             reversed: modes.reversed, blinking: pacer.blinkShown
         )
@@ -401,6 +460,10 @@ final class TerminalView: NSView, NSTextInputClient {
         // is drawn here, off the same clock: the pacer is what keeps time,
         // and the panel has no clock of its own.
         if !findMotion.isAway { drawFind() }
+        // And so is the dock's: a plate that is arriving or leaving, a
+        // line fading out, a glyph rising, a caret on a leg — the same
+        // clock, so a leg never draws a frame inside a frame.
+        if dockPlate != nil { drawDock() }
     }
 
     /// One run of squares wearing the same hyperlink, in the frame being
@@ -548,6 +611,11 @@ final class TerminalView: NSView, NSTextInputClient {
             findGhost?.tint(TerminalFieldPanel.word)
             panel.needsDisplay = true
         }
+        // The dock's plate is the theme's own ground and ink, and its
+        // glyphs are the look's own face: a theme that changed is a plate
+        // that has to be told as well.
+        dockPlate?.refont()
+        dockPlate?.needsDisplay = true
         // Cells of a different size — a new face, or more room left at the
         // edges — fit in a different number: the layout has to be worked out
         // again, which presents the frame.
@@ -732,6 +800,12 @@ final class TerminalView: NSView, NSTextInputClient {
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
 
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        // While the dock owns the input, the composing string belongs to
+        // the shell's line on the plate, and the candidates sit on the
+        // dock's caret — not on the grid's, which the veil has hidden.
+        if dock.owns, let plate = dockPlate {
+            return convert(plate.caretSpot(at: dock.cursor), to: nil)
+        }
         // Read off the live screen without copying it: the input method
         // asks this on the keystroke path, with a composing string on
         // screen, and it wants two numbers — a copy of the whole grid to
@@ -882,6 +956,19 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        // A click on the input dock is a column to the shell's editor, not
+        // a cell to the program: the line lives on the plate, and the
+        // click asks the editor to move its caret to where in the line it
+        // landed. The escape is the zsh integration's own (TerminalShell,
+        // under 2004, where the program itself never hears the click) —
+        // and it is answered before the mouse modes, because a program
+        // that asked to hear every press still does not own the line it is
+        // editing through the dock.
+        if dock.owns, let plate = dockPlate, plate.frame.contains(point) {
+            let col = plate.column(at: convert(point, to: plate))
+            terminal.send("\u{1b}[27;9;71~\(dock.text.count);\(col)~")
+            return
+        }
         guard let spot = square(of: point) else { return }
         // ⌘ over a link opens it. Nothing else in here is reached: a click
         // that opens a page is not also the start of a selection.

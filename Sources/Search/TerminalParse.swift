@@ -22,6 +22,21 @@ enum Notice: Equatable {
     case note(title: String, body: String)
     /// BEL.
     case bell
+    /// OSC 7784: what the shell's line editor said its line is now, for a
+    /// terminal that stands in for the prompt with a dock of its own
+    /// (see TerminalDock). The marks the shell prints around its commands
+    /// still arrive by the screen; this is the mirror of the line being
+    /// edited, which the screen holds underneath the veil.
+    case dock(Dock)
+}
+
+/// The shell's line, as its editor reported it (OSC 7784): the text, the
+/// caret's column counted in characters, the suggestion ghosted after the
+/// text — or the editor giving up on keeping the mirror, which is what a
+/// line too long or wrapped does (the grid takes the input back).
+enum Dock: Equatable {
+    case line(text: String, cursor: Int, suggestion: String)
+    case off
 }
 
 final class Parser {
@@ -218,6 +233,48 @@ final class Parser {
         "r": "⎼", "s": "⎽", "t": "├", "u": "┤", "v": "┴", "w": "┬",
         "x": "│", "y": "≤", "z": "≥", "{": "π", "|": "≠", "}": "£", "~": "·",
     ]
+
+    /// The input dock's escaped text, as the script wrote it (see
+    /// TerminalShell): `\\` for a backslash, `\\n` and the rest for the
+    /// controls that would break the payload, `\\x3b` for a semicolon,
+    /// which would otherwise end the field. Read back one escape at a
+    /// time; anything the script never writes is passed through as it
+    /// stands, which is the honest reading of a stranger's text.
+    static func docked(_ escaped: String) -> String {
+        var said = ""
+        var marks = escaped.makeIterator()
+        while let letter = marks.next() {
+            guard letter == "\\", let follow = marks.next() else {
+                said.append(letter)
+                continue
+            }
+            switch follow {
+            case "\\": said.append("\\")
+            case "n": said.append("\n")
+            case "r": said.append("\r")
+            case "t": said.append("\t")
+            case "e": said.append("\u{1b}")
+            case "a": said.append("\u{07}")
+            case "x":
+                // `\\x3b` is a semicolon in hiding; the `x` is consumed
+                // here and the `3b` follows it through the loop below.
+                // The two marks are drawn before the test so that the
+                // else branch can give them back: an `x` that promised
+                // hex and didn't deliver must not eat its neighbours.
+                let three = marks.next()
+                let be = marks.next()
+                if three == "3", be == "b" {
+                    said.append(";")
+                } else {
+                    said.append(follow)
+                    if let three { said.append(three) }
+                    if let be { said.append(be) }
+                }
+            default: said.append(follow)
+            }
+        }
+        return said
+    }
 
     /// An X11 colour spec, as much of one as a terminal is ever sent:
     /// `rgb:RR/GG/BB` (and `rgba:`, whose alpha nothing here can show) and
@@ -719,6 +776,29 @@ final class Parser {
             case "D": screen.markEnd(exit: parts.count > 2 ? Int32(parts[2]) : nil)
             default: break
             }
+        case 7784:
+            // The input dock's own report (see TerminalShell, where the
+            // script that prints it lives, and TerminalDock, where it is
+            // answered). `buf;<cursor>;<text>;<suggestion>` — the text and
+            // the suggestion escaped, because a semicolon would end the
+            // field they sit in — or `off`, when the line grew past what a
+            // mirror can hold and the grid takes the input back. The parts
+            // past the text are joined back the way they came, which cannot
+            // happen (the script escapes its semicolons) but costs nothing
+            // to promise.
+            guard parts.count > 1 else { break }
+            if parts[1] == "off" {
+                say?(.dock(.off))
+                break
+            }
+            guard parts.count > 3 else { break }
+            say?(.dock(.line(
+                text: Parser.docked(parts[3]),
+                cursor: Int(parts[2]) ?? 0,
+                suggestion: Parser.docked(
+                    parts.count > 4 ? parts[4...].joined(separator: ";") : ""
+                )
+            )))
         default:
             swallowed += 1
         }

@@ -228,6 +228,13 @@ final class Terminal: ObservableObject, Identifiable {
     /// whoever reads it has to do it in the lane's own order (`look`,
     /// `scene`) rather than hold a reference to rows being written.
     var onDraw: ((Damage, Modes) -> Void)?
+
+    /// The shell's line editor reported its line (OSC 7784, see
+    /// TerminalDock): the dock that stands in for the prompt is told here,
+    /// on the main thread, with the frame it owes asked for by the dock
+    /// itself. The report says what the line is, never that it changed —
+    /// the caller takes the state as it comes and works out the legs.
+    var onDock: ((Dock) -> Void)?
     /// The program has ended: the exit, and whether it was Search that
     /// ended it. The last thing this says about itself.
     var onEnded: ((_ exit: Int32, _ byHand: Bool) -> Void)?
@@ -424,6 +431,7 @@ final class Terminal: ObservableObject, Identifiable {
         case .title(let said): title = said
         case .cwd(let folder): cwd = folder
         case .note, .bell: onNotice?(notice)
+        case .dock(let report): onDock?(report)
         }
     }
 
@@ -481,6 +489,14 @@ final class Terminal: ObservableObject, Identifiable {
         /// The colour the program gave the caret (OSC 12), or `.plain`
         /// for the theme's own.
         var cursorInk: Paint = .plain
+        /// The block a prompt is being built in, if the last mark the shell
+        /// printed began one and nothing has ended it since: where the
+        /// prompt's first row is, by place. The input dock holds this
+        /// moment against the frame (see TerminalDock) — the rows of a
+        /// prompt that the dock stands in for are on the screen underneath,
+        /// written there by the shell's own echo, and the frame is told to
+        /// veil them until the command runs and they become history.
+        var prompt: Int? = nil
 
         /// The whole frame read as text, one row under the last: for the
         /// caller that wants what a program printed rather than its squares.
@@ -654,7 +670,10 @@ extension Screen {
             // The first line's place: the lift is clamped to the scrollback
             // above, so this is a row that is really there.
             top: place(0) - lifted,
-            links: links, cursorInk: cursorInk
+            links: links, cursorInk: cursorInk,
+            // The prompt being built, if there is one: the last mark the
+            // shell printed began a block and nothing has run it yet.
+            prompt: blocks.last(where: { $0.state == .prompt }).map { $0.first }
         )
     }
 }

@@ -30,7 +30,7 @@
 | **shell 集成不碰用户 rc** | zsh 走 `ZDOTDIR`、bash 走 `--rcfile`，脚本在 app 自己的 Application Support 目录，每个文件先 source 用户自己的那份 |
 | **明说不做**：sixel、kitty 图形协议、连字、bidi | 同样不做（Metalterm 自己也没做 bidi）。见第七节 |
 
-不学的：Metalterm 的 **Rust 核心**（它自述 "terminal state, parsing and application logic live primarily in Rust"）—— 那是**实现语言**，不是技术；常驻图集 + 损伤驱动 + display clock + 零闲置帧这套机制才是要移植的东西。也不学它的命令面板（Search 已有自己的 ⌘K 习惯），以及它的标志性 UX（底部输入坞、命令块折叠、状态栏 + git）。
+不学的：Metalterm 的 **Rust 核心**（它自述 "terminal state, parsing and application logic live primarily in Rust"）—— 那是**实现语言**，不是技术；常驻图集 + 损伤驱动 + display clock + 零闲置帧这套机制才是要移植的东西。也不学它的命令面板（Search 已有自己的 ⌘K 习惯）、命令块折叠、状态栏 + git。底部输入坞**原本在这份不学清单上**（3.1 的旧版明确划了界），后来用户点名要"跟 Metalterm 终端一致的体验"，第 3.9 节记录了这次反转与它的落法 —— 学的是**体验**（底部输入、每次键击的上报式动效），不是它的 Rust 实现。
 
 ## 三、总体设计（已落地）
 
@@ -40,19 +40,20 @@
 
 | 文件 | 职责 |
 |---|---|
-| `Terminal.swift` (649) | PTY 生命周期（`openpty` + `posix_spawn`）、读写调度、`TIOCSWINSZ`、lane（单条串行队列，解析与取景同序）、`Scene`/`look` 两个取景口、`Modes` 快照 |
+| `Terminal.swift` (679) | PTY 生命周期（`openpty` + `posix_spawn`）、读写调度、`TIOCSWINSZ`、lane（单条串行队列，解析与取景同序）、`Scene`/`look` 两个取景口、`Modes` 快照 |
 | `TerminalGrid.swift` (882) | 屏幕模型：`Cell`/`Row`、滚动缓冲（`trim()` 裁到 `scrollback`）、alt screen、滚区域、命令块区间表、超链接内联表、光标色、`Damage` |
-| `TerminalParse.swift` (726) | VT 解析器。纯逻辑，可单测 |
+| `TerminalParse.swift` (806) | VT 解析器。纯逻辑，可单测 |
 | `TerminalCells.swift` (168) | **3 槽的格子环**：以 `Screen.place(row)` 为键的逐行缓存，`owed` 集合，滚动走 memmove |
 | `TerminalAtlas.swift` (621) | **异步字形图集**：整数 `GlyphKey`、reserve-then-fill、后台串行切割、`generation` 换代 |
 | `TerminalDraw.swift` (1143) | Metal 渲染器：设备/队列/四个管线、一个 pass 的编码、MSL 内联、`Frame`/`Record`、`groundColor`（窗格沟的底色） |
 | `TerminalPacer.swift` (206) | 帧节奏：`NSView.displayLink`、理由集（damage/caret/once/hold）、闪烁与 hold 的相位 |
-| `TerminalView.swift` (952) | `NSView` + `CAMetalLayer`：键盘（含 IME 提交路径、DECCKM/DECKPAM）、鼠标上报与选区、滚轮、尺寸换算、焦点上报（`onFocused` 缝，窗格容器挂它）、⌘-click、命令块跳转 |
+| `TerminalView.swift` (1082) | `NSView` + `CAMetalLayer`：键盘（含 IME 提交路径、DECCKM/DECKPAM）、鼠标上报与选区、滚轮、尺寸换算、焦点上报（`onFocused` 缝，窗格容器挂它）、⌘-click、命令块跳转、输入坞的接线（而纱、首帧、点击命中、IME 首矩形） |
 | `TerminalMouse.swift` (183) | 四种鼠标编码的字节与坐标换算。纯逻辑，可单测 |
 | `TerminalLook.swift` (171) | 设置项的运行时镜像（`TerminalLook.font/size/theme/…`），`changed` 通知 |
-| `TerminalShell.swift` (130) | shell 集成片段的生成与注入（zsh/bash） |
+| `TerminalShell.swift` (876) | shell 集成片段的生成与注入（zsh/bash）：zsh 走 `ZDOTDIR` 包裹，脚本内置命令块标记（OSC 133）与输入坞上报（OSC 7784）、点击移光标/删选区小件 |
 | `TerminalFind.swift` (177) | ⌘F 滚动缓冲查找、覆盖层输入框、上下一个 |
-| `TerminalField.swift` | 查找面板的动效引擎：Metalterm 的 `Cursor` 四条曲线（quartic 头、cubic 尾的 smear、三角 bleed、`1/(1+kv)` squash）+ 面板、亮条、smear 光带 |
+| `TerminalField.swift` (531) | 查找面板的动效引擎：Metalterm 的 `Cursor` 四条曲线（quartic 头、cubic 尾的 smear、三角 bleed、`1/(1+kv)` squash）+ 面板、亮条、smear 光带 |
+| `TerminalDock.swift` (588) | 底部输入坞引擎：`TerminalDock`（面板/行/每字形到达的到达台账）、`DockLedger`、`TerminalDockPlate`（画板）。只有状态与曲线，不持时钟 —— 与 `TerminalField` 同一个分工。见 3.9 |
 | `TerminalSplits.swift` (1082) | 窗格分割：`TerminalTree`（**索引竞技场**的递归二叉分割树，纯算术可单测）+ `TerminalSplits` 容器（分格/焦点/zoom/均分/轮换、title 镜像、⌘W 的逐格收缩）+ `TerminalDivider`（轴向感知分割线）。见 3.7 |
 
 着色器**不是**单独文件：MSL 以 Swift 字符串内联在 `TerminalDraw.swift` 里，运行时 `device.makeLibrary(source:)` 编译（`default.metallib` 若在 bundle 里则优先用它）。这样免掉一个构建步骤，也让 Swift 侧的 `Frame`/`Record` 和 MSL 侧的定义躺在同一个文件里 —— 它们必须同步改，放在一起才改得动。
@@ -170,7 +171,7 @@
 
 ### 3.8 查找面板的动效（Metalterm 的 `mt_gpu::motion::Cursor`）
 
-Metalterm 的输入坞（底部 dock）按 3.1 的边界**不学**，但它的**动效引擎**是数字而不是家具：`crates/mt-gpu/src/motion.rs` 的 `Cursor` 把"一个光标从一格挪到另一格"拆成四条闭式曲线，`variants.rs` 的 `CursorMotion`/`Decay`/`Keypress` 只是给它们起名字。这一轮用 `rea` 打开 Metalterm.app，靠 `nm`/`objdump`/`strings` 把 ARM64 反汇编读出来（`Cursor::update` @0x1000aa6b8、`warp_span` @0x1000ab2fc、`caret_alpha` @0x1000aa45c、`squash` @0x1000aa61c、`overlay::find::FindUi::panel_rect` @0x1000c2750），四条曲线逐个常数核对后移植到 `TerminalField.swift`，落在 **⌘F 查找面板**上（这是 terminal 模块里唯一真正的"输入框"）。
+Metalterm 的输入坞（底部 dock）当时按 3.1 的旧边界**不学**，但它的**动效引擎**是数字而不是家具：`crates/mt-gpu/src/motion.rs` 的 `Cursor` 把"一个光标从一格挪到另一格"拆成四条闭式曲线，`variants.rs` 的 `CursorMotion`/`Decay`/`Keypress` 只是给它们起名字。这一轮用 `rea` 打开 Metalterm.app，靠 `nm`/`objdump`/`strings` 把 ARM64 反汇编读出来（`Cursor::update` @0x1000aa6b8、`warp_span` @0x1000ab2fc、`caret_alpha` @0x1000aa45c、`squash` @0x1000aa61c、`overlay::find::FindUi::panel_rect` @0x1000c2750），四条曲线逐个常数核对后移植到 `TerminalField.swift`，落在 **⌘F 查找面板**上（当时是 terminal 模块里唯一真正的"输入框"）。后来 3.9 的输入坞落地，光标那套曲线也回到了它原本的岗位上 —— 详见下一节。
 
 | 曲线 | Metalterm 原式（反汇编逐常数核准） | 移植后落在 |
 |---|---|---|
@@ -205,9 +206,40 @@ Metalterm 的输入坞（底部 dock）按 3.1 的边界**不学**，但它的**
 
 测试 `Tests/SearchTests/TerminalFieldTests.swift`（15 个）：四条曲线各自的形状（quartic 在 17% 到顶、尾延迟 5% 且 25% 收完、bleed 的三角与 35% 的谷底、squash 的 1/1.3 地板与拐点）、fade 的 smoothstep、`squeezeAt` 的两端，引擎走一遍——未开时零帧、进场两曲线从同一处出发且末帧就位（smear 归零）、离场收尾成 away、原地不动不生成腿、中途改目标不从起点重来、敲键只 bleed 一次并在窗口末停止——以及 `FieldBox.home` 的两端：右缘钉死、两种位置同尺寸、都不越出窗口，窄帧保住两侧边距与 120 pt 下限。
 
+### 3.9 底部输入坞（决策反转后的落法）
+
+3.1 的旧版把输入坞划在不学清单上；用户后来点名要"跟 Metalterm 终端一致的体验"，于是**学体验不学实现**：Metalterm 的坞是自己的 Rust shell 状态机驱动 GPU 画字，Search 的坞是**给现有 zsh 的 zle 挂一套上报钩子**（OSC 7784），动效全部复用 3.8 已核准的曲线。不写用户 rc：zsh 照旧走 `ZDOTDIR` 包裹，脚本常驻 app 的 Application Support 目录，`bash` 走 `--rcfile`（bash 不报坞，只是补命令块标记）。
+
+**协议（shell → 终端）**：
+
+| 序列 | 时机 | 含义 |
+|---|---|---|
+| `OSC 7784;buf;<cursor>;<转义文本>;<转义建议>` | zle `line-pre-redraw`，每次键击/粘贴后 | 坞上整行现况。文本与建议都把 `\`、`\n`、`\r`、`\t`、`\e`、`\a`、`;` 转义成 `\xNN`，所以字段永不截断；上报侧去重（cursor/文本/建议都未变就不发） |
+| `OSC 7784;off` | 行长超 1024 或含换行 | 多行编辑归网格，坞退场（面板塌缩）；回到单行时下一个 buf 报告把板带回来 |
+| `OSC 7784;buf;0;;` | line-finish（回车那列） | 行已交出 —— 坞上那行**在原地淡出**（`FieldMotion.leave`），不是硬抹 |
+| `OSC 133 A/B/C/D` | 照旧 | A（新 prompt）= 当场丢弃坞上行；B = prompt 尾缘（纱的起点）；C（命令起）= 输入权交还网格，纱撤；D = 命令果 |
+
+**协议（终端 → shell）**，点击命中在鼠标上报**之前**：
+
+| 序列 | 语义 |
+|---|---|
+| `CSI 27;9;71~<len>;<col>~` | 点到某列 → `CURSOR=<col>`，zle 自己重报 buf，光标沿 warp 曲线走过去 |
+| `CSI 27;9;68~` / `CSI 27;9;88~<a>;<b>~` | 点左/删选区（选区删除与建议 ghost 的钩子已留，后续轮次接） |
+
+**机制要点**（都在注释里带实测解释）：
+- **纱（veil）**：坞接管输入时，从最后一个 `.prompt` 块的首行到屏底写空白格子（遮住 zsh 自己回显的那行 —— 它已逐字形复制在坞上），`paint.update` 传 `cursor:false`，网格光标不画；C/A 撤纱。C 后旧行继续在板上淡出 —— 淡出的是那条 `buf;0;;`，不是命令本身。多行/超长时 `off` 撤坞，输入自然归网格。
+- **每字形到达**：`DockLedger` 只把**新写下的字形**标为刚到（0.2 s 的上升+淡入，`FieldCurve.fade`）；改写/删改不动旧字形的年龄 —— 不是每次重报整行重播。测试钉住：追加只标追加的那几个、改写零新到、删中间不把尾部当新的。
+- **光标**：`TerminalField` 直接复用 —— 列坐标×步进喂成点，跨列移动是一条 `place` 腿（quartic 头 + cubic 尾的 warp 拖影，驻留窗口 `FieldMotion.settle`），键击 `press` 一下三角 bleed；两根 2 pt 亮条之间的缝就是 smear 光带，落位后合一。Reduce Motion 时 `settle` 一步到位。
+- **建议 ghost**：history 建议以 0.45 透明度跟在行尾（shell 侧只在光标位行尾时才报它，从不进 `POSTDISPLAY`）。
+- **零闲置帧照旧**：坞事件走 `present()`；`frame()` 画完网格调 `drawDock()`，还在动就 `DispatchQueue.main.async` 一跳回 pacer，`dockAsking` 保证一跳一帧。板的绘制是 AppKit `draw(_:)`，`drawDock()` 每帧置 `needsDisplay`，时钟读 `CACurrentMediaTime()` 各自自洽。键盘在窗、坞接管时，pacer 的 caret 理由照旧跳帧 —— 坞光标跟着它闪。
+- **IME**：坞接管时 `firstRect(forCharacterRange:)` 返回坞上光标处的矩形（跟随 warp 落点），输入法候选框钉在板上而不是网格里。
+- **`SEARCH_INPUT_DOCK=0`** 环境变量关掉 shell 侧上报，坞自然永不出现；终端侧不设开关 —— 没有报告就没有坞，协议本身就是开关。
+
+测试 `Tests/SearchTests/TerminalDockTests.swift`（11 个）：上报解析与转义回并（`;` 在字段里不破帧）、首个报告起板并接管、追加只标新到、改写零新到、接受行淡出+C 撤纱+A 丢行、prompt 当场丢、`off` 塌缩与回带、warp 曲线形状、Reduce Motion 直接就位、纱从 prompt 到屏底的边界。
+
 ## 四、协议覆盖
 
-**OSC**：`0`/`2` 标题、`7` cwd、`8` 超链接、`9` 通知、`777` 通知、`12` 光标色、`112` 恢复主题光标色、`52` 剪贴板（写）、`133` 命令块（A/B/C/D）。
+**OSC**：`0`/`2` 标题、`7` cwd、`8` 超链接、`9` 通知、`777` 通知、`7784` 输入坞上报（自有扩展，见 3.9）、`12` 光标色、`112` 恢复主题光标色、`52` 剪贴板（写）、`133` 命令块（A/B/C/D）。
 
 **CSI final**：``A B C D E F G ` d H f J K L M @ P X S T r s u g b m h l n c``。
 
@@ -231,6 +263,8 @@ Metalterm 的输入坞（底部 dock）按 3.1 的边界**不学**，但它的**
 4. **输入与交互修正**：鼠标上报（1000/1002/1003 × 四种编码，Option 强制切回选区）、DECCKM/DECKPAM（**方向键在 vim/less 里以前发的是错的形式**）、焦点上报 1004、同步输出 2026、DECRQM、G2/G3。
 5. **终端能力扩展**：OSC 8 超链接（惰性旁表，`Cell` 只多一个 `UInt16`）、OSC 52（写允许、读拒绝）、OSC 12/112、OSC 133 命令块跳转（`⌘↑`/`⌘↓`）。
 6. **设置项**：`terminal.font/size/theme/cursor/blinks/padding/shell/directory/scrollback/mouse/clipboard/links/sync`，沿用 `Prefs` 的 `didSet` → `terminalLookChanged()` → 镜像到 `TerminalLook` 的老路。
+7. **查找面板与光标动效**（`TerminalField` + `TerminalFind` + `TerminalLook.findPlace`）：`rea`/`nm`/`objdump` 反汇编 Metalterm v0.2.1，`Cursor` 四条闭式曲线逐常数核准后落在 ⌘F（见 3.8）；网页侧胶囊同腿。
+8. **底部输入坞**（`TerminalDock` + `TerminalShell` 的 zsh 脚本 + `TerminalParse` 的 OSC 7784 + `TerminalView` 接线）：决策反转的那一轮（见 3.9）。zsh 上报驱动，动效全复用 3.8 的曲线；`bash` 照旧只有命令块标记。
 
 ## 六、踩过的坑
 
@@ -250,7 +284,7 @@ Metalterm 的输入坞（底部 dock）按 3.1 的边界**不学**，但它的**
 - **下划线样式的诚实上限**：4:4（dotted）与 4:5（dashed）在格子模型里与直线同权重绘制——一个 quad 装不下一个真正的波浪/点划线，解析层如实记账，绘制层用加重线作为简写。
 - **Kitty 键盘协议**（CSI u）：一整套编码 + 旗标状态机，单独一轮更稳。目前查询如实回答"不支持"。
 - **协议级**：sixel、kitty 图形协议、内联图片、连字、bidi、平滑滚动动画。
-- **Metalterm 的标志性 UX**：底部输入坞、命令块折叠、状态栏 + git。**光标动效已移植**（见下）。
+- **Metalterm 的标志性 UX**：~~底部输入坞~~（已落地，见 3.9，含决策反转的缘由）；命令块折叠、状态栏 + git 仍不学。**光标动效已移植**（见 3.8/3.9）。选区删除与建议 ghost 的 shell 钩子已留（`CSI 27;9;88~`、建议字段），绘制侧后续轮次接。
 - **多显示器拖拽**会引起 `contentsScale` 变化 → 整个图集换代 → 闪一下。缓解是按缩放双图集缓存，先记着不建。
 - **窗格**：pane 树随会话恢复（会话只记终端标签页本身与位置，落点是新 shell，恢复时按单格重建，不还原布局）；`splitLeft`/`splitUp` 命令（从另一侧分右边那格即可做到）；跨窗格共享字形图集（每格约 4–6 MB，隐藏格帧时钟自停，代价是内存不是帧）；MetalTerm 式 `confirm_close` 设置项（关格确认目前无条件开，设置项后加）。
 - **终端字号**：捏合手势调字号（键盘与菜单已够，捏合在触控板上与滚动易混）；每标签/每窗格字号（面板与 Prefs 都是全局模型，全局即 MetalTerm 的 `font_size`）。
