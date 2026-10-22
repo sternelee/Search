@@ -655,7 +655,119 @@ struct SettingsPanel: View {
                 }
             }
             Caption("The shell and the folder are for the next terminal: a program already running is not moved.")
+            Card {
+                Line(
+                    "Claude Code",
+                    islandDetail(claudeHome, "settings.json", IslandHooks.claudeHooked(claudeHome, bridge: islandBridge))
+                ) {
+                    Pill(claudeHooked ? "Remove" : "Install", filled: !claudeHooked) { islandClaude() }
+                }
+                Rule()
+                Line(
+                    "Codex",
+                    islandDetail(codexHome, "hooks.json", IslandHooks.codexHooked(codexHome, bridge: islandBridge))
+                ) {
+                    Pill(codexHooked ? "Remove" : "Install", filled: !codexHooked) { islandCodex() }
+                }
+                Rule()
+                Line(
+                    "Pi",
+                    islandDetail(piHome, "extensions/" + IslandHooks.piName, IslandHooks.piHooked(piHome))
+                ) {
+                    Pill(piHooked ? "Remove" : "Install", filled: !piHooked) { islandPi() }
+                }
+                if let trouble = islandTrouble {
+                    Rule()
+                    Line(trouble, "Nothing changed — the file is where it said it wouldn't be") { EmptyView() }
+                }
+            }
+            Caption("The coding agents say what they're doing to the notch over the tabs (Island), and ask there before a run — but only in a terminal nobody is watching; answered here, they go on there. Clicking a row goes to its terminal. The hooks write nothing anywhere else, and Remove takes them back out cleanly.")
         }
+    }
+
+    // MARK: - the island
+
+    /// The wind the island's switches tick when they act, so the lines
+    /// say what just happened rather than what was there when the
+    /// settings were opened — none of the hooks' work is anyone's to
+    /// watch but the files' themselves.
+    @State private var islandTick = false
+    @State private var islandTrouble: String?
+
+    /// Where each CLI keeps the settings that run hooks: their own
+    /// homes, in the places they say, overridable by the environment
+    /// each one says it reads.
+    private var claudeHome: URL {
+        ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.claude")
+    }
+    private var codexHome: URL {
+        ProcessInfo.processInfo.environment["CODEX_HOME"].map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.codex")
+    }
+    private var piHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.pi/agent") }
+
+    /// Where the bridge is: the terminals' own folder in Application
+    /// Support, written on the first install (the pill's work, below).
+    private var islandBridge: String {
+        Store.file("Terminal").appendingPathComponent(IslandHooks.bridgeName).path
+    }
+
+    private var claudeHooked: Bool { IslandHooks.claudeHooked(claudeHome, bridge: islandBridge) }
+    private var codexHooked: Bool { IslandHooks.codexHooked(codexHome, bridge: islandBridge) }
+    private var piHooked: Bool { IslandHooks.piHooked(piHome) }
+
+    /// What each line says of its agent: where its settings are, and
+    /// whether ours are in them. A home that isn't there is a CLI that
+    /// isn't either — installing into it would only be litter.
+    private func islandDetail(_ home: URL, _ file: String, _ hooked: Bool) -> String {
+        let place = home.path.hasPrefix(NSHomeDirectory())
+            ? "~" + home.path.dropFirst(NSHomeDirectory().count)
+            : home.path
+        guard FileManager.default.fileExists(atPath: home.path) else {
+            return "\(place) — the folder isn't there yet"
+        }
+        return "\(place)/\(file)\(hooked ? " — watched" : " — not watched")"
+    }
+
+    /// The three switches: put the hooks in, or take them back out. The
+    /// bridge is written first, for an install wants it to exist; a
+    /// remove leaves it — it's ours, in our own folder, and it might be
+    /// an uninstall away from being wanted again.
+    private func islandClaude() {
+        islandTrouble = nil
+        do {
+            if IslandHooks.claudeHooked(claudeHome, bridge: islandBridge) {
+                try IslandHooks.removeClaude(claudeHome, bridge: islandBridge)
+            } else {
+                try IslandHooks.installClaude(claudeHome, bridge: IslandHooks.writeBridge(Store.file("Terminal")))
+            }
+        } catch { islandTrouble = error.localizedDescription }
+        islandTick.toggle()
+    }
+
+    private func islandCodex() {
+        islandTrouble = nil
+        do {
+            if IslandHooks.codexHooked(codexHome, bridge: islandBridge) {
+                try IslandHooks.removeCodex(codexHome, bridge: islandBridge)
+            } else {
+                try IslandHooks.installCodex(codexHome, bridge: IslandHooks.writeBridge(Store.file("Terminal")))
+            }
+        } catch { islandTrouble = error.localizedDescription }
+        islandTick.toggle()
+    }
+
+    private func islandPi() {
+        islandTrouble = nil
+        do {
+            if IslandHooks.piHooked(piHome) {
+                try IslandHooks.removePi(piHome)
+            } else {
+                try IslandHooks.installPi(piHome, bridge: IslandHooks.writeBridge(Store.file("Terminal")))
+            }
+        } catch { islandTrouble = error.localizedDescription }
+        islandTick.toggle()
     }
 
     // MARK: - privacy

@@ -218,3 +218,52 @@
 - **终端字号**：捏合手势调字号（键盘与菜单已够，捏合在触控板上与滚动易混）；每标签/每窗格字号（面板与 Prefs 都是全局模型，全局即 MetalTerm 的 `font_size`）。
 - **MetalTerm 调研清单余项**：⌘E/⌘J 用选中文本进查找并跳到它（两键都空闲，做的话走 TerminalFind 的 `selection(in:)`）；命令时长显示（`command_duration_threshold`，UI 落点未定）。
 - **架构**：不引入 Rust 核心，不引入 libghostty。
+
+## 八、Agent 提醒（Island）
+
+终端里跑着 coding agent（Claude Code、Codex、Pi），人却切去了别的标签页——agent 在干什么、
+在哪一步卡住等人、什么时候跑完，一概看不见。[CodeIsland](https://github.com/wxtsky/CodeIsland)
+给了这套问题的完整答案；这里照它的形状做了一套自己的，规模小得多，装在本浏览器里。
+
+**三件东西，两处接线。**
+
+1. **`Island.swift`** —— `IslandServer`（unix socket `/tmp/search-island-$UID.sock`，权限
+   0700，id 在路径里所以只有本人能碰；手写极简 HTTP 解析：请求行 + 头 + `Content-Length`
+   正文；`Shape` 分 `.http` / `.bare` / `.junk` 三形态）+ `Island`（session 模型：
+   `Session.Part` 四态 `working / asking / waiting / done`；事件→状态转移；tty → 窗口→标签→
+   窗格匹配；`PermissionRequest` 挂起等横幅上 Approve/Deny/不管它，其余事件即时回 `{}`）。
+2. **`IslandHooks.swift`** —— 安装/卸载：桥接脚本 `search-island.sh`（纯 sh + curl
+   `--unix-socket`，不编译第二个 target；`[ -S "$SOCK" ] || exit 0` 快退；写到 Application
+   Support，0755）+ Pi 扩展 `search-island.ts`（`~/.pi/agent/extensions/`，目录不存在则跳过，
+   危险 bash 与 ask 工具映射成挂起的询问）。Claude 的 `settings.json` 与 Codex 的
+   `hooks.json` 都走**合并不覆盖**：按 command 里含桥接路径认出自家条目，幂等重装、干净
+   卸载，用户自己的 hooks 一条不动。`PermissionRequest` 的 timeout 装成 86400（一天）。
+3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部居中，所有标签
+   页可见；列出全部 session；`asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、
+   窗格。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
+   时不显示——屏幕上正看着它，横幅只会说得比屏幕差。
+
+接线在 `App.swift`：`SearchApp.init` 里 `Island.shared.start()`（测试运行不占真 socket，
+`Store.testing` 时各自用各自的路径）；`window_` 尾部 overlay `IslandBar()`。设置面板
+`Settings.swift` 的终端段新增 "Coding agents" 一卡，每个 agent 一行、装/卸 Pill、状态自知。
+
+**两种形态的协议。** Claude Code 与 Codex 的 hook 走 HTTP（curl 带话，头里
+`X-Search-Tty` / `X-Search-Source`）；Pi 的扩展走裸 JSON（POSIX socket，写完半关——EOF
+就是它唯一的"说完了"）。裸 JSON **解析成完整事件即算说完，EOF 仍是兜底**——这一条
+是被测试环境逼出来的：XCTest 的 runner 沙箱不让测试进程做裸 `connect`（回
+`ENOTSOCK`，而 Network.framework 自己的连接能过），且 Network 的连接又不能半关；
+"解析即说完"让任何说不完"完了"的客户端都能用，也更快听见。服务器只收一条说一回，`PermissionRequest` 原连接挂住直到人答。
+
+**安全失败。** Search 没在跑（socket 不在）→ 桥接脚本直接 `exit 0` 不输出 → CLI 落回自己
+的批准弹窗；app 退出连接断 → 同样落回。挂起的连接断了（CLI 超时走了）→ hold 放弃，
+session 退回 `waiting`，它自己的终端接着问。
+
+**说不出口的就替它说。** `Stop` 事件带着 agent 最后说的话——没在被看的终端上时，走
+`SiteNotifications` 发系统通知（`Store.testing` 时照旧只记不发）。终端关了，里面的 agent
+hook 永远不会再跑（进程被杀不会执行任何 hook），所以由终端自己的结束替它们退场：
+`Island.retired(tty:)` 清掉该 tty 的全部 session，还开着的 hold 回一个空 `{}`，让等着的
+CLI 回自己终端去问。
+
+测试在 `Tests/SearchTests/IslandTests.swift`（12 条）：事件读取与裁词、两种 settings 的
+合并、Pi 扩展单文件、桥接脚本写出且可执行、session 状态转移、`Shape` 两形态、socket 收
+HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent。

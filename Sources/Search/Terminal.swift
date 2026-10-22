@@ -232,6 +232,11 @@ final class Terminal: ObservableObject, Identifiable {
     /// ended it. The last thing this says about itself.
     var onEnded: ((_ exit: Int32, _ byHand: Bool) -> Void)?
 
+    /// The pseudo-terminal this one runs on (`/dev/ttys…`), the one fact
+    /// about it that tells it apart from every other. What runs in it can
+    /// say where it is with this, in a hook or anywhere else.
+    let pty: String?
+
     /// What the program said that the screen can't hold (see Notice), on
     /// the main thread. BEL comes here too.
     var onNotice: ((Notice) -> Void)?
@@ -287,6 +292,9 @@ final class Terminal: ObservableObject, Identifiable {
             directory: directory ?? TerminalLook.startDirectory()
         )
         pid = made?.pid ?? 0
+        // The slave's own path, so a program that runs in this terminal can
+        // be told apart from one running anywhere else (see Island).
+        pty = made?.pty
         lane = made.map {
             TerminalLane(screen: screen, parser: parser, master: $0.master, pid: $0.pid, queue: queue)
         }
@@ -316,14 +324,17 @@ final class Terminal: ObservableObject, Identifiable {
         }
     }
 
-    /// The pair a terminal is made of: the master fd, and the program's
-    /// pid. Started as a session leader of its own (POSIX_SPAWN_SETSID),
-    /// the slave opened by the program itself as its controlling terminal,
-    /// the master closed to it, everything else Search has open withheld
-    /// (POSIX_SPAWN_CLOEXEC_DEFAULT).
+    /// What a terminal is made of: the master fd, the program's pid, and
+    /// the slave's path. Started as a session leader of its own
+    /// (POSIX_SPAWN_SETSID), the slave opened by the program itself as its
+    /// controlling terminal, the master closed to it, everything else Search
+    /// has open withheld (POSIX_SPAWN_CLOEXEC_DEFAULT). The path is the
+    /// one thing the master's side can know about the slave's, which is why
+    /// it comes back too: a program running in this terminal is tied to it
+    /// by nothing else (see Island).
     private static func spawn(
         _ argv: [String], environment: [String], width: Int, height: Int, directory: String?
-    ) -> (master: Int32, pid: pid_t)? {
+    ) -> (master: Int32, pid: pid_t, pty: String)? {
         // A program that is not there is not a terminal at all. posix_spawn
         // would say so itself, but the shell below starts it now, and a shell
         // reports a program it cannot run as an exit of its own.
@@ -392,7 +403,7 @@ final class Terminal: ObservableObject, Identifiable {
         }
         // A program that dies must not take Search with it.
         _ = fcntl(master, F_SETNOSIGPIPE, 1)
-        return (master, child)
+        return (master, child, path)
     }
 
     /// Whether a program can be started at all: a file, and one the system
