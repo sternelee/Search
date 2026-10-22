@@ -9,8 +9,10 @@ import SwiftUI
 // you're on. Clicking anything else about one goes to it: the window,
 // the tab, the pane. Each one is named by who it is and where it works
 // — the folder, as a person would say it — and the bar itself is
-// dragged to where it's wanted and stretched as wide as it's read,
-// holding both (IslandPlace).
+// dragged to where it's wanted (along the top, and down from it) and
+// stretched as wide as it's read. Every row is closed by hand — put
+// away until it says something worth hearing again — holding all three
+// of those (IslandPlace, and Island.putAway).
 
 /// Where the bar sits and how wide it is, kept as fractions and edges
 /// a drag can say: the math of it, here so it can be held to (and
@@ -47,6 +49,23 @@ enum IslandPlace {
         guard room > 0 else { return 0.5 }
         return (left + width / 2) / room
     }
+
+    /// How far down the bar is dragged, whatever the drag said: never
+    /// above the notch it starts at (the tabs' strip is its place, and
+    /// up from there is theirs), and never so far down it leaves the
+    /// window — a breath (fourteen) of the room kept under it, so the
+    /// bar stays a notch and never becomes a page.
+    static func down(_ said: CGFloat, room: CGFloat, bar: CGFloat) -> CGFloat {
+        min(max(said, 0), max(0, room - bar - 14))
+    }
+}
+
+/// The bar's own height, said by the bar itself — measured with a
+/// GeometryReader behind it, the bar being the one thing that knows
+/// how many rows it's holding.
+private struct BarHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 /// One notch over everything, every tab's: the sessions not already
@@ -54,9 +73,11 @@ enum IslandPlace {
 /// each with what it's doing and, when it has stopped to ask, the
 /// answer to give it.
 struct IslandBar: View {
-    /// The room the bar sits in: the window's width, given by the one
-    /// who knows it (the overlay's GeometryReader, in App).
-    let room: CGFloat
+    /// The room the bar sits in: the window, given by the one who knows
+    /// it (the overlay's GeometryReader, in App) — its width for the
+    /// place along the top and the width of the bar, its height for how
+    /// far down the bar can be dragged.
+    let room: CGSize
 
     @ObservedObject private var island = Island.shared
     // The front window, and the tab that holds it: the bar hides a
@@ -66,16 +87,23 @@ struct IslandBar: View {
     @ObservedObject private var front = Front.shared
 
     // Where the bar sits and how wide it is, kept from run to run: a
-    // share of the window for the place (so a resized window keeps the
-    // bar in it), points for the width. A drag says both, and says
-    // them through IslandPlace, which keeps them inside the window.
+    // share of the window for the place along the top (so a resized
+    // window keeps the bar in it), points for the width and for how
+    // far down it was dragged. A drag says all three, and says them
+    // through IslandPlace, which keeps them inside the window.
     @AppStorage("island.center") private var center = 0.5
     @AppStorage("island.width") private var held = 360.0
+    @AppStorage("island.down") private var down = 0.0
 
-    /// Where the drag started, taken on its first word: the left edge
-    /// and the width as they stood, so the drag says where it went
-    /// rather than where it's been.
-    @State private var dragFrom: (left: CGFloat, width: CGFloat)?
+    /// Where the drag started, taken on its first word: the left edge,
+    /// the top, and the width as they stood, so the drag says where it
+    /// went rather than where it's been.
+    @State private var dragFrom: (left: CGFloat, top: CGFloat, width: CGFloat)?
+
+    /// How tall the bar is right now — said by the rows it's holding,
+    /// so a drag down can be kept from carrying the bar out of the
+    /// window no matter how many rows it grew to on the way.
+    @State private var barHeight: CGFloat = 0
 
     /// What the bar holds: everything but the terminal being watched,
     /// in the order it was said. A session with nowhere to be jumped to
@@ -83,13 +111,16 @@ struct IslandBar: View {
     /// just doesn't go anywhere when clicked.
     private var shown: [Island.Session] {
         let watched = Island.watched
-        return island.sessions.filter { $0.tty != watched }
+        return island.sessions.filter { $0.tty != watched && !island.shelved.contains($0.id) }
     }
 
     /// The width the bar holds, and the left edge it holds it at —
     /// whatever a drag said, put back inside the room it's in.
-    private var width: CGFloat { IslandPlace.width(held, room: room) }
-    private var left: CGFloat { IslandPlace.left(center: center, width: width, room: room) }
+    private var width: CGFloat { IslandPlace.width(held, room: room.width) }
+    private var left: CGFloat { IslandPlace.left(center: center, width: width, room: room.width) }
+    private var top: CGFloat {
+        IslandPlace.down(down, room: room.height, bar: barHeight)
+    }
 
     var body: some View {
         if !shown.isEmpty {
@@ -106,12 +137,20 @@ struct IslandBar: View {
                     .strokeBorder(Palette.hairline, lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.08), radius: 16, y: 5)
+            // How tall the bar is, said by the bar: the drag down is
+            // clamped against it, and against the room, in IslandPlace.
+            .background(
+                GeometryReader { room in
+                    Color.clear.preference(key: BarHeight.self, value: room.size.height)
+                }
+            )
             // The two edges, held and stretched: a strip a cursor can
             // find at either end, dragging the near one and leaving the
             // far one where it was, the way a window's edges do.
             .overlay(alignment: .leading) { edge(.leading) }
             .overlay(alignment: .trailing) { edge(.trailing) }
             .padding(.leading, left)
+            .padding(.top, top)
             // The whole bar, dragged to a place. A click still goes to
             // the agent (the tap below) and a button still answers —
             // a drag needs to move first, and what hasn't moved isn't
@@ -125,13 +164,14 @@ struct IslandBar: View {
             // where it settles.
             .animation(Motion.settle, value: island.sessions.count)
             .animation(Motion.settle, value: island.holds.count)
+            .onPreferenceChange(BarHeight.self) { barHeight = $0 }
         }
     }
 
     /// One agent, one row: who it is and where it works, what it's
     /// doing, and — when it has stopped to ask — the say-so it's
     /// waiting on. Clicking the row goes there; the buttons answer
-    /// without the trip.
+    /// without the trip; the close puts it away.
     private func one(_ session: Island.Session) -> some View {
         HStack(spacing: 8) {
             // The agent, its folder, and what it's doing, as a person
@@ -157,20 +197,12 @@ struct IslandBar: View {
                 answerButton("Deny", Palette.unsafe, filled: false) { island.answer(hold, .deny) }
                 answerButton("Ask there", Palette.muted, filled: false) { island.answer(hold, .ownTerminal) }
             }
-            // The done one is put away by hand: it was kept to be read,
-            // and a click is having read it.
-            else if session.part == .done {
-                Button {
-                    island.putAway(session)
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(Palette.muted)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
+            // Any one of them, put away by hand: read and done with
+            // for a done one, kept out of the bar until it says
+            // something worth hearing again for the rest — and an ask
+            // it was holding open goes back to its own terminal to ask
+            // there, the one place it can still be answered.
+            closeButton(session)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -194,20 +226,23 @@ struct IslandBar: View {
     }
 
     /// The whole bar, dragged to a place: the drag says where its left
-    /// edge went, and the say-so is kept as the center it is — put
-    /// back through IslandPlace on the way in, so the bar can never be
-    /// dragged out of the window it's over, whatever happens to the
-    /// window later.
+    /// edge went and how far down it went, and the say-so is kept as
+    /// the center and the top it is — put back through IslandPlace on
+    /// the way in, so the bar can never be dragged out of the window
+    /// it's over, whatever happens to the window later.
     private var move: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { drag in
-                if dragFrom == nil { dragFrom = (left, width) }
+                if dragFrom == nil { dragFrom = (left, top, width) }
                 guard let from = dragFrom else { return }
                 let went = min(
                     max(from.left + drag.translation.width, 14),
-                    max(14, room - from.width - 14)
+                    max(14, room.width - from.width - 14)
                 )
-                center = IslandPlace.center(left: went, width: from.width, room: room)
+                center = IslandPlace.center(left: went, width: from.width, room: room.width)
+                down = IslandPlace.down(
+                    from.top + drag.translation.height, room: room.height, bar: barHeight
+                )
             }
             .onEnded { _ in dragFrom = nil }
     }
@@ -226,15 +261,15 @@ struct IslandBar: View {
             .gesture(
                 DragGesture(minimumDistance: 3)
                     .onChanged { drag in
-                        if dragFrom == nil { dragFrom = (left, width) }
+                        if dragFrom == nil { dragFrom = (left, top, width) }
                         guard let from = dragFrom else { return }
                         let said = side == .leading
                             ? from.width - drag.translation.width
                             : from.width + drag.translation.width
-                        let went = IslandPlace.width(said, room: room)
+                        let went = IslandPlace.width(said, room: room.width)
                         let put = side == .leading ? from.left + (from.width - went) : from.left
                         held = went
-                        center = IslandPlace.center(left: put, width: went, room: room)
+                        center = IslandPlace.center(left: put, width: went, room: room.width)
                     }
                     .onEnded { _ in dragFrom = nil }
             )
@@ -268,6 +303,21 @@ struct IslandBar: View {
         case .waiting, .done:
             return session.words ?? ""
         }
+    }
+
+    /// The close, as an × the size of a word: a click puts the row
+    /// away, whatever it's doing — Island.putAway keeps the rest.
+    private func closeButton(_ session: Island.Session) -> some View {
+        Button {
+            island.putAway(session)
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(Palette.muted)
+                .frame(width: 16, height: 16)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// An answer, as a capsule the size of a word: filled for the go

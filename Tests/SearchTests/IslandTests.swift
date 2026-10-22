@@ -245,6 +245,47 @@ final class IslandTests: XCTestCase {
         XCTAssertNil(one(), "the run over, the session goes with it")
     }
 
+    /// A row is put away by hand, whatever it's doing — and comes back
+    /// only when it says something worth hearing again: a new turn, an
+    /// ask, a finish, never the running noise between them. An ask it
+    /// was holding open when it was put away goes back to its own
+    /// terminal to ask there, the one place it can still be answered —
+    /// closing the row is not closing the asking on it.
+    @MainActor
+    func testARowIsPutAwayUntilItSaysAgain() {
+        let island = Island.shared
+        let said = { (fields: [String: Any]) in
+            IslandRead.event(body: self.json(fields), source: "claude", tty: "/dev/ttys004")
+        }
+        func one() -> Island.Session? { island.sessions.first { $0.id == "claude/run-put" } }
+
+        island.heard(said(["hook_event_name": "PreToolUse", "session_id": "run-put", "tool_name": "Bash", "tool_input": ["command": "ls"]])!)
+        island.putAway(one()!)
+        XCTAssertNil(one(), "a working one can be put away by hand too")
+        XCTAssertTrue(island.shelved.contains("claude/run-put"), "a put-away one is kept out of the bar")
+
+        island.heard(said(["hook_event_name": "PreToolUse", "session_id": "run-put", "tool_name": "Read", "tool_input": ["file_path": "/tmp"]])!)
+        XCTAssertNotNil(one(), "the work still goes on off-stage")
+        XCTAssertTrue(island.shelved.contains("claude/run-put"), "the running noise is not worth hearing again")
+
+        island.heard(said(["hook_event_name": "UserPromptSubmit", "session_id": "run-put", "prompt": "again"])!)
+        XCTAssertFalse(island.shelved.contains("claude/run-put"), "a new turn is worth hearing again")
+
+        var answered: Data?
+        island.held(IslandServer.Hold(
+            event: IslandEvent(source: "claude", name: "PermissionRequest", session: "run-put", tty: "/dev/ttys004", cwd: nil, tool: "Bash", call: "rm -rf /", prompt: nil, words: nil),
+            answer: { answered = $0 }
+        ))
+        XCTAssertEqual(one()?.part, .asking, "an ask is worth hearing again")
+        island.putAway(one()!)
+        XCTAssertEqual(answered, Data("{}".utf8), "the ask is handed back to its own terminal, not closed on the asking")
+        XCTAssertFalse(island.holds.contains { $0.event.session == "run-put" }, "the hold is let go")
+
+        island.heard(said(["hook_event_name": "SessionEnd", "session_id": "run-put"])!)
+        XCTAssertNil(one(), "the run over, the session goes with it")
+        XCTAssertFalse(island.shelved.contains("claude/run-put"), "and the shelving with it")
+    }
+
     /// A terminal with an agent at work in it is the notch's to talk
     /// about, not the desktop's: its own sayings of itself — OSC 9, a
     /// bell — are the notch's to say again (Browser skips the Mac
@@ -340,6 +381,14 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(IslandPlace.center(left: 320, width: 360, room: 1000), 0.5, accuracy: 0.001, "the middle goes back as a half")
         XCTAssertEqual(IslandPlace.center(left: 14, width: 220, room: 1000), 0.124, accuracy: 0.001, "the left edge says where the center is")
         XCTAssertEqual(IslandPlace.center(left: 14, width: 220, room: 0), 0.5, "a room of nothing keeps the middle it had")
+        // How far down the bar is dragged: no higher than the notch
+        // it starts at (up from there is the tabs' own strip), no
+        // lower than a breath of the window over the bar's own
+        // height — however many rows it grew to on the way down.
+        XCTAssertEqual(IslandPlace.down(50, room: 800, bar: 30), 50, "a middle down is kept as it is")
+        XCTAssertEqual(IslandPlace.down(-40, room: 800, bar: 30), 0, "up from the notch is the tabs' place, not the bar's")
+        XCTAssertEqual(IslandPlace.down(2000, room: 800, bar: 30), 756, "too far down keeps a breath of the window under it")
+        XCTAssertEqual(IslandPlace.down(50, room: 40, bar: 30), 0, "a room with no room below the bar holds it at the notch")
     }
 
     // MARK: - the socket

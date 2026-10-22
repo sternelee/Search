@@ -259,13 +259,18 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
    毫秒家 ×1000）。事件名在 `Island.swift` 读入时归一到横幅自己的词（BeforeTool→PreToolUse，
    afterAgentResponse→Stop，等等），小写驼峰与 PascalCase 都认。
 3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部（overlay 里的
-   `GeometryReader` 量出窗口宽度传进来），所有标签页可见；列出全部 session，每行标题是
+   `GeometryReader` 量出窗口宽与高传进来），所有标签页可见；列出全部 session，每行标题是
    **agent 名 · 目录名**（"Claude Code · search"，目录取 cwd 最后一段，没说目录就只显名字）；
-   `asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、窗格。**拖动**：整条可拖到窗口
-   任意位置，两端各有一条 6pt 的隐形边缘可拖宽窄（近端动、远端不动，窗口边缘同款）——
-   位置存成窗口宽度的份额（窗口缩放后横幅仍在里面），宽度存点数，`IslandPlace` 的纯函数
-   把两者夹在窗口内（最窄 220、最宽 720 或窗口减两侧 14pt），`@AppStorage` 记住（island.center /
-   island.width）。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
+   `asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、窗格。**拖动**：整条可沿窗口顶部
+   横向拖到任意处，也可往下拖（最深到窗口底留 14pt；`island.down` 存点数），两端各有一条 6pt
+   的隐形边缘可拖宽窄（近端动、远端不动，窗口边缘同款）——位置存成窗口宽度的份额（窗口
+   缩放后横幅仍在里面），宽度存点数，`IslandPlace` 的纯函数把两者夹在窗口内（最窄 220、
+   最宽 720 或窗口减两侧 14pt；下不越过窗口底、上不过它出发的 notch 位），`@AppStorage`
+   记住（island.center / island.width / island.down）。**每行都有 ×**：点一下把这行收走
+   （`Island.putAway`）——跑完的收了就完；跑着的、等人答话的收走后搁起来（`shelved`），
+   直到它再说了值得听的话（新开一轮、要人答应、跑完）才回来，中间的干活噪声不叫醒；
+   收走时若它正掣着一个审批，审批连同空答交回它自己的终端去问（那里还能答），关掉
+   这一行不是把问题关掉。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
    时不显示——屏幕上正看着它，横幅只会说得比屏幕差。同理，agent 在跑的终端自己发的
    OSC 9 / 777（`.note`）不再转成 macOS 系统通知（`Browser` 的 onNotice 检查
    `Island.atWork(tty:)`）：横幅说得更好，桌面不该再重复一遍。
@@ -297,4 +302,5 @@ CLI 回自己终端去问。
 Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 session）、各形状 settings 的合并与卸载
 （Claude/Codex/Qwen/Droid/Gemini/Cursor/Grok/Copilot/Pi/OMP）、桥接脚本写出且可执行、session 状态转移、
 `Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent、
-横幅位置与宽度夹在窗口内（IslandPlace 纯函数）。
+横幅位置与宽度夹在窗口内，往下拖的深度也夹在窗口内；一行可收走，收走后只等值得
+   再听的话（IslandPlace 纯函数、shelving 语义）。

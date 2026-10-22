@@ -163,6 +163,11 @@ final class Island: ObservableObject {
     @Published private(set) var sessions: [Island.Session] = []
     @Published private(set) var holds: [Island.Hold] = []
 
+    /// Sessions put away by hand, kept out of the bar until they say
+    /// something worth hearing again — a new turn, an ask, a finish —
+    /// not the running noise between them.
+    @Published private(set) var shelved: Set<String> = []
+
     private var server: IslandServer?
 
     /// Opens the island's socket, once, as the app comes up: before this
@@ -201,7 +206,9 @@ final class Island: ObservableObject {
         switch event.name {
         case "SessionStart", "UserPromptSubmit":
             // Starting is starting, whatever was said before: a session
-            // id is a run, and a run can only begin once.
+            // id is a run, and a run can only begin once. Worth hearing
+            // again even put away by hand — a new turn.
+            shelved.remove(id)
             let fresh = Island.Session(
                 id: id, source: event.source, part: .working, tool: nil, words: nil,
                 tty: event.tty, cwd: event.cwd, at: Date()
@@ -220,18 +227,23 @@ final class Island: ObservableObject {
         case "Notification":
             // The CLI's word that it's waiting on a person: something
             // to be typed, or asked in a way no hook carries. It stands
-            // as waiting until the person goes to it.
+            // as waiting until the person goes to it. Worth hearing
+            // again even put away by hand.
+            shelved.remove(id)
             grow(id, event) { $0.part = .waiting; $0.words = event.words }
         case "Stop":
             // The end of a turn, with what the agent said last: the one
             // thing a person not watching wants to know. Kept until put
-            // away — being told is the whole point of the bar.
+            // away — being told is the whole point of the bar. Worth
+            // hearing again even put away by hand — it finished.
+            shelved.remove(id)
             grow(id, event) { $0.part = .done; $0.words = event.words ?? "" }
         case "SessionEnd":
             // Said and done: the run is over and the session with it.
             let go = holds.filter { $0.event.source == event.source && $0.event.session == event.session }
             for hold in go { hold.answer(Data("{}".utf8)) }
             holds.removeAll { hold in go.contains { $0.id == hold.id } }
+            shelved.remove(id)
             sessions.removeAll { $0.id == id }
         default:
             break
@@ -246,6 +258,9 @@ final class Island: ObservableObject {
     /// `start`), and the whole of what a test needs to bring one in.
     func held(_ hold: IslandServer.Hold) {
         let id = hold.event.source + "/" + hold.event.session
+        // Worth hearing again even put away by hand: it is asking, and
+        // a person's answer is being waited on.
+        shelved.remove(id)
         grow(id, hold.event) {
             $0.part = .asking
             $0.tool = hold.event.tool
@@ -300,11 +315,16 @@ final class Island: ObservableObject {
         sessions.removeAll { $0.tty == tty }
     }
 
-    /// Puts a session away: read, and done with. Only a done one can be
-    /// put away — a working one is back in a moment, and an asking one
-    /// still has a person to answer to.
+    /// Puts a session away by hand, whatever it's doing: kept out of
+    /// the bar until it says something worth hearing again. An ask it
+    /// was holding open goes back to its own terminal to ask there —
+    /// the one place it can still be answered — rather than being
+    /// closed on the asking.
     func putAway(_ session: Island.Session) {
-        guard session.part == .done else { return }
+        if let hold = holds.first(where: { $0.event.source + "/" + $0.event.session == session.id }) {
+            answer(hold, .ownTerminal)
+        }
+        shelved.insert(session.id)
         sessions.removeAll { $0.id == session.id }
     }
 
