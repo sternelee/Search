@@ -227,17 +227,6 @@ final class Island: ObservableObject {
             // thing a person not watching wants to know. Kept until put
             // away — being told is the whole point of the bar.
             grow(id, event) { $0.part = .done; $0.words = event.words ?? "" }
-            // Said where nobody's looking, so it's said the way a long
-            // job in a terminal is (see Notifications): on the screen,
-            // for whoever is somewhere else. A test run records it and
-            // posts nothing, as always.
-            if event.tty != Island.watched {
-                SiteNotifications.shared.post(
-                    tab: event.source,
-                    title: "\(Island.name(event.source)) finished",
-                    body: event.words ?? "The turn ended in a tab you're not watching."
-                )
-            }
         case "SessionEnd":
             // Said and done: the run is over and the session with it.
             let go = holds.filter { $0.event.source == event.source && $0.event.session == event.session }

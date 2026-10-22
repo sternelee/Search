@@ -281,8 +281,7 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
 的批准弹窗；app 退出连接断 → 同样落回。挂起的连接断了（CLI 超时走了）→ hold 放弃，
 session 退回 `waiting`，它自己的终端接着问。
 
-**说不出口的就替它说。** `Stop` 事件带着 agent 最后说的话——没在被看的终端上时，走
-`SiteNotifications` 发系统通知（`Store.testing` 时照旧只记不发）。终端关了，里面的 agent
+**终端关了，agent 随之退场。** 终端关了，里面的 agent
 hook 永远不会再跑（进程被杀不会执行任何 hook），所以由终端自己的结束替它们退场：
 `Island.retired(tty:)` 清掉该 tty 的全部 session，还开着的 hold 回一个空 `{}`，让等着的
 CLI 回自己终端去问。
