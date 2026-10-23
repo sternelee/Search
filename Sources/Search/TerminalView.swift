@@ -823,6 +823,22 @@ final class TerminalView: NSView, NSTextInputClient {
         76: "\u{1b}OM", 81: "\u{1b}OX",
     ]
 
+    /// Control letters are C0 bytes, not Cocoa's move/kill/cancel actions.
+    /// AppKit may already have translated the character; preserve that byte,
+    /// otherwise derive it from the layout's character, never a hardware code.
+    static func controlCharacter(_ text: String) -> String? {
+        guard text.unicodeScalars.count == 1, let scalar = text.unicodeScalars.first else { return nil }
+        let value = scalar.value
+        if value < 32 || value == 127 { return text }
+        if (64...95).contains(value) || (97...122).contains(value) {
+            return UnicodeScalar(value & 0x1f).map(String.init)
+        }
+        let aliases: [UInt32: UInt32] = [
+            32: 0, 50: 0, 51: 27, 52: 28, 53: 29, 54: 30, 55: 31, 56: 127, 63: 127,
+        ]
+        return aliases[value].flatMap(UnicodeScalar.init).map(String.init)
+    }
+
     override func keyDown(with event: NSEvent) {
         let marks = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if marks.contains(.command) {
@@ -839,6 +855,14 @@ final class TerminalView: NSView, NSTextInputClient {
             default:
                 break
             }
+            return
+        }
+        if marks.contains(.control),
+           let byte = Self.controlCharacter(event.characters ?? "")
+                ?? Self.controlCharacter(event.charactersIgnoringModifiers ?? "") {
+            // Keep Meta's escape prefix, but bypass interpretKeyEvents: it
+            // consumes ^J/^K/^C as editor commands without writing to the PTY.
+            terminal.send((marks.contains(.option) ? "\u{1b}" : "") + byte)
             return
         }
         if let said = TerminalView.keys[event.keyCode] {
