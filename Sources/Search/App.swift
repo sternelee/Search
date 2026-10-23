@@ -25,6 +25,11 @@ struct SearchApp: App {
             Session.startFresh(spaces: Spaces.read().map(\.id))
             Browsers.startFresh()
         }
+        // The island's socket, before anything could be listening for it:
+        // an agent's hook could run the moment a terminal opens, and what
+        // it says should be heard, not held until the first settings panel
+        // happens to open one (see Island).
+        Island.shared.start()
     }
 
     var body: some Scene {
@@ -483,6 +488,21 @@ struct ContentView: View {
         }
         .ignoresSafeArea()
         .background { fullscreenWatch }
+        // The agents' notch, over every tab (see IslandBar): under the
+        // strip when there is one, at the window's own top when there
+        // isn't. Not in a page's fullscreen — there is no top to be over.
+        // The bar is told how wide and tall the window is, and holds
+        // itself where it was dragged to — along the top and down from
+        // it — as wide as it was stretched (see IslandBar, IslandPlace).
+        .overlay(alignment: .top) {
+            if fullscreenTab == nil {
+                GeometryReader { room in
+                    IslandBar(room: room.size)
+                }
+                .padding(.top, band == 0 ? 8 : Metrics.strip + 6)
+                .allowsHitTesting(true)
+            }
+        }
         .animation(Motion.glide, value: browser.prefs.sidebar)
         .animation(Motion.glide, value: browser.prefs.sidePosition)
         .animation(.easeOut(duration: 0.12), value: fullscreenTab?.id)
@@ -517,11 +537,12 @@ struct ContentView: View {
             .overlay {
                 if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
             }
-            .overlay(alignment: .topTrailing) {
-                if browser.finding {
-                    FindBar(browser: browser)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
+            .overlay(alignment: TerminalLook.findPlace == .top ? .topTrailing : .bottomTrailing) {
+                // Always mounted. The pill draws and erases itself by its
+                // own leg (see FindBar): a leg is a curve read per frame,
+                // and a view taken out of the hierarchy leaves instantly
+                // whatever its transition was, which is no way to leave.
+                FindBar(browser: browser)
             }
             .overlay(alignment: .topTrailing) {
                 if let assistant = browser.assisting, assistant.tab == tab.id {

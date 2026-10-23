@@ -27,6 +27,24 @@ enum TerminalTheme: String, CaseIterable, Identifiable {
     }
 }
 
+/// Where the ⌘F panel sits in the frame. Metalterm's own input box is a dock
+/// at the bottom, which TERMINAL.md declines to copy — but the *place* is not
+/// the furniture, and a find bar over the top corner is a long way from the
+/// words you are looking at when the thing you are hunting is the prompt you
+/// just typed. So it is a setting, and it starts where it has always been.
+enum TerminalFindPlace: String, CaseIterable, Identifiable {
+    case top, bottom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .top: return "Top"
+        case .bottom: return "Bottom"
+        }
+    }
+}
+
 /// The shape of the cursor. A block covers the whole cell, the way the
 /// terminals of old did; a bar or a line is thinner, and leaves the glyph
 /// under it readable.
@@ -64,6 +82,11 @@ enum TerminalLook {
     static var cursor: TerminalCursor = .block
     /// Whether the cursor blinks while the keyboard is in the terminal.
     static var blinks = true
+    /// Where the ⌘F panel sits: over the frame's top corner, or over its
+    /// bottom one. Only the panel's place — the smear, the bars and the
+    /// bleed are the same either way, because they run along the panel's own
+    /// leading edge rather than down the frame.
+    static var findPlace: TerminalFindPlace = .top
     /// The room left at the terminal's edges, in points.
     static var padding: Double = 4
     /// The program a new terminal runs. Empty is the Mac's own shell.

@@ -422,6 +422,10 @@ final class Preferences: ObservableObject {
     @Published var terminalBlinks: Bool {
         didSet { store.set(terminalBlinks, forKey: "terminal.blinks"); terminalLookChanged() }
     }
+    /// Where the ⌘F panel sits in a terminal. See TerminalLook.findPlace.
+    @Published var terminalFindPlace: TerminalFindPlace {
+        didSet { store.set(terminalFindPlace.rawValue, forKey: "terminal.findPlace"); terminalLookChanged() }
+    }
     @Published var terminalPadding: Double {
         didSet { store.set(terminalPadding, forKey: "terminal.padding"); terminalLookChanged() }
     }
@@ -465,6 +469,7 @@ final class Preferences: ObservableObject {
         TerminalLook.theme = terminalTheme
         TerminalLook.cursor = terminalCursor
         TerminalLook.blinks = terminalBlinks
+        TerminalLook.findPlace = terminalFindPlace
         TerminalLook.padding = terminalPadding
         TerminalLook.shell = terminalShell
         TerminalLook.directory = terminalDirectory
@@ -567,6 +572,8 @@ final class Preferences: ObservableObject {
         terminalTheme = store.string(forKey: "terminal.theme").flatMap(TerminalTheme.init) ?? .system
         terminalCursor = store.string(forKey: "terminal.cursor").flatMap(TerminalCursor.init) ?? .block
         terminalBlinks = store.object(forKey: "terminal.blinks") as? Bool ?? true
+        terminalFindPlace = store.string(forKey: "terminal.findPlace")
+            .flatMap(TerminalFindPlace.init) ?? .top
         terminalPadding = store.object(forKey: "terminal.padding") as? Double ?? 4
         terminalShell = store.string(forKey: "terminal.shell") ?? ""
         terminalDirectory = store.string(forKey: "terminal.directory") ?? ""

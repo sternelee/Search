@@ -69,16 +69,35 @@ final class PaneStage: NSView {
     private var focused: Tab.ID?
     private var findBar: FindHost?
     private var findWidth: CGFloat?
+    /// The pill's own going, in flight: the host stays mounted until the
+    /// pill's leg has run, and a find opened again inside that window
+    /// cancels the going and the leg turns around instead.
+    private var findGoing: DispatchWorkItem?
 
     /// The controls belong to the stage so they stay above WebKit, below
     /// window panels, and follow every layout of the focused page.
     func showFind(_ browser: Browser?) {
         guard let browser else {
-            findBar?.removeFromSuperview()
-            findBar = nil
-            findWidth = nil
+            // The pill leaves on a leg of its own (see FindBar), and a host
+            // taken out of the hierarchy mid-leg would cut the leg off. The
+            // going waits for the leg; a find opened again inside the window
+            // cancels the going.
+            if findBar != nil, findGoing == nil {
+                let going = DispatchWorkItem { [weak self] in
+                    guard let self, self.findGoing != nil else { return }
+                    self.findGoing = nil
+                    self.findBar?.removeFromSuperview()
+                    self.findBar = nil
+                    self.findWidth = nil
+                }
+                findGoing = going
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + FieldMotion.leave + 0.05, execute: going)
+            }
             return
         }
+        findGoing?.cancel()
+        findGoing = nil
         if findBar == nil {
             let bar = FindHost(rootView: FindBar(browser: browser))
             findBar = bar
@@ -109,17 +128,28 @@ final class PaneStage: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// What a change of the terminal's look is heard through: the find pill's
+    /// end of the page comes out of the same setting the terminal's own panel
+    /// does, and it is not a thing a frame has any other reason to reread.
+    private var heard: NSObjectProtocol?
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         divider.stage = self
         addSubview(divider)
+        heard = NotificationCenter.default.addObserver(
+            forName: TerminalLook.changed, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.needsLayout = true }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
         if let monitor { NSEvent.removeMonitor(monitor) }
+        if let heard { NotificationCenter.default.removeObserver(heard) }
     }
 
     override func updateLayer() {
@@ -288,7 +318,13 @@ final class PaneStage: NSView {
                     bar.rootView.availableWidth = page.width
                 }
                 let width = min(390, page.width)
-                bar.frame = CGRect(x: page.maxX - width, y: page.minY,
+                // Over the page's top corner or its bottom one, as the setting
+                // says — the same place the terminal's own ⌘F panel takes (see
+                // TerminalLook.findPlace).
+                let y = TerminalLook.findPlace == .top
+                    ? page.minY
+                    : page.maxY - min(60, page.height)
+                bar.frame = CGRect(x: page.maxX - width, y: y,
                                    width: width, height: min(60, page.height))
             }
         }

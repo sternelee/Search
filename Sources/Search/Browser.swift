@@ -3916,13 +3916,16 @@ final class Browser: NSObject, ObservableObject {
         // A shell that says something of itself is heard here (see Terminal,
         // TerminalShell): OSC 9 / OSC 777 from a tab nobody is looking at is
         // a Mac notification — the shell in front is simply speaking. A
-        // bell in the back is a quiet nod, not a shout.
+        // bell in the back is a quiet nod, not a shout. A shell an agent is
+        // at work in says itself in the notch over the tabs (Island), and
+        // its sayings on the way are the notch's to say, not the desktop's.
         tab.onNotice = { [weak self, weak tab] notice in
             guard let self, let tab else { return }
             guard tab !== self.active || self.window?.isKeyWindow != true else { return }
             switch notice {
             case .note(let title, let body):
                 guard Shared.prefs.siteNotifications else { return }
+                if tab.madeShell?.agentAtWork == true { return }
                 SiteNotifications.shared.post(tab: tab.id.uuidString, title: title, body: body)
             case .bell:
                 NSApp.requestUserAttention(.criticalRequest)

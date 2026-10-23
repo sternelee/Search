@@ -219,6 +219,13 @@ final class Terminal: ObservableObject, Identifiable {
     @Published private(set) var title = ""
     /// Where the shell is (OSC 7), for the field and the file menus.
     @Published private(set) var cwd: URL?
+    /// The folder this terminal was started in, held aside for the status
+    /// bar's first frame (the shell's own report — OSC 7, every prompt —
+    /// corrects it as soon as there is one). Never put into `cwd`: that is
+    /// the folder the shell itself has said it is in, and a tab is named
+    /// by it — a guess from spawn would name the tab after the directory
+    /// before the shell — or the process running in it — ever said a word.
+    private(set) var startedIn: URL?
     /// The exit of the program, when it has ended. Zero is the good one.
     @Published private(set) var exit: Int32?
 
@@ -228,9 +235,26 @@ final class Terminal: ObservableObject, Identifiable {
     /// whoever reads it has to do it in the lane's own order (`look`,
     /// `scene`) rather than hold a reference to rows being written.
     var onDraw: ((Damage, Modes) -> Void)?
+
+    /// The shell's line editor reported its line (OSC 7784, see
+    /// TerminalDock): the dock that stands in for the prompt is told here,
+    /// on the main thread, with the frame it owes asked for by the dock
+    /// itself. The report says what the line is, never that it changed —
+    /// the caller takes the state as it comes and works out the legs.
+    var onDock: ((Dock) -> Void)?
+
+    /// The folder the shell said it is in (OSC 7, reported per prompt by
+    /// the same script that reports the dock). The status bar listens
+    /// here, because the folder is its news.
+    var onCwd: ((URL) -> Void)?
     /// The program has ended: the exit, and whether it was Search that
     /// ended it. The last thing this says about itself.
     var onEnded: ((_ exit: Int32, _ byHand: Bool) -> Void)?
+
+    /// The pseudo-terminal this one runs on (`/dev/ttys…`), the one fact
+    /// about it that tells it apart from every other. What runs in it can
+    /// say where it is with this, in a hook or anywhere else.
+    let pty: String?
 
     /// What the program said that the screen can't hold (see Notice), on
     /// the main thread. BEL comes here too.
@@ -286,7 +310,13 @@ final class Terminal: ObservableObject, Identifiable {
             argv, environment: environment, width: width, height: height,
             directory: directory ?? TerminalLook.startDirectory()
         )
+        // The folder the shell was started in, held aside for the status
+        // bar's first frame — see startedIn, where the comment lives.
+        startedIn = URL(fileURLWithPath: directory ?? TerminalLook.startDirectory() ?? FileManager.default.currentDirectoryPath)
         pid = made?.pid ?? 0
+        // The slave's own path, so a program that runs in this terminal can
+        // be told apart from one running anywhere else (see Island).
+        pty = made?.pty
         lane = made.map {
             TerminalLane(screen: screen, parser: parser, master: $0.master, pid: $0.pid, queue: queue)
         }
@@ -316,14 +346,17 @@ final class Terminal: ObservableObject, Identifiable {
         }
     }
 
-    /// The pair a terminal is made of: the master fd, and the program's
-    /// pid. Started as a session leader of its own (POSIX_SPAWN_SETSID),
-    /// the slave opened by the program itself as its controlling terminal,
-    /// the master closed to it, everything else Search has open withheld
-    /// (POSIX_SPAWN_CLOEXEC_DEFAULT).
+    /// What a terminal is made of: the master fd, the program's pid, and
+    /// the slave's path. Started as a session leader of its own
+    /// (POSIX_SPAWN_SETSID), the slave opened by the program itself as its
+    /// controlling terminal, the master closed to it, everything else Search
+    /// has open withheld (POSIX_SPAWN_CLOEXEC_DEFAULT). The path is the
+    /// one thing the master's side can know about the slave's, which is why
+    /// it comes back too: a program running in this terminal is tied to it
+    /// by nothing else (see Island).
     private static func spawn(
         _ argv: [String], environment: [String], width: Int, height: Int, directory: String?
-    ) -> (master: Int32, pid: pid_t)? {
+    ) -> (master: Int32, pid: pid_t, pty: String)? {
         // A program that is not there is not a terminal at all. posix_spawn
         // would say so itself, but the shell below starts it now, and a shell
         // reports a program it cannot run as an exit of its own.
@@ -392,7 +425,7 @@ final class Terminal: ObservableObject, Identifiable {
         }
         // A program that dies must not take Search with it.
         _ = fcntl(master, F_SETNOSIGPIPE, 1)
-        return (master, child)
+        return (master, child, path)
     }
 
     /// Whether a program can be started at all: a file, and one the system
@@ -411,8 +444,11 @@ final class Terminal: ObservableObject, Identifiable {
     private func heard(_ notice: Notice) {
         switch notice {
         case .title(let said): title = said
-        case .cwd(let folder): cwd = folder
+        case .cwd(let folder):
+            cwd = folder
+            onCwd?(folder)
         case .note, .bell: onNotice?(notice)
+        case .dock(let report): onDock?(report)
         }
     }
 
@@ -470,6 +506,14 @@ final class Terminal: ObservableObject, Identifiable {
         /// The colour the program gave the caret (OSC 12), or `.plain`
         /// for the theme's own.
         var cursorInk: Paint = .plain
+        /// The block a prompt is being built in, if the last mark the shell
+        /// printed began one and nothing has ended it since: where the
+        /// prompt's first row is, by place. The input dock holds this
+        /// moment against the frame (see TerminalDock) — the rows of a
+        /// prompt that the dock stands in for are on the screen underneath,
+        /// written there by the shell's own echo, and the frame is told to
+        /// veil them until the command runs and they become history.
+        var prompt: Int? = nil
 
         /// The whole frame read as text, one row under the last: for the
         /// caller that wants what a program printed rather than its squares.
@@ -643,7 +687,10 @@ extension Screen {
             // The first line's place: the lift is clamped to the scrollback
             // above, so this is a row that is really there.
             top: place(0) - lifted,
-            links: links, cursorInk: cursorInk
+            links: links, cursorInk: cursorInk,
+            // The prompt being built, if there is one: the last mark the
+            // shell printed began a block and nothing has run it yet.
+            prompt: blocks.last(where: { $0.state == .prompt }).map { $0.first }
         )
     }
 }
