@@ -358,6 +358,68 @@ final class TerminalDockTests: XCTestCase {
         XCTAssertEqual(prompt + plate.promptDy, digits, accuracy: 0.01)
     }
 
+    func testChineseCaretFollowsTheWholeInput() {
+        let plate = TerminalDockPlate()
+        plate.frame = NSRect(x: 0, y: 0, width: 500, height: DockBox.height)
+        var model = TerminalDock.Model()
+        model.owns = true
+        model.plate = 1
+        model.text = "中文"
+        model.cursor = 2
+        model.caret.head = 2
+        model.caret.tail = 2
+        _ = plate.take(model, blink: true)
+        let start = plate.caretSpot(at: 0).minX
+        let end = plate.caretSpot(at: 2).minX
+        let drawnWidth = ("中文" as NSString).size(withAttributes: [.font: plate.face]).width
+        XCTAssertGreaterThanOrEqual(end - start, drawnWidth, "the caret must not overlap Chinese text")
+        XCTAssertGreaterThanOrEqual(end - start, plate.advance * 4, "two Chinese glyphs occupy four cells")
+        XCTAssertEqual(plate.column(at: NSPoint(x: start + plate.advance * 2, y: 0)), 1,
+                       "a click after one wide glyph must return one character, not two cells")
+    }
+
+    func testMixedInputUsesTheSamePositionsForCaretAndClicks() {
+        let plate = TerminalDockPlate()
+        plate.frame = NSRect(x: 0, y: 0, width: 500, height: DockBox.height)
+        var model = TerminalDock.Model()
+        model.owns = true
+        model.plate = 1
+        model.text = "a中文b"
+        model.cursor = 4
+        _ = plate.take(model, blink: true)
+        let widths = (0..<4).map { plate.caretSpot(at: $0 + 1).minX - plate.caretSpot(at: $0).minX }
+        XCTAssertEqual(widths[0], plate.advance, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(widths[1] + 0.01, plate.advance * 2)
+        XCTAssertGreaterThanOrEqual(widths[2] + 0.01, plate.advance * 2)
+        XCTAssertEqual(widths[3], plate.advance, accuracy: 0.01)
+        for index in 0...4 {
+            let spot = plate.caretSpot(at: index)
+            XCTAssertEqual(plate.column(at: spot.origin), index)
+        }
+    }
+
+    func testWideInputScrollsWithItsCaretAndRemeasuresWithTheFont() {
+        let size = TerminalLook.size
+        defer { TerminalLook.size = size }
+        TerminalLook.size = 12
+        let plate = TerminalDockPlate()
+        plate.frame = NSRect(x: 0, y: 0, width: 180, height: DockBox.height)
+        var model = TerminalDock.Model()
+        model.owns = true
+        model.plate = 1
+        model.text = String(repeating: "中文a", count: 20)
+        model.cursor = model.text.count
+        _ = plate.take(model, blink: true)
+        let firstWidth = plate.caretSpot(at: model.cursor).minX - plate.caretSpot(at: 0).minX
+        XCTAssertLessThanOrEqual(plate.caretSpot(at: model.cursor).maxX, plate.bounds.maxX - DockBox.pad)
+        XCTAssertEqual(plate.column(at: plate.caretSpot(at: model.cursor).origin), model.cursor)
+        TerminalLook.size = 24
+        plate.refont()
+        let nextWidth = plate.caretSpot(at: model.cursor).minX - plate.caretSpot(at: 0).minX
+        XCTAssertGreaterThan(nextWidth, firstWidth * 1.5, "font changes must invalidate measured character positions")
+        XCTAssertLessThanOrEqual(plate.caretSpot(at: model.cursor).maxX, plate.bounds.maxX - DockBox.pad)
+    }
+
     /// The dock's own size: the terminal's configured face, not a step
     /// down from it — the person asked for the input line's text to
     /// stand as tall as the grid's. Metalterm's dock measured at its 12pt

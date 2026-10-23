@@ -10,6 +10,63 @@ import AppKit
 /// draw, and every caret since sat that far off its line. The scan says
 /// where the ink really is; the assertion says all three agree.
 final class DumpRenderTests: XCTestCase {
+    @MainActor func testChineseInputCaretIsPaintedAfterTheText() throws {
+        let family = TerminalLook.family
+        let size = TerminalLook.size
+        defer {
+            TerminalLook.family = family
+            TerminalLook.size = size
+        }
+        TerminalLook.family = ""
+        TerminalLook.size = 12
+        let plate = TerminalDockPlate()
+        plate.frame = NSRect(x: 0, y: 0, width: 360, height: DockBox.height)
+        var model = TerminalDock.Model()
+        model.owns = true
+        model.plate = 1
+        model.text = "中文输入abc"
+        model.cursor = model.text.count
+        model.caret.head = CGFloat(model.cursor)
+        model.caret.tail = CGFloat(model.cursor)
+
+        func render(blink: Bool) throws -> NSBitmapImageRep {
+            _ = plate.take(model, blink: blink)
+            let rep = try XCTUnwrap(NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: 360 * 4, pixelsHigh: Int(DockBox.height) * 4,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+            ))
+            rep.size = plate.bounds.size
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            plate.draw(plate.bounds)
+            return rep
+        }
+        let withoutCaret = try render(blink: false)
+        let withCaret = try render(blink: true)
+        var lastTextPixel = -1
+        var firstCaretPixel = withCaret.pixelsWide
+        let start = Int(plate.caretSpot(at: 0).minX * 4)
+        for y in 8..<(withCaret.pixelsHigh - 8) {
+            let ground = try XCTUnwrap(withoutCaret.colorAt(x: 300 * 4, y: y))
+            for x in start..<(200 * 4) {
+                let a = try XCTUnwrap(withoutCaret.colorAt(x: x, y: y))
+                let b = try XCTUnwrap(withCaret.colorAt(x: x, y: y))
+                let text = abs(a.redComponent - ground.redComponent)
+                    + abs(a.greenComponent - ground.greenComponent) + abs(a.blueComponent - ground.blueComponent)
+                let caret = abs(a.redComponent - b.redComponent)
+                    + abs(a.greenComponent - b.greenComponent) + abs(a.blueComponent - b.blueComponent)
+                if text > 0.25 { lastTextPixel = max(lastTextPixel, x) }
+                if caret > 0.25 { firstCaretPixel = min(firstCaretPixel, x) }
+            }
+        }
+        XCTAssertGreaterThan(lastTextPixel, start, "Chinese input must paint")
+        XCTAssertLessThan(firstCaretPixel, withCaret.pixelsWide, "the caret must paint")
+        XCTAssertGreaterThan(firstCaretPixel, lastTextPixel, "a blinking caret must be after the rendered input")
+        let png = try XCTUnwrap(withCaret.representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: "/tmp/dock_plate_chinese.png"))
+    }
     @MainActor func testTheThreeInksOfTheDockAgree() throws {
         TerminalLook.family = "FiraCodeNFM-Ret"
         let plate = TerminalDockPlate()

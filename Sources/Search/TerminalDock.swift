@@ -98,6 +98,7 @@ enum DockBox {
         let width = max(120, bounds.width - margin * 2)
         return NSRect(x: margin, y: edge + bar, width: width, height: height)
     }
+
 }
 
 /// Which glyphs of a line are new, for the arrival each one is owed. Pure,
@@ -434,6 +435,10 @@ final class TerminalDockPlate: NSView {
     }
 
     private var picture = Picture()
+    /// Character boundaries in points, rebuilt only when the text or face
+    /// changes. A shell cursor is a character index, not a display column.
+    private var textPositions: [CGFloat] = [0]
+    private var suggestionPositions: [CGFloat] = [0]
 
     /// The face the dock writes with — the terminal's own, a step down
     /// from the grid like the find panel's field. Re-read when the look
@@ -487,6 +492,31 @@ final class TerminalDockPlate: NSView {
         if let rows = Self.inkRows(of: "0", in: face) {
             inkH = max(6, rows.high - rows.low)
         }
+        measureText()
+    }
+
+    private func positions(for text: String) -> [CGFloat] {
+        var positions: [CGFloat] = [0]
+        for char in text {
+            let cells: CGFloat = Parser.isWide(char) ? 2 : 1
+            let measured = (String(char) as NSString).size(withAttributes: [.font: face]).width.rounded(.up)
+            positions.append(positions.last! + max(advance * cells, measured))
+        }
+        return positions
+    }
+
+    private func measureText() {
+        textPositions = positions(for: picture.text)
+        suggestionPositions = positions(for: picture.suggestion)
+    }
+
+    /// The motion engine interpolates character indices. Interpolate their
+    /// measured boundaries so its head and tail follow wide glyphs too.
+    private func textOffset(at column: CGFloat) -> CGFloat {
+        let bounded = min(max(0, column), CGFloat(textPositions.count - 1))
+        let index = Int(bounded)
+        guard index + 1 < textPositions.count else { return textPositions[index] }
+        return textPositions[index] + (textPositions[index + 1] - textPositions[index]) * (bounded - CGFloat(index))
     }
 
     /// Where a glyph's ink center lands in the plate's glyph rect — the
@@ -567,7 +597,9 @@ final class TerminalDockPlate: NSView {
         next.edge = model.caret.edgeAlpha
         next.blink = blink
         guard next != picture else { return false }
+        let textChanged = next.text != picture.text || next.suggestion != picture.suggestion
         picture = next
+        if textChanged { measureText() }
         return true
     }
 
@@ -579,7 +611,7 @@ final class TerminalDockPlate: NSView {
     /// caret, exactly as far as it has to.
     private var offset: CGFloat {
         let band = bounds.width - textX - DockBox.pad
-        let caret = advance * CGFloat(picture.cursor)
+        let caret = textOffset(at: CGFloat(picture.cursor))
         let room = band - advance * 2
         return max(0, caret - max(0, room))
     }
@@ -587,15 +619,18 @@ final class TerminalDockPlate: NSView {
     /// The column of the line a point sits over, clamped to the line —
     /// the answer a click is looking for.
     func column(at point: NSPoint) -> Int {
-        let col = ((point.x - textX + offset) / max(1, advance)).rounded()
-        return min(max(0, Int(col)), picture.text.count)
+        let x = point.x - textX + offset
+        for index in 0..<(textPositions.count - 1) {
+            if x < (textPositions[index] + textPositions[index + 1]) / 2 { return index }
+        }
+        return textPositions.count - 1
     }
 
     /// The caret's rect in this view, for the input method's candidates to
     /// sit on while the dock owns the input.
     func caretSpot(at column: Int) -> NSRect {
         NSRect(
-            x: textX + advance * CGFloat(column) - offset,
+            x: textX + textOffset(at: CGFloat(column)) - offset,
             y: caretMid - inkH / 2,
             width: advance, height: inkH
         )
@@ -624,21 +659,26 @@ final class TerminalDockPlate: NSView {
         drawGlyph("❯", at: DockBox.pad, alpha: 0.55, rise: 0, shown: shown, dy: promptDy)
         let band = bounds.width - textX - DockBox.pad
         let shift = offset
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: NSRect(x: textX, y: 0, width: max(0, band), height: bounds.height)).addClip()
         for (index, char) in p.text.enumerated() {
-            let x = textX + advance * CGFloat(index) - shift
-            guard x >= textX - advance, x < textX + band else { continue }
+            let x = textX + textPositions[index] - shift
+            let width = textPositions[index + 1] - textPositions[index]
+            guard x + width > textX, x < textX + band else { continue }
             // A glyph's arrival: a fifth of a window, the caret's own
             // share of one, spent rising and coming in.
             let arrival = p.arrivals.indices.contains(index) ? p.arrivals[index] : 0
             let t = arrival > 0 ? min(1, max(0, (now - arrival) / DockBox.arrive)) : 1
-            drawGlyph(char, at: x, alpha: t, rise: DockBox.rise * (1 - t), shown: shown)
+            drawGlyph(char, at: x, alpha: t, rise: DockBox.rise * (1 - t), shown: shown, width: width)
         }
         // The suggestion, ghosted after the line as far as there is room.
         if !p.suggestion.isEmpty {
             for (index, char) in p.suggestion.enumerated() {
-                let x = textX + advance * CGFloat(p.text.count + index) - shift
-                guard x >= textX - advance, x < textX + band else { continue }
-                drawGlyph(char, at: x, alpha: DockBox.ghost, rise: 0, shown: shown)
+                let x = textX + textPositions.last! + suggestionPositions[index] - shift
+                let width = suggestionPositions[index + 1] - suggestionPositions[index]
+                guard x + width > textX, x < textX + band else { continue }
+                drawGlyph(char, at: x, alpha: DockBox.ghost, rise: 0, shown: shown, width: width)
             }
         }
         // The caret: two bars on the warp's head and tail with the smear
@@ -646,8 +686,8 @@ final class TerminalDockPlate: NSView {
         // where it was thrown from. Hidden while blinked out, which is
         // the pacer's clock — the same one the grid's caret keeps.
         guard p.blink else { return }
-        let headX = textX + advance * p.head - shift
-        let tailX = textX + advance * p.tail - shift
+        let headX = textX + textOffset(at: p.head) - shift
+        let tailX = textX + textOffset(at: p.tail) - shift
         let barY = caretMid - inkH / 2
         let band2 = NSRect(x: min(headX, tailX), y: barY, width: max(0, abs(headX - tailX)), height: inkH)
         if band2.width > 0.1 {
@@ -669,13 +709,14 @@ final class TerminalDockPlate: NSView {
     /// passed in because the plate's opacity is already in it — a glyph
     /// arriving or fading rides the plate it is drawn on.
     private func drawGlyph(
-        _ char: Character, at x: CGFloat, alpha: CGFloat, rise: CGFloat, shown: CGFloat, dy: CGFloat = 0
+        _ char: Character, at x: CGFloat, alpha: CGFloat, rise: CGFloat, shown: CGFloat,
+        dy: CGFloat = 0, width: CGFloat? = nil
     ) {
         let ink = TerminalFieldPanel.word
         (String(char) as NSString).draw(
             in: NSRect(
                 x: x, y: (bounds.height - DockBox.tall) / 2 - rise + dy,
-                width: advance, height: DockBox.tall
+                width: width ?? advance, height: DockBox.tall
             ),
             withAttributes: [
                 .font: face as Any,
