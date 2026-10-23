@@ -228,7 +228,7 @@ final class TerminalView: NSView, NSTextInputClient {
         paint.size(bounds, scale: window?.backingScaleFactor ?? 1)
         placeStatus()
         let width = paint.columns(for: bounds.width)
-        let height = paint.rows(for: bounds.height - statusBar.frame.height)
+        let height = paint.rows(for: bounds.height - statusBar.frame.height - dockStrip)
         if width != sized.width || height != sized.height {
             sized = (width, height)
             lift = 0
@@ -237,6 +237,30 @@ final class TerminalView: NSView, NSTextInputClient {
         placeFindField()
         placeDock()
         present()
+    }
+
+    /// The rows the input dock's plate stands on, held out of the grid
+    /// while the plate stands — the same claim the status bar makes on
+    /// the frame's own bottom edge. The grid ends above the input line
+    /// instead of scrolling its output under it: a blanked row the grid
+    /// still writes into is a line of the person's output made invisible
+    /// (the last line of a running command vanished the moment the plate
+    /// came to stand over it — the strip veil hid the row rather than
+    /// the grid's never writing it). The strip is the plate's own claim
+    /// on the height — the edge it keeps at the frame's bottom, its
+    /// height, and the third of a row of air above it — measured
+    /// analytically (the same numbers `placeDock` puts the plate at),
+    /// so the rows are worked out before the plate has a frame to ask
+    /// for. The plate arriving or leaving changes the rows the terminal
+    /// is sized for, and the shell is told about that the way it is told
+    /// about any resize: a program taking the alternate screen frees the
+    /// strip back to the grid (it gets the whole frame it always had),
+    /// and the multiline `off` state — `Ctrl-X !`, a pasted newline —
+    /// frees it too, so the grid the editor is used in is the whole
+    /// grid.
+    private var dockStrip: CGFloat {
+        guard let paint, dockPlate != nil else { return 0 }
+        return DockBox.edge + DockBox.height + paint.cell.height / 3
     }
 
     /// The status bar's own height, always two rows of the grid: kept
@@ -482,25 +506,19 @@ final class TerminalView: NSView, NSTextInputClient {
             veiled = TerminalDock.veil(prompt: prompt, top: scene.top, rows: scene.lines.count)
         }
         if let plate = dockPlate {
-            // The plate's strip. The prompt veil above covers the shell's
-            // echo rows; the plate's own strip covers the rest — and the
-            // two have to be UNIONED, not switched between, because they
-            // answer different questions. The prompt sits at the frame's
-            // bottom row, but the plate — above the status bar's own two
-            // rows — stands high enough to cover three or four rows of
-            // the *previous* command's output above that prompt: without
-            // the strip, sitting at a fresh prompt was exactly where the
-            // occlusion showed (the person's screenshot caught it). The
-            // strip runs whenever the plate stands — the dock holding
-            // the line, a command running under it, a scrollback look —
-            // and blanks every row the plate sits on plus a third of a
-            // row of air above its top, so whatever is on the screen
-            // ends above the input line instead of showing through it.
-            // The rows are measured the way the grid lays them (an inset
-            // at the frame's edge, a cell to the row — the same
-            // arithmetic the caret's own place uses), so a plate grown
-            // with its face veils the rows its new size needs and no
-            // more.
+            // The plate's strip, as a belt rather than the mechanism: the
+            // rows it stands on are held out of the grid entirely now
+            // (`dockStrip` in layout — a row the grid still writes but
+            // the veil hides is a line of the person's output made
+            // invisible, which is exactly what the last-line complaint
+            // was), so in the steady state the grid's rows end above the
+            // plate and this computes an empty strip. It stays for the
+            // one frame that can race the layout that re-rows the grid —
+            // the plate arriving before its resize has gone through —
+            // and blanks every row under the plate's top plus a third of
+            // a row of air, measured the way the grid lays them (an
+            // inset at the frame's edge, a cell to the row — the same
+            // arithmetic the caret's own place uses).
             let floor = bounds.height - TerminalDraw.inset
                 - paint.cell.height * CGFloat(scene.lines.count)
             let covered = Int(

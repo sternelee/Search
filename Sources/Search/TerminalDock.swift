@@ -709,6 +709,11 @@ extension TerminalView {
             dockPlate = plate
             addSubview(plate)
             placeDock()
+            // The plate's strip is held out of the grid's rows (see
+            // `dockStrip`), so the plate arriving is a resize the shell
+            // is told about — the grid is worked out again, which makes
+            // the terminal the size that leaves the input line its room.
+            needsLayout = true
         }
         drawDock()
         present()
@@ -761,5 +766,10 @@ extension TerminalView {
         dockPlate?.removeFromSuperview()
         dockPlate = nil
         dockAsking = false
+        // The strip the plate held out of the grid's rows is the grid's
+        // again — the multiline editor that asked for the `off` is about
+        // to use them, and the whole-frame resize is one the shell is
+        // told about like any other.
+        needsLayout = true
     }
 }
