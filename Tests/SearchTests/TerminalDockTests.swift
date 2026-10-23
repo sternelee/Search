@@ -339,10 +339,13 @@ final class TerminalDockTests: XCTestCase {
     /// sits wherever that font's metrics put it, which is not where the
     /// line's digits sit (SF Mono's fallback rides ~1pt high). The
     /// digits' drawn ink is measured and the caret and the prompt are
-    /// both put on it, so the three read on one height.
+    /// both put on it, so the three read on one height. The face the
+    /// plate measures is the terminal's own configured size — the dock
+    /// stands as tall as the grid's text — so the test measures the
+    /// plate's own face rather than naming one.
     func testThePromptAndCaretSitOnTheDigitsInk() {
         let plate = TerminalDockPlate()
-        let face = TerminalLook.face(size: 12)
+        let face = plate.face
         let digits = TerminalDockPlate.inkCenter(of: "0", in: face)
         let prompt = TerminalDockPlate.inkCenter(of: "\u{276f}", in: face)
         // The digits sit near the plate's middle — a measure that
@@ -353,5 +356,21 @@ final class TerminalDockTests: XCTestCase {
         // The correction carries the prompt's ink onto the digits' own
         // center — a sign flipped in the correction doubles here.
         XCTAssertEqual(prompt + plate.promptDy, digits, accuracy: 0.01)
+    }
+
+    /// The dock's own size: the terminal's configured face, not a step
+    /// down from it — the person asked for the input line's text to
+    /// stand as tall as the grid's. Metalterm's dock measured at its 12pt
+    /// default is a ratio, not a constant, once it follows the terminal:
+    /// half the size is half the plate.
+    func testTheDockStandsAtTheTerminalsOwnSize() {
+        let was = TerminalLook.size
+        TerminalLook.size = 12
+        XCTAssertEqual(DockBox.height, 30, accuracy: 0.01)
+        XCTAssertEqual(DockBox.tall, 15, accuracy: 0.01)
+        TerminalLook.size = 24
+        XCTAssertEqual(DockBox.height, 60, accuracy: 0.01)
+        XCTAssertEqual(DockBox.tall, 30, accuracy: 0.01)
+        TerminalLook.size = was
     }
 }

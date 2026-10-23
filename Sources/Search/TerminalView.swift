@@ -480,11 +480,32 @@ final class TerminalView: NSView, NSTextInputClient {
         var veiled: Range<Int>? = nil
         if dock.owns, lift == 0, let prompt = scene.prompt {
             veiled = TerminalDock.veil(prompt: prompt, top: scene.top, rows: scene.lines.count)
-            if let veiled {
-                for row in veiled {
-                    for column in 0..<scene.lines[row].cells.count {
-                        scene.lines[row].cells[column] = Cell()
-                    }
+        } else if let plate = dockPlate {
+            // The plate's strip. The veil above covers the shell's echo
+            // while the dock owns the input; the rest of the time the plate
+            // still stands over the frame's bottom — a command running
+            // under it, or a scrollback look — and what it sits on is
+            // furniture: those rows are blank in this frame too, and a
+            // third of a row of air stays empty above the plate's top, so
+            // a running command's last lines end above the input line
+            // instead of showing through it. The rows are measured the
+            // way the grid lays them (an inset at the frame's edge, a
+            // cell to the row — the same arithmetic the caret's own
+            // place uses), so a plate grown with its face veils the rows
+            // its new size needs and no more.
+            let floor = bounds.height - TerminalDraw.inset
+                - paint.cell.height * CGFloat(scene.lines.count)
+            let covered = Int(
+                ceil((plate.frame.maxY + paint.cell.height / 3 - floor) / paint.cell.height)
+            )
+            if covered > 0 {
+                veiled = scene.lines.count - min(covered, scene.lines.count)..<scene.lines.count
+            }
+        }
+        if let veiled {
+            for row in veiled {
+                for column in 0..<scene.lines[row].cells.count {
+                    scene.lines[row].cells[column] = Cell()
                 }
             }
         }

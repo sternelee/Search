@@ -43,39 +43,57 @@ import QuartzCore
 /// width of its terminal with the input on the left of a translucent
 /// ground; the numbers here are the find panel's scale (see FieldBox)
 /// read at the bottom of the frame, where Metalterm puts its own.
+@MainActor
 enum DockBox {
+    /// The size the dock is set in: the terminal's own configured face
+    /// (TerminalLook.size), not a step down from it. The person asked for
+    /// the input line's text to stand as tall as the grid's — a dock that
+    /// is the frame's furniture reads as part of the terminal, and a size
+    /// off the frame's setting is a size apart from it.
+    static var size: CGFloat { CGFloat(TerminalLook.size) }
+    /// Metalterm's dock, measured at its 12pt default, is a ratio rather
+    /// than a constant once the dock follows the terminal's configured
+    /// font: every length below is that default's own share of the face.
+    private static var unit: CGFloat { size / 12 }
     /// How tall the plate is.
-    static let height: CGFloat = 30
+    static var height: CGFloat { 30 * unit }
     /// The gap at the frame's left and right, matching the find panel's
     /// inset, so the two boxes belong to the same window.
-    static let margin: CGFloat = 14
+    static var margin: CGFloat { 14 * unit }
     /// The gap at the frame's bottom — a plate further in than this sits
     /// over the last row of a running command's output, which it does
     /// anyway (the ground is translucent for exactly that), but the
     /// hairline should clear the frame's own edge.
-    static let edge: CGFloat = 12
+    static var edge: CGFloat { 12 * unit }
     /// The room the plate leaves before the prompt glyph.
-    static let pad: CGFloat = 10
+    static var pad: CGFloat { 10 * unit }
     /// Between the prompt glyph and the line.
-    static let gap: CGFloat = 7
+    static var gap: CGFloat { 7 * unit }
     /// The caret's width.
-    static let bar: CGFloat = 2
+    static var bar: CGFloat { 2 * unit }
     /// How far a glyph rises on arrival, and the window it rises in:
     /// Metalterm's `rise` keypress — a fifth of a window, which is the
     /// caret's own share of one (see `FieldCurve.bleed`).
-    static let rise: CGFloat = 2.5
+    static var rise: CGFloat { 2.5 * unit }
+    /// The room a glyph's rect leaves: a line and a quarter at the face's
+    /// own size — the rect the ink is drawn into, so a bigger face gets a
+    /// bigger room rather than a clipped one.
+    static var tall: CGFloat { 15 * unit }
     static let arrive: CFTimeInterval = 0.2
     /// How faint the suggestion ghost is.
     static let ghost: CGFloat = 0.45
     /// The ground's opacity: the find panel's own, because the plate is
-    /// the same furniture — and the rows it stands over are the shell's
-    /// echo, blank under the veil, not a running command's last line.
+    /// the same furniture — and the rows it stands over are blank either
+    /// way (the veil while the dock owns the input, the strip in
+    /// TerminalView.frame while it doesn't), so what the translucency
+    /// shows through is the window's own ground, not text.
     static let ground: CGFloat = 0.82
 
     /// Where the plate goes for a frame of a given size: pinned to the
     /// bottom — above the status bar, which owns the frame's own edge —
-    /// spanning the width less a margin each side. Pure, so the place can
-    /// be checked without a terminal.
+    /// spanning the width less a margin each side. Pure in the frame it
+    /// is handed (the only other input is the configured face's own
+    /// numbers), so the place can be checked without a terminal.
     static func home(in bounds: CGRect, above bar: CGFloat) -> CGRect {
         let width = max(120, bounds.width - margin * 2)
         return NSRect(x: margin, y: edge + bar, width: width, height: height)
@@ -420,7 +438,7 @@ final class TerminalDockPlate: NSView {
     /// The face the dock writes with — the terminal's own, a step down
     /// from the grid like the find panel's field. Re-read when the look
     /// changes.
-    private(set) var face = TerminalLook.face(size: 12)
+    private(set) var face = TerminalLook.face()
     /// One cell's width in it, measured once per face rather than asked
     /// again every glyph.
     private(set) var advance: CGFloat = 0
@@ -452,7 +470,7 @@ final class TerminalDockPlate: NSView {
 
     /// The look changed: the face, and with it the measure of a cell.
     func refont() {
-        face = TerminalLook.face(size: 12)
+        face = TerminalLook.face()
         remeasure()
         needsDisplay = true
     }
@@ -487,7 +505,7 @@ final class TerminalDockPlate: NSView {
         NSColor.white.setFill()
         NSRect(x: 0, y: 0, width: 40, height: box).fill()
         (text as NSString).draw(
-            in: NSRect(x: 5, y: (box - 15) / 2, width: 30, height: 15),
+            in: NSRect(x: 5, y: (box - DockBox.tall) / 2, width: 30, height: DockBox.tall),
             withAttributes: [.font: face as Any, .foregroundColor: NSColor.black]
         )
         image.unlockFocus()
@@ -524,7 +542,7 @@ final class TerminalDockPlate: NSView {
         NSColor.white.setFill()
         NSRect(x: 0, y: 0, width: 40, height: box).fill()
         (text as NSString).draw(
-            in: NSRect(x: 5, y: (box - 15) / 2, width: 30, height: 15),
+            in: NSRect(x: 5, y: (box - DockBox.tall) / 2, width: 30, height: DockBox.tall),
             withAttributes: [.font: face as Any, .foregroundColor: NSColor.black]
         )
         image.unlockFocus()
@@ -656,8 +674,8 @@ final class TerminalDockPlate: NSView {
         let ink = TerminalFieldPanel.word
         (String(char) as NSString).draw(
             in: NSRect(
-                x: x, y: (bounds.height - 15) / 2 - rise + dy,
-                width: advance, height: 15
+                x: x, y: (bounds.height - DockBox.tall) / 2 - rise + dy,
+                width: advance, height: DockBox.tall
             ),
             withAttributes: [
                 .font: face as Any,
