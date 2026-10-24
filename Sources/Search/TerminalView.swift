@@ -248,7 +248,7 @@ final class TerminalView: NSView, NSTextInputClient {
     /// came to stand over it — the strip veil hid the row rather than
     /// the grid's never writing it). The strip is the plate's own claim
     /// on the height — the edge it keeps at the frame's bottom, its
-    /// height, and the third of a row of air above it — measured
+    /// height, and the air above it — measured
     /// analytically (the same numbers `placeDock` puts the plate at),
     /// so the rows are worked out before the plate has a frame to ask
     /// for. The plate arriving or leaving changes the rows the terminal
@@ -258,9 +258,18 @@ final class TerminalView: NSView, NSTextInputClient {
     /// and the multiline `off` state — `Ctrl-X !`, a pasted newline —
     /// frees it too, so the grid the editor is used in is the whole
     /// grid.
+    /// The bottom edge of the grid's last row, in the frame's own points —
+    /// the line the dock's plate hugs (see placeDock). Nil before the grid
+    /// has been sized, which is the one moment the plate falls back to its
+    /// fixed home.
+    var gridFloor: CGFloat? {
+        guard let paint, sized.height > 0 else { return nil }
+        return bounds.height - TerminalDraw.inset - paint.cell.height * CGFloat(sized.height)
+    }
+
     private var dockStrip: CGFloat {
-        guard let paint, dockPlate != nil else { return 0 }
-        return DockBox.edge + DockBox.height + paint.cell.height / 3
+        guard dockPlate != nil else { return 0 }
+        return DockBox.edge + DockBox.height + DockBox.air
     }
 
     /// The status bar's own height, always two rows of the grid: kept
@@ -522,7 +531,7 @@ final class TerminalView: NSView, NSTextInputClient {
             let floor = bounds.height - TerminalDraw.inset
                 - paint.cell.height * CGFloat(scene.lines.count)
             let covered = Int(
-                ceil((plate.frame.maxY + paint.cell.height / 3 - floor) / paint.cell.height)
+                ceil((plate.frame.maxY + DockBox.air - floor) / paint.cell.height)
             )
             if covered > 0 {
                 let strip = scene.lines.count - min(covered, scene.lines.count)..<scene.lines.count
@@ -723,6 +732,13 @@ final class TerminalView: NSView, NSTextInputClient {
         // that has to be told as well.
         dockPlate?.refont()
         dockPlate?.needsDisplay = true
+        // The Input Bar turned off while its plate stands: the dock lets
+        // go at once rather than on the shell's next report — the setting
+        // is the switch.
+        if TerminalLook.inputBar != .bottom, dockPlate != nil {
+            dock.suspend()
+            drawDock()
+        }
         // And the status bar's face is the look's own too — its height
         // moves with it, and the layout that follows places it.
         // Cells of a different size — a new face, or more room left at the

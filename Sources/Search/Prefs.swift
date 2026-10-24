@@ -380,6 +380,10 @@ final class Preferences: ObservableObject {
     @Published var terminalFindPlace: TerminalFindPlace {
         didSet { store.set(terminalFindPlace.rawValue, forKey: "terminal.findPlace"); terminalLookChanged() }
     }
+    /// Where typing lands in a terminal. See TerminalLook.inputBar.
+    @Published var terminalInputBar: TerminalInputBar {
+        didSet { store.set(terminalInputBar.rawValue, forKey: "terminal.inputBar"); terminalLookChanged() }
+    }
     @Published var terminalPadding: Double {
         didSet { store.set(terminalPadding, forKey: "terminal.padding"); terminalLookChanged() }
     }
@@ -424,6 +428,7 @@ final class Preferences: ObservableObject {
         TerminalLook.cursor = terminalCursor
         TerminalLook.blinks = terminalBlinks
         TerminalLook.findPlace = terminalFindPlace
+        TerminalLook.inputBar = terminalInputBar
         TerminalLook.padding = terminalPadding
         TerminalLook.shell = terminalShell
         TerminalLook.directory = terminalDirectory
@@ -522,6 +527,8 @@ final class Preferences: ObservableObject {
         terminalBlinks = store.object(forKey: "terminal.blinks") as? Bool ?? true
         terminalFindPlace = store.string(forKey: "terminal.findPlace")
             .flatMap(TerminalFindPlace.init) ?? .top
+        terminalInputBar = store.string(forKey: "terminal.inputBar")
+            .flatMap(TerminalInputBar.init) ?? .bottom
         terminalPadding = store.object(forKey: "terminal.padding") as? Double ?? 4
         terminalShell = store.string(forKey: "terminal.shell") ?? ""
         terminalDirectory = store.string(forKey: "terminal.directory") ?? ""

@@ -305,6 +305,16 @@ final class Terminal: ObservableObject, Identifiable {
         // never wrapped, having asked to be exactly what it is.
         if command == nil {
             (argv, environment) = TerminalShell.wrap(argv: argv, environment: environment)
+            // The Input Bar setting is the dock's switch, shell side: a
+            // shell started with SEARCH_INPUT_DOCK=0 never reports its
+            // line (see TerminalShell), and a dock that is never reported
+            // is never there — the input stays in the grid, where a
+            // classic terminal keeps it. Said only when off: unset is the
+            // script's own default-on, and a person's explicit
+            // SEARCH_INPUT_DOCK in their environment still wins.
+            if TerminalLook.inputBar == .inline {
+                environment.append("SEARCH_INPUT_DOCK=0")
+            }
         }
         let made = Terminal.spawn(
             argv, environment: environment, width: width, height: height,

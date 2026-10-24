@@ -27,6 +27,28 @@ enum TerminalTheme: String, CaseIterable, Identifiable {
     }
 }
 
+/// Where typing lands in a terminal: the dock over the frame's bottom
+/// (Metalterm's own place — the input box this terminal's dock is),
+/// or the grid itself — the classic terminal, where the prompt you type
+/// at is a row like any other. The dock is the shell's own line editor
+/// reported over OSC 7784 (see TerminalShell), so the setting is really
+/// a switch on that reporting: a terminal started with the grid answer
+/// is given SEARCH_INPUT_DOCK=0 and never makes a report, and the
+/// reports a long-lived shell still makes after the setting changed are
+/// let go unheard (see TerminalView.docked).
+enum TerminalInputBar: String, CaseIterable, Identifiable {
+    case bottom, inline
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bottom: return "Bottom"
+        case .inline: return "In the Grid"
+        }
+    }
+}
+
 /// Where the ⌘F panel sits in the frame. Metalterm's own input box is a dock
 /// at the bottom, which TERMINAL.md declines to copy — but the *place* is not
 /// the furniture, and a find bar over the top corner is a long way from the
@@ -87,6 +109,9 @@ enum TerminalLook {
     /// bleed are the same either way, because they run along the panel's own
     /// leading edge rather than down the frame.
     static var findPlace: TerminalFindPlace = .top
+    /// Where typing lands: the dock over the frame's bottom, or the grid
+    /// itself. See TerminalInputBar.
+    static var inputBar: TerminalInputBar = .bottom
     /// The room left at the terminal's edges, in points.
     static var padding: Double = 4
     /// The program a new terminal runs. Empty is the Mac's own shell.

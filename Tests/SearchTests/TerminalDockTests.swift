@@ -18,6 +18,21 @@ final class TerminalDockTests: XCTestCase {
         super.setUp()
     }
 
+    /// A terminal view on a real (sleeping) shell, for the questions that
+    /// are the view's rather than the engine's — the same harness the
+    /// find panel's tests stand on.
+    private func dockPane() -> TerminalView {
+        let terminal = Terminal(command: TerminalCommand(argv: ["/bin/zsh", "-f", "-c", "sleep 10"]))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let view = TerminalView(terminal: terminal)
+        window.contentView = view
+        window.orderFrontRegardless()
+        return view
+    }
+
     // MARK: - the ledger
 
     /// A keystroke that appends marks only what it appended: the glyphs
@@ -435,4 +450,55 @@ final class TerminalDockTests: XCTestCase {
         XCTAssertEqual(DockBox.tall, 30, accuracy: 0.01)
         TerminalLook.size = was
     }
+    /// The hugging home: the plate rises into whatever slack the row count
+    /// left under the grid's last row, so the gap between the content and
+    /// the input line is the air alone — and it never drops below the
+    /// fixed home over the status bar.
+    func testThePlateHugsTheGridsLastRow() {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 300)
+        let bar: CGFloat = 34
+        let fixed = DockBox.home(in: bounds, above: bar)
+        // Slack under the last row: the plate rises, exactly the air
+        // between the row's bottom and the plate's top.
+        let floor: CGFloat = fixed.maxY + DockBox.air + 40
+        let hugged = DockBox.home(in: bounds, above: bar, under: floor)
+        XCTAssertEqual(floor - hugged.maxY, DockBox.air, accuracy: 0.01)
+        XCTAssertGreaterThan(hugged.minY, fixed.minY)
+        // No slack: the floor as low as the strip allows — the fixed home.
+        let low = DockBox.home(
+            in: bounds, above: bar,
+            under: bar + DockBox.edge + DockBox.height + DockBox.air
+        )
+        XCTAssertEqual(low.minY, fixed.minY, accuracy: 0.01)
+    }
+    /// The Input Bar setting's off answer: a shell started with the dock
+    /// on goes on reporting for as long as it lives, and the terminal
+    /// lets those reports go unheard — no plate, no veil, the input
+    /// stays in the grid.
+    func testTheGridSettingNeverMakesAPlate() {
+        let was = TerminalLook.inputBar
+        defer { TerminalLook.inputBar = was }
+        TerminalLook.inputBar = .inline
+        let view = dockPane()
+        view.docked(.line(text: "ls", cursor: 2, suggestion: ""))
+        XCTAssertNil(view.dockPlate, "the grid setting makes no plate, however the shell reports")
+        XCTAssertFalse(view.dock.owns)
+    }
+
+    /// The setting turned off while the plate stands: the dock lets go at
+    /// once — on the next report at the latest — rather than waiting for
+    /// the next shell.
+    func testTurningTheDockOffLetsAStandingPlateGo() {
+        let was = TerminalLook.inputBar
+        defer { TerminalLook.inputBar = was }
+        TerminalLook.inputBar = .bottom
+        let view = dockPane()
+        view.docked(.line(text: "ls", cursor: 2, suggestion: ""))
+        XCTAssertNotNil(view.dockPlate)
+        TerminalLook.inputBar = .inline
+        view.docked(.line(text: "ls ", cursor: 3, suggestion: ""))
+        XCTAssertNil(view.dockPlate, "the report after the switch finds no plate standing")
+        XCTAssertFalse(view.dock.owns)
+    }
 }
+

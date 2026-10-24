@@ -71,6 +71,15 @@ enum DockBox {
     static var gap: CGFloat { 7 * unit }
     /// The caret's width.
     static var bar: CGFloat { 2 * unit }
+    /// The air kept between the grid's last row and the plate's top —
+    /// the whole of the gap the person sees between the terminal's
+    /// content and the input line. Small and constant on purpose: the
+    /// plate hugs the rows (see `home(in:above:under:)`), so a window
+    /// whose height leaves slack under the last row puts that slack
+    /// below the plate — dead room among the chrome, where it belongs —
+    /// instead of letting it read as a gap between the output and the
+    /// input.
+    static var air: CGFloat { 4 * unit }
     /// How far a glyph rises on arrival, and the window it rises in:
     /// Metalterm's `rise` keypress — a fifth of a window, which is the
     /// caret's own share of one (see `FieldCurve.bleed`).
@@ -99,6 +108,23 @@ enum DockBox {
         return NSRect(x: margin, y: edge + bar, width: width, height: height)
     }
 
+    /// The same home, hugging the grid: `floor` is the bottom edge of the
+    /// grid's last row, and the plate rises into whatever slack the row
+    /// count left under it — never lower than the fixed home, never
+    /// nearer the rows than `air`. A plate pinned to the fixed home while
+    /// the rows end almost a whole row above it reads as a gap between
+    /// the content and the input line that is really just the grid's
+    /// rounding; hugging turns that gap into the constant `air`, and the
+    /// slack settles below the plate, over the status bar, where no one
+    /// reads it as the input line's margin.
+    static func home(in bounds: CGRect, above bar: CGFloat, under floor: CGFloat) -> CGRect {
+        let fixed = home(in: bounds, above: bar)
+        let hugged = floor - air - height
+        return NSRect(
+            x: fixed.minX, y: max(fixed.minY, hugged),
+            width: fixed.width, height: fixed.height
+        )
+    }
 }
 
 /// Which glyphs of a line are new, for the arrival each one is owed. Pure,
@@ -743,6 +769,15 @@ extension TerminalView {
     /// state as it comes, makes its plate the first time one is owed, and
     /// draws the frame the report asks for.
     func docked(_ report: Dock) {
+        // The Input Bar setting is heard here too: a shell started with
+        // the dock on goes on reporting for as long as it lives, and a
+        // person who has turned the dock off since does not want it back
+        // on the next keystroke. A plate already standing lets go at
+        // once — the setting is the switch, not the next shell's start.
+        guard TerminalLook.inputBar == .bottom else {
+            if dockPlate != nil { dock.suspend(); drawDock() }
+            return
+        }
         let now = CACurrentMediaTime()
         dock.report(report, at: now)
         if dockPlate == nil, dock.owed {
@@ -760,10 +795,20 @@ extension TerminalView {
         present()
     }
 
-    /// The plate over the frame's bottom, placed by every layout.
+    /// The plate over the frame's bottom, placed by every layout. While
+    /// the grid has rows it hugs them (see DockBox.home(in:above:under:))
+    /// — the bottom of the last row, less the air — so the gap between
+    /// the terminal's content and the input line is the air alone,
+    /// however much slack the row count left under the grid.
     func placeDock() {
         guard let plate = dockPlate else { return }
-        plate.frame = DockBox.home(in: bounds, above: statusBar.frame.height)
+        if let floor = gridFloor {
+            plate.frame = DockBox.home(
+                in: bounds, above: statusBar.frame.height, under: floor
+            )
+        } else {
+            plate.frame = DockBox.home(in: bounds, above: statusBar.frame.height)
+        }
     }
 
     /// One frame of the dock: the engine's model put in the plate's

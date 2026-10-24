@@ -598,6 +598,13 @@ struct SettingsPanel: View {
                     )
                 }
                 Rule()
+                Line("Input Bar", "Where you type — a dock over the frame's bottom, or the grid itself") {
+                    Segmented(
+                        options: TerminalInputBar.allCases.map { ($0, $0.title) },
+                        selection: $prefs.terminalInputBar
+                    )
+                }
+                Rule()
                 Line("Padding", "The room left around the cells, in points") {
                     Steps(stops: TerminalLook.paddings, value: $prefs.terminalPadding, home: 4) {
                         String(format: "%.0f", $0)
