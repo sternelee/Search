@@ -343,7 +343,24 @@ extension TerminalView: NSTextFieldDelegate {
 
     /// The keyboard left the field — the find is over, its highlights with
     /// it. A shell asked to type takes the keyboard back.
+    ///
+    /// The event is not the answer to "did the person leave the field":
+    /// AppKit posts it while it is still moving the keyboard, including the
+    /// session it ends on its way to making the field's own editor — which
+    /// is what opening the panel does. Reading it as an answer closed the
+    /// panel the instant it opened, so ⌘F showed a flash in the corner and
+    /// nothing else ever since the panel moved to the top: the plate was
+    /// torn down on the same run loop turn that laid it down.
+    ///
+    /// So the question is asked once the move is over, and it is asked of
+    /// the field's own editor rather than of the window's responder — while
+    /// the words are being typed the first responder is the field *editor*,
+    /// never the field, so comparing the responder to the field answers
+    /// "left" at every moment of a session that never stopped.
     func controlTextDidEndEditing(_ object: Notification) {
-        if window?.firstResponder !== findField { closeFind() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let field = self.findField else { return }
+            if field.currentEditor() == nil { self.closeFind() }
+        }
     }
 }
