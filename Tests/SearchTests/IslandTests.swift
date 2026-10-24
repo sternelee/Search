@@ -811,7 +811,7 @@ final class IslandTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertTrue(text.contains("SOURCE = \"omp\""), "the extension is told its own source")
-        XCTAssertTrue(text.contains("`${SOURCE}-${sessionId}`"), "the sessions are said by the source, so the two never answer for each other")
+        XCTAssertTrue(text.contains("`${SOURCE}-${ctx.sessionManager.getSessionId()}`"), "the sessions are said by the source, so the two never answer for each other")
 
         try IslandHooks.removeOmp(home)
         XCTAssertFalse(IslandHooks.ompHooked(home), "taken away whole")

@@ -292,6 +292,8 @@ Metalterm 的输入坞（底部 dock）当时按 3.1 的旧边界**不学**，�
 - **环大小 ≠ `maximumDrawableCount` 是静默的灾难**（CPU 写进 GPU 正在读的槽），所以那条 `assert` 和 `Frame` stride 的断言并排放着。
 - **图集换代时在途帧还在读旧纹理**：退役纹理必须留到读它的帧结束，不能在换代那一刻就丢。
 - **PTY master 上的 `FIONREAD` 不报可读字节**：实测内核里明明有 4.4 MB，`ioctl(FIONREAD)` 回 0，而 `read` 拿得到。排空只能靠 `poll(POLLIN)`；并且 `POLLHUP/POLLERR` 必须当"结束"处理，否则读源会对着一个空的 master 反复空转，进程退出源排在 lane 后面永远等不到。
+- **Darwin 的 `URL` 会缓存它读过的 `resourceValues`**（Chat 视图调试时踩到）：同一个 URL 对象第一次取过 size/mtime 后，文件再长、甚至被原子替换，它都回旧值——磁盘上是新文件，URL 嘴里是旧世界。每次轮询都要 `URL(fileURLWithPath:)` 重造一个；官方没有明说，但实测稳定复现（/tmp 下独立最小程序验证）。同尺寸替换还会撞上缓存签名，所以 ChatReader 的 stamp 记 size+mtime+file id（inode 性质）三者。
+- **测试里 `orderFrontRegardless()` 之后跟 `close()` 会炸掉同进程里的下一个重测试**（signal 11）：close 释放已上屏的窗口，释放落在下一个测试的跑动里，随后第一个碰 WebKit/CoreData 的测试 SEGV（伴随 `Failed to create NSXPCConnection` 噪声）。`orderOut(nil)` 不炸（窗口留着但不释放）。dock 测试一直靠泄漏窗口活着；只是它们的类名按字母序排在 DownloadLifecycleTests 之后，这颗雷从没被踩过——AgentChatTests 排在 D 前面才引爆。规则：测试里上过屏的窗口用 `orderOut`，别 `close`。
 - **滚动缓冲满 10 万行后，`Array.removeFirst(1)` 是每行搬 10 万个元素**：等价微基准 100k 次约 1.6 s。`Scrollback` 改成环形存储，头部移动 O(1)，读出来的顺序不变。
 
 ## 七、还没做的
@@ -392,3 +394,119 @@ Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 ses
 `Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent、
 横幅位置与宽度夹在窗口内，往下拖的深度也夹在窗口内；一行可收走，收走后只等值得
    再听的话（IslandPlace 纯函数、shelving 语义）。
+
+## 九、Chat 视图（agent 的对话面）
+
+终端里跑着 Claude Code / Pi（含 OMP）/ Codex 时，窗格右上角浮出一枚小胶囊（写着 agent
+名，激活时点亮）；点一下，整个窗格盖上一块对话面板——agent 的思考、说话、工具调用
+按对话的形状排开，底部一行输入。再点一下或 Esc 收回，终端还是终端。
+
+做法举自 [ovis](https://github.com/dragongrove/ovis)（herdr 的浏览器客户端）的 Chat 模式：
+**不解析屏幕，读 agent 自己写的原生 transcript JSONL**。ovis 的审计文档
+（chat-mode-audit）记着反向路线的学费：没有原生 transcript 时，终端里的菜单/状态行
+会被误认成 assistant 消息；transcript 才是结构化的真相，屏幕只是它的投影。终端永远是
+真相的另一面也在这里：输入框不另辟通道，写进 PTY 加回车（`speak`）——你在 Chat 里
+说的每个字都落在 CLI 自己的输入里，回终端看得见同一句。
+
+**四个文件，一条链。**
+
+1. **`AgentTalk.swift`** —— "这个窗格里跑的是哪场对话"：`Talk {agent, id, file, cwd}`。
+   事件里报路径（Claude 的 hook payload 自带 `transcript_path`；Pi 扩展每次说事带
+   `_sessionFile`（`ctx.sessionManager.getSessionFile()`）；Codex 的 `rollout_path`），
+   路径必须过 `verify`：`.jsonl`、普通文件、且在**该 agent 自己的 store 里**
+   （`~/.claude/projects` / `~/.pi/agent/sessions` / `~/.codex/sessions`，各认环境变量覆盖），
+   符号链接解析后判包含——伪造的话报不进任意路径。Pi 的特殊处：session 的第一个回答
+   写下之前**文件不存在**（ovis 叫 unwrittenSession），所以 Talk 允许 `file == nil`，
+   `settle` 每次轮询时在 store 里找以该 id 结尾的 `.jsonl`，找到了才钉住。
+2. **`AgentChat.swift`** —— 把三家各自形状的 JSONL 读成同一种 `ChatLog`：
+   `Turn {role: person/agent, parts: [word / thought / tool]}`，工具
+   `Tool {name, summary, input, output, failed}` 由 call/answer 按 id 配对，孤儿回答丢弃
+   （compact 里带出的中断现场）。人声的噪声前缀（`<command-name>`、`<environment_context>`、
+   `<system-reminder>` 等）不进对话。连续的 agent 部分合成一口气（thought+tool+word 是
+   一次呼吸）；人的两句话永远是两句话。`ChatReader` 追文件：记 offset 与 stamp
+   （size、mtime、file id），文件变小或换了 inode（agent 会整文件重写）→ 清 log 重读；
+   半行悬在 carry 里等下一班。
+3. **`AgentChatView.swift`** —— 面板的两层：`TerminalChatPaper`（排版与绘制：人声加粗
+   带 2pt 左条，agent 0.92，思考 0.40，工具行折叠、点击展开看输出，失败的末尾✗；
+   滚轮滚离活端即停跟随，回到底部恢复）与 `TerminalChatView`（纸 + 输入行 + 细分割线）。
+   重绘靠签名（每条的词/思考/工具名+摘要+输出+成败，用\u{1}分隔）——工具**回答**到了
+   时同一行内容变长，签名变了才重排。胶囊 `TerminalChatPill` 是第三个视图。
+4. **`AgentChatPane.swift`** —— TerminalView 的接线：Island 的 `$sessions` 一有变化
+   就问这一窗格的 tty 有没有 Talk（注意 `@Published` 的 sink 在 willSet 时送来的是旧数组，
+   所以 sink 直接把新数组传进来）；有 → 建胶囊，没 → 拆。打开时 0.5s Timer 轮询
+   `reader.update()`，长了才重排；关上即停。`placeChat` 把胶囊放在右上角（顶部的查找
+   面板在场时让位下移）；**alt 屏不藏**——agent 就住在那里。
+
+与 Island 的关系：Island 管的是"提醒"（别的标签页里 agent 在干嘛），Chat 管的是"对话"
+（这一窗格里的 agent 说了什么）——同一个 hook 事件流，两种读法。`IslandEvent` 与
+`Session` 各加了一个可选 `talk`，谁报了路径谁就带上。
+
+测试在 `Tests/SearchTests/AgentChatTests.swift`（7 条）：三家记录的解析、孤儿回答丢弃、
+跟随与半行悬置与重写重读、store 验证与 settle、胶囊出现/点击读取/收起/SessionEnd
+收走（含 Island 状态流转的端到端）。
+
+## 九、Chat 视图（对着 transcript 读，不对着屏幕猜）
+
+终端里跑 Claude Code / Pi / Codex 这类 agent CLI 时，对话在终端里是以 UI 面目出现的
+——重绘、清屏、状态行、转圈。把这套当普通终端滚屏看，人要在一屏噪声里辨认"它说了什么"。
+参考 [ovis](https://github.com/eclipse/ovis)（herdr 的浏览器客户端）的做法：**屏幕是终端的事，
+对话读 agent 自己写的 transcript JSONL**——结构化的真相，不需要猜哪行是答案哪行是边框。
+ovis 的 chat-mode 审计（docs/chat-mode-audit.md）把反面教训写得清楚：不读 transcript 而
+解析终端渲染时，菜单、状态行会被误认成 assistant 消息。所以这里从第一行起就只读文件。
+
+**四个新文件，两处接线，零新依赖。**
+
+1. **`AgentTalk.swift` —— 这条会话是哪家的哪一场。** hook 事件里本来就有答案：Claude 的
+   hook payload 自带 `transcript_path`；pi 的扩展现在多报一个 `_sessionFile`
+   （`ctx.sessionManager.getSessionFile()`）；Codex 的话里带 `rollout_path`。`Talk {agent,
+   id, file, cwd}` 从文件名取 id（claude/codex 是整个 stem，pi 是最后一个 `_` 之后——
+   pi 的文件名是 `时间戳_UUID.jsonl`）。**文件此刻可能还不存在**：pi 要到第一条 assistant
+   消息才落盘，所以 file 允许为 nil，`settle` 拿着 id 去那家的 store（`~/.claude/projects`、
+   `~/.pi/agent/sessions`、`~/.codex/sessions`，各认自家环境变量改的道）里枚举找
+   stem 后缀匹配的 `.jsonl`，找到且过验才补上。**过验**：realpath 解析后在 store 之内、
+   是 `.jsonl`、是普通文件——hook 报来的路径不可尽信，不能让一条伪造的话把读文件的指头
+   伸到任意目录。同一 tty 的新 talk 顶掉旧 talk（`--resume` 或 /clear 之后 session 换了文件）。
+
+2. **`AgentChat.swift` —— 把三家的记录读成一份对话。** `ChatLog` 只有两种角色
+   （person / agent）、三种块（word / thought / tool）。三家各写各的形状，各配一个 take：
+   claude 记 user/assistant 与块数组（text/thinking/tool_use/tool_result，跳过 isSidechain）；
+   pi 记 `type:"message"` 与块（text/thinking/toolCall），toolResult 靠 `toolCallId` 回填；
+   codex 只有 `type:"response_item"` 可用（message/reasoning/function_call 与 *_call_output，
+   assistant 给别人的 channel 不算）。**合并规则**：agent 的 thought+tool+word 是一口气，
+   连续的 agent 块并进一个 turn；person 的一行就是一行，不并——人说了两句是两句。
+   工具的 `calls` 表挂着没回话的调用，答案迟到也找得到挂它的位置；没主人的答案丢弃。
+   person 一侧的噪声（`<command-name>`、`<environment_context>`、`<system-reminder>`、
+   `<task-`、`<local-command`、`<command-`、`<user_instructions>` 开头）整行扔掉——那是
+   CLI 自言自语的信封，不是人说过的话。**`ChatReader` 跟读**：记 offset 与 stamp
+   （size+mtime+file id），长了就从断点续读，半行留在 carry 里下回再拼；变小或换了 inode
+   （`--resume` 重写文件）就整个重来。轮询只在面板开着时跑（0.5 s Timer），不开不读。
+
+3. **`AgentChatView.swift` —— 纸、输入行、胶囊。** `TerminalChatPaper` 是纯 NSView：
+   person 加粗带 2pt 左条，agent 常重，thought 淡到 0.40，工具行折起（名字+一句摘要），
+   点开才见输出，失败的带红 ✗；滚轮从活头数（滚上来就不再跟底，滚回底继续跟）。
+   重画看的是**签名**而不是文本——工具的答案晚到时块文本没变，签名（含输出与成败）变了，
+   所以答案一到整张纸重排。`TerminalChatView` 是纸加一行无边框输入框；**说出去的话写进
+   PTY + `\r`**（ovis 同款）：终端永远是真相，回终端能看到同一句话进了 CLI 自己的输入框，
+   Chat 视图自己不持有对话的另一半——下一轮 assistant 消息落进 transcript，读回来才显示。
+   `TerminalChatPill` 是窗格右上角的胶囊（认出 agent 才出现；点一下开关 Chat；开着时点
+   亮）。
+
+4. **`AgentChatPane.swift` —— TerminalView 上的接线。** `watchTalk` 订阅
+   `Island.shared.$sessions`（注意 `@Published` 在 willSet 时投递，sink 里读共享单例看到的是
+   旧数组——所以订阅把新数组当参数递进来），按 tty 对上 talk；talk 变了就换/撤胶囊，
+   开着的 Chat 顺势换读新文件。Escape 在输入框上（cancelOperation）关掉 Chat，键盘还给
+   终端。**交替屏不藏胶囊**：agent CLI 常住在 alternate screen，藏了就永远见不着。
+
+接线两处：`Island.swift` 的事件与 session 多带一个 `talk`（SessionStart 建档，之后的事件
+若又报了文件就补上）；`IslandHooks.swift` 的 pi 扩展 `said()` 改收 `ctx`，多报
+`_sessionFile`（每报必问而不是开局问一次——pi 开局那会儿文件还没影）。
+
+**为什么不扫进程**：macOS 上 `sysctl(KERN_PROCARGS2)` 能拿到 argv、`PROC_PIDVNODEPATHINFO`
+能拿到 cwd、`proc_listchildpids` 能递归子进程——spike 实测能认出全机 23 个 agent 进程，
+但同一 cwd 下多个 pi 并存，进程认不出"是哪一场会话"；fd 表里也没有 transcript（CLI 写完
+就关，不长期持有）。所以会话身份只能走 hook 报的 session_id/文件路径——这本来就是 Island
+已经铺好的路。
+
+测试在 `Tests/SearchTests/AgentChatTests.swift`（7 条）：三家记录各自读成话、没主人的答案
+丢弃、跟读与半行 carry 与重写重来、store 验真（店外不算、报来的不可读不算、settle 找回）、
+端到端（chip 出现、点开读到两轮、再点收起、SessionEnd 胶囊退场）。

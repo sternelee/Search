@@ -540,31 +540,37 @@ enum IslandHooks {
 
           function said(
             hook_event_name: string,
-            sessionId: string,
-            cwd: string,
+            ctx: any,
             extra: Record<string, unknown>,
           ): Record<string, unknown> {
             return {
               hook_event_name,
-              session_id: `${SOURCE}-${sessionId}`,
+              session_id: `${SOURCE}-${ctx.sessionManager.getSessionId()}`,
               _source: SOURCE,
               _tty: tty,
-              cwd,
+              // Where this run keeps its own record. Search reads that
+              // file for the chat view — the terminal is the screen,
+              // this is the conversation. Asked each time rather than
+              // once: pi only creates the file when the session's first
+              // answer is written, so it is undefined for the first
+              // minute of a run, and the reader knows how to wait.
+              _sessionFile: ctx.sessionManager.getSessionFile?.() || undefined,
+              cwd: ctx.cwd,
               ...extra,
             };
           }
 
           pi.on("session_start", async (_event, ctx) => {
-            say(said("SessionStart", ctx.sessionManager.getSessionId(), ctx.cwd, {}));
+            say(said("SessionStart", ctx, {}));
           });
 
           pi.on("session_shutdown", async (_event, ctx) => {
-            say(said("SessionEnd", ctx.sessionManager.getSessionId(), ctx.cwd, {}));
+            say(said("SessionEnd", ctx, {}));
           });
 
           pi.on("before_agent_start", async (event, ctx) => {
             say(
-              said("UserPromptSubmit", ctx.sessionManager.getSessionId(), ctx.cwd, {
+              said("UserPromptSubmit", ctx, {
                 prompt: event.prompt ?? "",
               }),
             );
@@ -590,14 +596,13 @@ enum IslandHooks {
                   .trim()
               : "";
             say(
-              said("Stop", ctx.sessionManager.getSessionId(), ctx.cwd, {
+              said("Stop", ctx, {
                 last_assistant_message: words || undefined,
               }),
             );
           });
 
           pi.on("tool_call", async (event, ctx) => {
-            const sessionId = ctx.sessionManager.getSessionId();
             const input = { ...event.input } as Record<string, unknown>;
 
             // A bash that could take something away is held open for a
@@ -608,7 +613,7 @@ enum IslandHooks {
               DANGEROUS.some((p) => p.test(input.command as string))
             ) {
               const answer = await ask(
-                said("PermissionRequest", sessionId, ctx.cwd, {
+                said("PermissionRequest", ctx, {
                   tool_name: "Bash",
                   tool_input: input,
                 }),
@@ -624,7 +629,7 @@ enum IslandHooks {
             }
 
             say(
-              said("PreToolUse", sessionId, ctx.cwd, {
+              said("PreToolUse", ctx, {
                 tool_name: event.toolName,
                 tool_input: input,
               }),
@@ -633,7 +638,7 @@ enum IslandHooks {
           });
 
           pi.on("tool_result", async (_event, ctx) => {
-            say(said("PostToolUse", ctx.sessionManager.getSessionId(), ctx.cwd, {}));
+            say(said("PostToolUse", ctx, {}));
           });
         }
         """
