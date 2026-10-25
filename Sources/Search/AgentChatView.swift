@@ -336,6 +336,11 @@ final class TerminalChatView: NSView {
     private static let lineHeight: CGFloat = 28
     private static let footHeight: CGFloat = 24
     private static let bottom: CGFloat = 12
+    /// How tall the line may grow before it scrolls instead: a question
+    /// worth six lines is worth reading back, and a box that keeps growing
+    /// would eat the talk it is asking about.
+    private static let mostLines: CGFloat = 6
+    private static let textLine: CGFloat = 17
 
     /// Whether the model list is up. Kept here rather than in the list so
     /// the keyboard can ask one question — "is a list asking for this
@@ -355,12 +360,37 @@ final class TerminalChatView: NSView {
     var switched: ((String) -> Void)?
 
     /// The composer's box, in `bounds` coordinates. Every other part of
-    /// the view is placed against it, so the box is described once.
+    /// the view is placed against it, so the box is described once. It
+    /// grows upward with the words in the line: the foot stays where it
+    /// is, so the keys do not move while a person is typing at them.
     private var box: NSRect {
         NSRect(
             x: Self.inset, y: Self.bottom,
             width: max(80, bounds.width - Self.inset * 2),
-            height: Self.lineHeight + Self.footHeight
+            height: lineArea + Self.footHeight
+        )
+    }
+
+    /// How tall the writing part is: one line, more while the words wrap,
+    /// and no more than `mostLines` — past that the field editor scrolls
+    /// its own text, which keeps the box off the conversation.
+    ///
+    /// Measured from the words themselves rather than from the cell: a
+    /// wrapping cell's `cellSize` answers with one line's worth for text
+    /// that has not been laid out yet, which would leave the third line of
+    /// a question clipped inside a box that never grew for it.
+    private var lineArea: CGFloat {
+        let wide = max(40, bounds.width - Self.inset * 2 - 24 - 4)
+        let words = field.stringValue
+        guard !words.isEmpty else { return Self.lineHeight }
+        let height = (words as NSString).boundingRect(
+            with: NSSize(width: wide, height: 10_000),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: face]
+        ).height
+        return max(
+            Self.lineHeight,
+            min(height + 10, Self.lineHeight + Self.textLine * (Self.mostLines - 1))
         )
     }
 
@@ -374,6 +404,14 @@ final class TerminalChatView: NSView {
         field.font = face
         field.textColor = TerminalFieldPanel.word
         field.delegate = self
+        // The line wraps and keeps the newlines a person puts in it. A
+        // field that could not hold them would silently swallow Shift-⏎,
+        // and a question written in three sentences would arrive as one.
+        field.cell?.wraps = true
+        field.cell?.isScrollable = false
+        field.usesSingleLineMode = false
+        field.maximumNumberOfLines = Int(Self.mostLines)
+        field.lineBreakMode = .byWordWrapping
         addSubview(field)
         model.pressed = { [weak self] in self?.toggleModels() }
         addSubview(model)
@@ -465,9 +503,12 @@ final class TerminalChatView: NSView {
             x: 0, y: box.maxY, width: bounds.width,
             height: max(0, bounds.height - box.maxY)
         )
+        // The text sits at the top of the writing part, where the first
+        // line began when there was only one: a box that grows upward
+        // must not move the words already in it.
         field.frame = NSRect(
-            x: box.minX + 12, y: box.minY + Self.footHeight + (Self.lineHeight - 19) / 2,
-            width: max(40, box.width - 24), height: 19
+            x: box.minX + 12, y: box.minY + Self.footHeight + 5,
+            width: max(40, box.width - 24), height: max(19, lineArea - 10)
         )
         let want = model.wanted
         model.frame = NSRect(
@@ -514,7 +555,7 @@ final class TerminalChatView: NSView {
         // What the keys do, at the footer's right: a chat whose only
         // affordances are a chip and a line would leave return and escape
         // for a person to guess.
-        let keys = "⏎ send   esc close"
+        let keys = "⏎ send   ⇧⏎ newline   esc close"
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9.5),
             .foregroundColor: TerminalFieldPanel.word.withAlphaComponent(0.26),
@@ -581,10 +622,33 @@ extension TerminalChatView: NSTextFieldDelegate {
         }
         // Return sends the line; Escape gives the pane back to the
         // terminal, which is where a person who is done asking goes.
+        // Shift-return, and option-return, arrive as the editor's own
+        // "newline but do not end editing" — the same intent, so the same
+        // answer: a line break in the question, not a send.
+        if selector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+            field.currentEditor()?.insertNewline(nil)
+            needsLayout = true
+            needsDisplay = true
+            return true
+        }
         if selector == #selector(NSResponder.insertNewline(_:)) {
+            // Shift-return puts a line break in the question instead of
+            // sending it: a question that needs three sentences should not
+            // have to be one. Asked of the event rather than of the text,
+            // because the field editor has already eaten the modifier by
+            // the time a key arrives here.
+            let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) == true
+            if shift {
+                field.currentEditor()?.insertNewline(nil)
+                needsLayout = true
+                needsDisplay = true
+                return true
+            }
             let said = field.stringValue.trimmed
             guard !said.isEmpty else { return true }
             field.stringValue = ""
+            needsLayout = true
+            needsDisplay = true
             spoke?(said)
             return true
         }
@@ -593,6 +657,15 @@ extension TerminalChatView: NSTextFieldDelegate {
             return true
         }
         return false
+    }
+
+    /// Words arriving are what make the box grow, so the layout is asked
+    /// for again on every change rather than only when a key is caught
+    /// above: a paste and a dead-key composition both change the text
+    /// without passing through `doCommandBy`.
+    func controlTextDidChange(_ note: Notification) {
+        needsLayout = true
+        needsDisplay = true
     }
 }
 

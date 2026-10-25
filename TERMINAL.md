@@ -495,8 +495,22 @@ agent 嘴里塞一个它没听过的 `/model`，然后终端里冒出一条用�
 **最下面**，上面 80% 空白。改成 `from = max(0, total - start - reachable)`：短的对话从
 顶上开始读，长的照旧是"窗口对着话的末尾"。同一个错在 `mouseDown` 的命中换算里也修了。
 
-测试在 `Tests/SearchTests/AgentComposerTests.swift`（8 条）：三家目录各自的读法（含 provider
+**第三层：行会自己长。** orbit-pi 的 `ComposerInput` 有 `MAX_LINES = 8`——一行装不下
+的问题值得读完再发，而一个只顾往上长的盒子会把被问的那段对话吃掉。这里同样：`lineArea`
+按文字自身换行后的高度算（`boundingRect(with:options:.usesLineFragmentOrigin)`），
+最多 6 行，再多就由 field editor 自己滚动。**页脚不动**——人正在打字的键位不该因为行变高
+而挪位置；纸（对话）让位给行，`box.maxY` 上去多少，纸就少多少。
+
+两个坑记在这里。其一，`NSCell.cellSize(forBounds:)` 对还没排过版的换行文本只会回一行的高度，
+用它量就永远长不到第三行（截图里那段中文只长出两行）；改成 `NSString.boundingRect` 才对。
+其二，`boundingRect` 的 `with:` 参数是 `NSSize` 不是 `NSRect`，写成 `NSRect` 直接编译不过。
+
+**Shift-⏎ 换行，⏎ 发送。** 判据从事件上取（`NSApp.currentEvent?.modifierFlags.contains(.shift)`），
+不是从文本上猜——按键走到 `control(_:textView:doCommandBy:)` 时 field editor 已经把修饰键
+吃掉了。另外 AppKit 会把 ⇧⏎ 报成 `insertNewlineIgnoringFieldEditor:`，那条也要接住。
+
+测试在 `Tests/SearchTests/AgentComposerTests.swift`（9 条）：三家目录各自的读法（含 provider
 分组与 in use 标记）、没目录就是空、Pi 的 `model_change` 压过 settings、Codex 只认第一张
-表之前的 `model`、读尾部时被切掉的半行不算、选择写出 `/model <value>`、以及作曲家各部件
+表之前的 `model`、读尾部时被切掉的半行不算、选择写出 `/model <value>`、作曲家各部件
 的位置关系（纸在盒子上、行在盒子里、胶囊在页脚、列表开在盒子上方且不出窗格、打开时落在
-在用的那行）。整套 358 条测试 0 失败。
+在用的那行）、以及行会随问题变高但到上限就停。整套 359 条测试 0 失败。

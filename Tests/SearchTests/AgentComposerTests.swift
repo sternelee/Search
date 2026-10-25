@@ -264,4 +264,41 @@ final class AgentComposerTests: XCTestCase {
             "the last change is found from the tail"
         )
     }
+
+    /// The line grows with the question and stops growing: a box that kept
+    /// expanding upward as a person typed would eat the conversation it is
+    /// asking about, so past a few lines the text scrolls inside a box
+    /// that has stopped.
+    func testTheLineGrowsWithTheQuestionAndThenStops() {
+        let plate = TerminalChatView()
+        plate.frame = NSRect(x: 0, y: 0, width: 520, height: 400)
+        plate.layoutSubtreeIfNeeded()
+        let one = plate.paper.frame.height
+        XCTAssertGreaterThan(one, 0)
+
+        plate.field.stringValue = String(
+            repeating: "把 dock 的行数让位再检查一遍，特别是 gridFloor 那一段的 slack。", count: 6
+        )
+        plate.needsLayout = true
+        plate.layoutSubtreeIfNeeded()
+        let many = plate.paper.frame.height
+        XCTAssertLessThan(many, one, "the talk gives up room to the growing line")
+
+        // And no further: past its most lines the box stops, and the field
+        // editor scrolls the rest. Asked by writing twice as much again —
+        // a page and two pages must be the same box, or the talk would be
+        // eaten a line at a time.
+        plate.field.stringValue = String(repeating: "再长一点。", count: 200)
+        plate.needsLayout = true
+        plate.layoutSubtreeIfNeeded()
+        let page = plate.paper.frame.height
+        plate.field.stringValue = String(repeating: "再长一点。", count: 400)
+        plate.needsLayout = true
+        plate.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(
+            abs(plate.paper.frame.height - page), 0.5,
+            "past its most lines the box stops growing"
+        )
+        XCTAssertGreaterThan(page, 0, "and the talk is still there")
+    }
 }
