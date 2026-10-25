@@ -297,14 +297,18 @@ final class AgentTalkViewTests: XCTestCase {
     func testClickingATickPutsThatTurnBackUnderYourEyes() {
         let page = paper(longTalk(), height: 300)
         XCTAssertTrue(page.isFollowing, "a fresh talk shows its newest words")
-        let atTheEnd = ink(page).lines(from: 20, to: page.bounds.width - 20)
+        let atTheEnd = page.shape.map(\.rect.origin.y)
 
         // The topmost tick is the first question, which is far above.
         click(page, at: NSPoint(x: page.bounds.width - 8, y: page.bounds.height - 12))
         XCTAssertFalse(page.isFollowing, "jumping to the top leaves the end behind")
-        let atTheTop = ink(page).lines(from: 20, to: page.bounds.width - 20)
-        XCTAssertNotEqual(atTheTop, atTheEnd, "the talk moved")
-        XCTAssertGreaterThan(atTheTop, 0, "and something is under your eyes")
+        // Where the rows sit, not how many bands of ink there are: the
+        // jump control at the bottom is ink too, and counting it would let
+        // a talk that did not move look like one that did.
+        let tops = page.shape.map(\.rect.origin.y)
+        XCTAssertNotEqual(tops, atTheEnd, "the talk moved")
+        XCTAssertGreaterThan(ink(page).lines(from: 20, to: page.bounds.width - 120), 0,
+                             "and something is under your eyes")
     }
 
     // MARK: - what the agents record

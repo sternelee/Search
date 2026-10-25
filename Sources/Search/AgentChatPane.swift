@@ -117,10 +117,16 @@ extension TerminalView {
             // Option-click on a row puts it on the pasteboard. The whole of
             // what was said, not the line under the pointer: a line of a
             // wrapped paragraph is not something anybody wants on its own.
-            plate.paper.copied = { words in
+            plate.paper.copied = { [weak plate] words in
                 let board = NSPasteboard.general
                 board.clearContents()
                 board.setString(words, forType: .string)
+                // A copy leaves no trace of its own — the row looks the same
+                // whether it went on the pasteboard or not. So it says so,
+                // in the corner, for the few seconds it takes to believe it.
+                let line = words.split(whereSeparator: \.isNewline).first.map(String.init) ?? words
+                plate?.say(.success, "Copied", body: line.count > 70
+                           ? String(line.prefix(70)) + "…" : line)
             }
             addSubview(plate)
             chatPlate = plate

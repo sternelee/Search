@@ -294,6 +294,127 @@ final class AgentContextTests: XCTestCase {
         XCTAssertEqual(plate.contextUsed, 250_000)
     }
 
+    // MARK: - the cards
+
+    /// Pressing the same thing twice must not stack two cards: a repeat
+    /// refreshes the twin already up, so the second press is still seen
+    /// even when the first is nearly gone.
+    func testARepeatRefreshesTheCardInsteadOfStackingATwin() {
+        var stack = AgentToasts()
+        let first = stack.push(.success, "Copied", at: 100)
+        let again = stack.push(.success, "Copied", at: 102)
+        XCTAssertEqual(first, again)
+        XCTAssertEqual(stack.count, 1)
+        XCTAssertEqual(stack.items[0].revision, 1, "the life restarted")
+        XCTAssertEqual(stack.items[0].born, 102, "from now, not from before")
+
+        // A different word or a different body is a different card.
+        stack.push(.success, "Copied", body: "a line", at: 103)
+        XCTAssertEqual(stack.count, 2)
+        stack.push(.info, "Copied", at: 104)
+        XCTAssertEqual(stack.count, 3)
+    }
+
+    /// A burst of events must never bury the talk behind its own
+    /// confirmations: the oldest card leaves instead.
+    func testTheStackHasACeilingAndDropsTheOldest() {
+        var stack = AgentToasts()
+        var ids: [Int] = []
+        for i in 0..<(AgentToasts.mostVisible + 2) {
+            ids.append(stack.push(.info, "event \(i)", at: CFTimeInterval(i)))
+        }
+        XCTAssertEqual(stack.count, AgentToasts.mostVisible)
+        XCTAssertEqual(stack.items.map(\.id), Array(ids.suffix(AgentToasts.mostVisible)))
+    }
+
+    /// Each kind holds for its own time, then fades. An error is read
+    /// slower than a copy confirmation, and the order says so.
+    func testEachKindHoldsForItsOwnTimeAndThenFades() {
+        XCTAssertGreaterThan(AgentToast.Kind.error.ttl, AgentToast.Kind.warning.ttl)
+        XCTAssertGreaterThan(AgentToast.Kind.warning.ttl, AgentToast.Kind.info.ttl)
+        XCTAssertGreaterThan(AgentToast.Kind.info.ttl, AgentToast.Kind.success.ttl)
+
+        var stack = AgentToasts()
+        stack.push(.success, "done", at: 0)
+        let toast = stack.items[0]
+        // Still whole at the end of its hold, half faded halfway through
+        // the fade, gone once the fade is over.
+        XCTAssertEqual(toast.body(at: AgentToast.Kind.success.ttl), 1)
+        XCTAssertEqual(toast.body(at: toast.dies - AgentToast.fade / 2), 0.5, accuracy: 0.01)
+        XCTAssertEqual(toast.body(at: toast.dies), 0)
+        XCTAssertFalse(stack.expire(at: toast.dies - 0.01), "not yet")
+        XCTAssertTrue(stack.expire(at: toast.dies), "now")
+        XCTAssertTrue(stack.isEmpty)
+    }
+
+    /// A stack with nothing in it needs no clock — which is why the layer
+    /// only arms a timer while a card is up.
+    func testAnEmptyStackHasNoNextDeath() {
+        var stack = AgentToasts()
+        XCTAssertNil(stack.nextDeath)
+        stack.push(.info, "a", at: 10)
+        XCTAssertEqual(stack.nextDeath, 10 + AgentToast.Kind.info.ttl + AgentToast.fade)
+        stack.dismiss(stack.items[0].id)
+        XCTAssertNil(stack.nextDeath)
+    }
+
+    // MARK: - the way back to the newest words
+
+    /// The jump control appears only once the reader has left the tail: at
+    /// the tail the newest words are already at the bottom edge, and a
+    /// control there would point at itself.
+    func testTheJumpControlAppearsOnlyAwayFromTheTail() {
+        let paper = TerminalChatPaper()
+        paper.frame = NSRect(x: 0, y: 0, width: 380, height: 120)
+        paper.take(longTalk(20))
+        XCTAssertGreaterThan(paper.written, paper.bounds.height, "the talk is taller than the view")
+        XCTAssertNil(paper.jumpRect, "at the tail there is nowhere to go back to")
+
+        paper.scrollWheel(with: wheel(delta: 120))
+        XCTAssertNotNil(paper.jumpRect, "away from the tail, the way back is shown")
+    }
+
+    /// Something arriving while the reader is away is a fact worth saying:
+    /// the control grows a second word, so the reader knows the talk moved
+    /// on without them.
+    func testNewWordsSayNewActivityAndFollowingAgainClearsIt() {
+        let paper = TerminalChatPaper()
+        paper.frame = NSRect(x: 0, y: 0, width: 380, height: 120)
+        paper.take(longTalk(20))
+        paper.scrollWheel(with: wheel(delta: 120))
+        let plain = paper.jumpRect
+
+        paper.take(longTalk(21))
+        XCTAssertNotEqual(paper.jumpRect?.width, plain?.width, "the control says there is new activity")
+
+        // Pressing it puts the newest words back under the eye.
+        let jump = try? XCTUnwrap(paper.jumpRect)
+        guard let jump else { return }
+        paper.mouseDown(with: click(at: NSPoint(x: jump.midX, y: jump.midY), option: false))
+        XCTAssertTrue(paper.isFollowing)
+        XCTAssertEqual(paper.jumpRect?.width, nil, "following again takes the control away")
+    }
+
+    // MARK: - helpers
+
+    /// A talk long enough to scroll: the same two lines, again and again.
+    private func longTalk(_ turns: Int) -> ChatLog {
+        var said: [(String, String)] = []
+        for i in 0..<turns {
+            said.append(("user", "question \(i)"))
+            said.append(("assistant", String(repeating: "answer \(i) ", count: 8)))
+        }
+        return talkOf(said)
+    }
+
+    /// A real scroll event: the paper's wheel handler is what moves the
+    /// talk, so the test drives the same door a trackpad does.
+    private func wheel(delta: CGFloat) -> NSEvent {
+        let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                         wheel1: Int32(delta), wheel2: 0, wheel3: 0)!
+        return NSEvent(cgEvent: cg)!
+    }
+
     // MARK: - helpers
 
     /// A talk built by writing the agent's own records, so the tests use

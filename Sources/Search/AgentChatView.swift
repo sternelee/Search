@@ -69,6 +69,9 @@ final class TerminalChatPaper: NSView {
     private var total: CGFloat = 0
     private var scroll: CGFloat = 0
     private var following = true
+    /// Something arrived while the talk was scrolled away from the newest
+    /// words. The jump control says so; following again clears it.
+    private var unread = false
     /// Tool rows whose output a person opened, by item index.
     private var openedTools: Set<Int> = []
     /// Activity groups a person opened, by group number.
@@ -187,7 +190,14 @@ final class TerminalChatPaper: NSView {
             openedGroups = Set(next.map(\.fold).filter { $0 >= 0 })
         }
         measure()
-        if following { scroll = 0 }
+        if following {
+            scroll = 0
+        } else {
+            // The talk moved on without the reader: say so at the bottom,
+            // where the way back is, rather than leaving the new words to
+            // be discovered by scrolling.
+            unread = true
+        }
         needsDisplay = true
     }
 
@@ -337,6 +347,7 @@ final class TerminalChatPaper: NSView {
         }
 
         drawRail(from: from, reachable: reachable)
+        drawJump()
     }
 
     /// What the agent is doing, in the fewest words that are true: the tool
@@ -583,6 +594,41 @@ final class TerminalChatPaper: NSView {
         NSRect(x: bounds.width - 10, y: 8, width: 3, height: max(1, bounds.height - 16))
     }
 
+    /// The way back to the newest words — orbit-pi's jump-to-latest pill.
+    /// Shown only once the reader has left the tail: while following, the
+    /// newest words are already at the bottom edge, and a control there
+    /// would only point at itself. It grows a second word when something
+    /// arrived in the meantime, because "there is more below" is the fact a
+    /// reader who scrolled away actually needs.
+    var jumpRect: NSRect? {
+        guard !following, total > bounds.height else { return nil }
+        let words = unread ? "↓  New activity" : "↓  Latest"
+        let size = (words as NSString).size(withAttributes: [.font: footFace])
+        let wide = size.width + 24
+        return NSRect(x: (bounds.width - wide) / 2, y: 10, width: wide, height: 22)
+    }
+
+    private func drawJump() {
+        guard let jump = jumpRect else { return }
+        let ground = self.ground
+        ground.withAlphaComponent(0.94).setFill()
+        NSBezierPath(roundedRect: jump, xRadius: 11, yRadius: 11).fill()
+        TerminalFieldPanel.word.withAlphaComponent(unread ? 0.30 : 0.14).setStroke()
+        let edge = NSBezierPath(roundedRect: jump.insetBy(dx: 0.5, dy: 0.5), xRadius: 11, yRadius: 11)
+        edge.lineWidth = 1
+        edge.stroke()
+        let words = unread ? "↓  New activity" : "↓  Latest"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: footFace,
+            .foregroundColor: TerminalFieldPanel.word.withAlphaComponent(0.80),
+        ]
+        let size = (words as NSString).size(withAttributes: attrs)
+        (words as NSString).draw(
+            at: NSPoint(x: jump.midX - size.width / 2, y: jump.midY - size.height / 2),
+            withAttributes: attrs
+        )
+    }
+
     /// A tick per turn down the right edge — the whole talk at a glance, and
     /// the only way back to something that scrolled away.
     private func drawRail(from: CGFloat, reachable: CGFloat) {
@@ -624,6 +670,7 @@ final class TerminalChatPaper: NSView {
         let room = max(0, total - bounds.height)
         scroll = min(room, max(0, total - bounds.height - turnTops[turn]))
         following = scroll <= 0.5
+        if following { unread = false }
         needsDisplay = true
     }
 
@@ -735,6 +782,7 @@ final class TerminalChatPaper: NSView {
     func follow() {
         scroll = 0
         following = true
+        unread = false
         needsDisplay = true
     }
 
@@ -760,12 +808,19 @@ final class TerminalChatPaper: NSView {
         let room = max(0, total - bounds.height)
         scroll = min(room, max(0, scroll + event.scrollingDeltaY))
         following = scroll <= 0.5
+        if following { unread = false }
         needsDisplay = true
     }
 
     override func mouseDown(with event: NSEvent) {
         let at = convert(event.locationInWindow, from: nil)
-        // The rail first: it is the one target that must never be missed.
+        // The way back to the newest words, before anything else: it sits
+        // over the talk, so a press on it must not fall through to a row.
+        if let jump = jumpRect, jump.insetBy(dx: -4, dy: -4).contains(at) {
+            follow()
+            return
+        }
+        // The rail next: it is the one target that must never be missed.
         if at.x >= railRect.minX - 4, let turn = turn(near: at) {
             jump(to: turn)
             return
@@ -833,6 +888,10 @@ final class TerminalChatView: NSView {
     /// that opens above it.
     let model = TerminalModelChip()
     let list = TerminalModelList()
+    /// The cards that confirm something happened, over the talk's corner.
+    /// Above the paper and never a target: a card is a report, and a report
+    /// must not stand between a reader and a row.
+    let toasts = TerminalToastLayer()
 
     private var face = TerminalLook.face(size: max(11, TerminalLook.size - 1))
     private static let margin: CGFloat = 12
@@ -902,6 +961,7 @@ final class TerminalChatView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         addSubview(paper)
+        addSubview(toasts)
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
@@ -929,6 +989,12 @@ final class TerminalChatView: NSView {
 
     /// The talk, as the reader holds it.
     func take(_ log: ChatLog) { paper.take(log) }
+
+    /// A card saying something happened. Used where the confirmation would
+    /// otherwise be invisible — a copy leaves no trace of its own.
+    func say(_ kind: AgentToast.Kind, _ title: String, body: String? = nil) {
+        toasts.say(kind, title, body: body)
+    }
 
     /// What the agent can be switched to, and what it is on now. The list
     /// is rebuilt from this, and the chip says the current one in the
@@ -1047,6 +1113,10 @@ final class TerminalChatView: NSView {
             x: box.minX + 12, y: box.minY + Self.footHeight + 5,
             width: max(40, box.width - 24), height: max(19, lineArea - 10)
         )
+        // The cards hang from the talk's top-right, over it: a confirmation
+        // belongs where the eye already is, and takes no room from a row.
+        toasts.frame = NSRect(x: 0, y: box.maxY, width: bounds.width,
+                              height: max(0, bounds.height - box.maxY))
         let want = model.wanted
         model.frame = NSRect(
             x: box.minX + 8, y: box.minY + (Self.footHeight - want.height) / 2,
