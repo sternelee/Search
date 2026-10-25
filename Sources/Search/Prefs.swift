@@ -384,6 +384,14 @@ final class Preferences: ObservableObject {
     @Published var terminalInputBar: TerminalInputBar {
         didSet { store.set(terminalInputBar.rawValue, forKey: "terminal.inputBar"); terminalLookChanged() }
     }
+    /// Which view a terminal with an agent in it opens in. See
+    /// TerminalLook.agentView.
+    @Published var terminalAgentView: TerminalAgentView {
+        didSet {
+            store.set(terminalAgentView.rawValue, forKey: "terminal.agentView")
+            terminalLookChanged()
+        }
+    }
     @Published var terminalPadding: Double {
         didSet { store.set(terminalPadding, forKey: "terminal.padding"); terminalLookChanged() }
     }
@@ -429,6 +437,7 @@ final class Preferences: ObservableObject {
         TerminalLook.blinks = terminalBlinks
         TerminalLook.findPlace = terminalFindPlace
         TerminalLook.inputBar = terminalInputBar
+        TerminalLook.agentView = terminalAgentView
         TerminalLook.padding = terminalPadding
         TerminalLook.shell = terminalShell
         TerminalLook.directory = terminalDirectory
@@ -529,6 +538,8 @@ final class Preferences: ObservableObject {
             .flatMap(TerminalFindPlace.init) ?? .top
         terminalInputBar = store.string(forKey: "terminal.inputBar")
             .flatMap(TerminalInputBar.init) ?? .bottom
+        terminalAgentView = store.string(forKey: "terminal.agentView")
+            .flatMap(TerminalAgentView.init) ?? .screen
         terminalPadding = store.object(forKey: "terminal.padding") as? Double ?? 4
         terminalShell = store.string(forKey: "terminal.shell") ?? ""
         terminalDirectory = store.string(forKey: "terminal.directory") ?? ""

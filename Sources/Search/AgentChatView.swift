@@ -669,27 +669,46 @@ extension TerminalChatView: NSTextFieldDelegate {
     }
 }
 
-// MARK: - the chip
+// MARK: - the switch
 
-/// The chip in the pane's corner: which agent is in here, and the switch
-/// between the screen and the talk. Only present while an agent that can
-/// be read as a conversation is in the terminal — a chip offering a view
-/// of nothing would be a switch to nowhere.
+/// The switch in the pane's corner: Terminal on one side, Chat on the
+/// other, the one in use lit. Only present while an agent that can be read
+/// as a conversation is in the terminal — a switch offering a view of
+/// nothing would be a switch to nowhere.
+///
+/// Two named halves rather than one word and a dot: the chip used to say
+/// only which agent was in here, and a person had to press it to find out
+/// what it did. A switch that names both places says what it is before it
+/// is pressed.
 @MainActor
-final class TerminalChatPill: NSView {
-    /// What it says: the agent's name, and whether the talk is up.
-    private(set) var name = ""
+final class TerminalChatSwitch: NSView {
+    /// The two sides, in the order they are drawn.
+    enum Side: Int {
+        case screen, talk
+
+        var title: String {
+            switch self {
+            case .screen: return "Terminal"
+            case .talk: return "Chat"
+            }
+        }
+    }
+
+    private(set) var agent = ""
     private(set) var showing = false
 
-    private var face = NSFont.systemFont(ofSize: 10, weight: .medium)
-    private var advance: CGFloat = 6
+    /// Which side was pressed: the talk's, or the screen's. A press on the
+    /// side already in use is still said, so the pane can bring its
+    /// keyboard back to where the hand expects it.
+    var asked: ((Bool) -> Void)?
 
-    /// Pressing it: the terminal's to answer, the way the dock's plate
-    /// answers for its own line.
-    var pressed: (() -> Void)?
+    private var face = NSFont.systemFont(ofSize: 10, weight: .medium)
+    private var widths: (screen: CGFloat, talk: CGFloat) = (0, 0)
 
     static let height: CGFloat = 20
     static let inset: CGFloat = 10
+    private static let pad: CGFloat = 7
+    private static let gap: CGFloat = 3
 
     init() {
         super.init(frame: .zero)
@@ -700,18 +719,21 @@ final class TerminalChatPill: NSView {
 
     required init?(coder: NSCoder) { nil }
 
-    /// The size it wants for the words and the glyph in it.
+    /// The size it wants: both halves, their pads, and the room between
+    /// them.
     var wanted: NSSize {
-        NSSize(width: Self.height / 2 * 2 + label.width, height: Self.height)
+        NSSize(
+            width: ceil(widths.screen + widths.talk) + Self.pad * 4 + Self.gap,
+            height: Self.height
+        )
     }
 
-    private var label: NSSize {
-        (name as NSString).size(withAttributes: [.font: face as Any])
-    }
-
+    /// Says which agent is in here — kept for the corner's own record —
+    /// and which side is lit. Returns whether anything changed, so a
+    /// caller only redraws when it did.
     func say(_ agent: String, showing: Bool) -> Bool {
-        guard name != agent || self.showing != showing else { return false }
-        name = agent
+        guard self.agent != agent || self.showing != showing else { return false }
+        self.agent = agent
         self.showing = showing
         remeasure()
         needsDisplay = true
@@ -719,16 +741,31 @@ final class TerminalChatPill: NSView {
     }
 
     private func remeasure() {
-        advance = ("0" as NSString).size(withAttributes: [.font: face as Any]).width.rounded(.up)
+        func width(_ words: String) -> CGFloat {
+            ceil((words as NSString).size(withAttributes: [.font: face as Any]).width)
+        }
+        widths = (width(Side.screen.title), width(Side.talk.title))
     }
 
-    /// Only the chip itself takes a click: the frame around it must stay
+    /// Where each side sits, in `bounds` coordinates.
+    private func box(_ side: Side) -> NSRect {
+        let screen = NSRect(
+            x: 1, y: 1, width: widths.screen + Self.pad * 2, height: bounds.height - 2
+        )
+        let talk = NSRect(
+            x: screen.maxX + Self.gap, y: 1,
+            width: widths.talk + Self.pad * 2, height: bounds.height - 2
+        )
+        return side == .screen ? screen : talk
+    }
+
+    /// Only the switch itself takes a click: the frame around it must stay
     /// the terminal's, or a corner would stop being part of the pane.
     ///
     /// The point arrives in the *superview's* space — the terminal's,
-    /// where the chip sits in a corner a screen away from its own origin
+    /// where the switch sits in a corner a screen away from its own origin
     /// — so it is `frame`, not `bounds`, that says whether it landed.
-    /// Asked against `bounds`, no click ever did: the chip drew itself
+    /// Asked against `bounds`, no click ever did: the switch drew itself
     /// perfectly and was pure scenery, which is how it was found (by
     /// clicking one on a live pane and watching nothing happen).
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -736,34 +773,50 @@ final class TerminalChatPill: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        pressed?()
+        let at = convert(event.locationInWindow, from: nil)
+        // The left half is the screen and the right half is the talk; a
+        // press in the gap between them belongs to whichever half it is
+        // nearer, so there is no dead stripe in the middle of a switch.
+        asked?(at.x >= box(.talk).minX - Self.gap / 2)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         // The dock's plate, in its small size: the same ground, the same
-        // hairline, the agent's name in the terminal's ink.
+        // hairline, the terminal's ink.
         let ground = TerminalChatView.ground
         ground.withAlphaComponent(DockBox.ground).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
-        TerminalFieldPanel.word.withAlphaComponent(showing ? 0.28 : 0.16).setStroke()
+        TerminalFieldPanel.word.withAlphaComponent(0.16).setStroke()
         let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
         edge.lineWidth = 1
         edge.stroke()
-        // A dot that is filled while the talk is up: the chip is a switch,
-        // and a switch has to say which way it stands.
-        let dot = NSRect(x: 7, y: (bounds.height - 4) / 2, width: 4, height: 4)
-        TerminalFieldPanel.word.withAlphaComponent(showing ? 0.9 : 0.35).setFill()
-        NSBezierPath(ovalIn: dot).fill()
-        let size = label
-        (name as NSString).draw(
-            in: NSRect(
-                x: 16, y: (bounds.height - size.height) / 2,
-                width: max(10, bounds.width - 22), height: size.height
-            ),
-            withAttributes: [
-                .font: face as Any,
-                .foregroundColor: TerminalFieldPanel.word.withAlphaComponent(showing ? 1 : 0.6),
-            ]
-        )
+
+        // The lit half gets a raised ground of its own: a switch has to say
+        // which way it stands before a hand reaches for it.
+        let lit: Side = showing ? .talk : .screen
+        let raised = box(lit)
+        TerminalFieldPanel.word.withAlphaComponent(0.20).setFill()
+        NSBezierPath(roundedRect: raised, xRadius: 4, yRadius: 4).fill()
+        // A hairline round the raised half: against a dark ground the
+        // raised fill alone is a shade, and a switch has to be read at a
+        // glance from across the pane.
+        TerminalFieldPanel.word.withAlphaComponent(0.10).setStroke()
+        let rim = NSBezierPath(roundedRect: raised.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
+        rim.lineWidth = 1
+        rim.stroke()
+
+        for side in [Side.screen, .talk] {
+            let ink = side == lit
+                ? TerminalFieldPanel.word.withAlphaComponent(0.98)
+                : TerminalFieldPanel.word.withAlphaComponent(0.45)
+            let attrs: [NSAttributedString.Key: Any] = [.font: face, .foregroundColor: ink]
+            let words = side.title as NSString
+            let size = words.size(withAttributes: attrs)
+            let box = box(side)
+            words.draw(
+                at: NSPoint(x: box.midX - size.width / 2, y: box.midY - size.height / 2),
+                withAttributes: attrs
+            )
+        }
     }
 }

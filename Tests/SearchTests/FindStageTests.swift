@@ -12,6 +12,12 @@ final class FindStageTests: XCTestCase {
 
     func testFindBarFollowsFocusedPaneAndStageLayout() throws {
         _ = NSApplication.shared
+        // Where the bar hangs is a setting, and the look is shared by
+        // every test in this process: a test that asserts a place says
+        // which place it is looking at.
+        let was = TerminalLook.findPlace
+        defer { TerminalLook.findPlace = was }
+        TerminalLook.findPlace = .top
         let browser = Browser(record: WindowRecord())
         let left = Tab(bench: true)
         let right = Tab(bench: true)

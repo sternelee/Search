@@ -1,13 +1,13 @@
 import AppKit
 
-// The chat view's place in a terminal: the chip that says which agent is
-// in here, and the plate that lays its conversation over the grid.
+// The chat view's place in a terminal: the switch that names both views,
+// and the plate that lays the conversation over the grid.
 //
 // Both are the frame's own furniture, like the dock's plate and the
 // status bar — the pane is where the agent lives, and the pane is where
-// its talk is read. The chip is up whenever an agent whose transcript can
-// be read is in the terminal, and pressing it swaps the screen for the
-// talk and back. What is under the plate keeps running: the same
+// its talk is read. The switch is up whenever an agent whose transcript
+// can be read is in the terminal, and pressing a side swaps the screen
+// for the talk and back. What is under the plate keeps running: the same
 // terminal, the same pty, with the chat's line writing into it as though
 // the words had been typed at the screen.
 
@@ -29,10 +29,15 @@ extension TerminalView {
             return
         }
         if chatPill == nil {
-            let pill = TerminalChatPill()
-            pill.pressed = { [weak self] in self?.toggleChat() }
+            let pill = TerminalChatSwitch()
+            pill.asked = { [weak self] talk in self?.showChat(talk) }
             addSubview(pill)
             chatPill = pill
+            // A switch appearing for an agent the person has never opened
+            // in a pane: a remembered preference to read agents as talk
+            // would otherwise do nothing until the second agent in the
+            // second pane.
+            if TerminalLook.agentView == .talk { openChat() }
         }
         _ = chatPill?.say(said.agent.name, showing: chatShowing)
         // A run replaced under an open talk (the agent restarted, or a new
@@ -43,6 +48,49 @@ extension TerminalView {
 
     /// The chip's answer, and ⌘⇧C's: the talk up if it is down, down if it
     /// is up. Nothing to switch to without an agent.
+    /// A side of the switch taken: the talk up, or the screen back. Said
+    /// as a target rather than a toggle so a press on the side already in
+    /// use still brings the keyboard home — a person pressing "Terminal"
+    /// while looking at the terminal means "put me back in it".
+    func showChat(_ talk: Bool) {
+        guard chatTalk != nil else { return }
+        if talk != chatShowing {
+            if talk { openChat() } else { closeChat() }
+        } else if talk {
+            if let field = chatPlate?.field, let window { window.makeFirstResponder(field) }
+        } else if let window, window.firstResponder !== self {
+            window.makeFirstResponder(self)
+        }
+        placeChat()
+        present()
+    }
+
+    /// Writes the choice where the Settings window keeps it, without
+    /// announcing it again when nothing changed: `terminalLookChanged`
+    /// posts a notification that every pane answers, and an announcement
+    /// that says the same thing twice would have each pane re-open a talk
+    /// it already has.
+    ///
+    /// A test run writes the key itself rather than going through
+    /// `Shared.prefs`. Not a shortcut: making the settings object here
+    /// would build it at the moment the second terminal opens, and the
+    /// store it reads pins its world at the first touch — so whichever
+    /// suite happened to open a pane first would pick the defaults for the
+    /// whole process, and a later suite asserting a setting would find one
+    /// it never chose. (It did: the find bar test saw a find bar at the
+    /// bottom because a chat test had chosen "Chat" first.)
+    private func remember(_ view: TerminalAgentView) {
+        guard TerminalLook.agentView != view else { return }
+        if Store.testing {
+            TerminalLook.agentView = view
+            Store.settings.set(view.rawValue, forKey: "terminal.agentView")
+        } else {
+            Shared.prefs.terminalAgentView = view
+        }
+    }
+
+    /// The switch's keyboard answer, and the old ⌘⇧C shape: the talk up if
+    /// it is down, down if it is up. Nothing to switch to without an agent.
     func toggleChat() {
         guard chatTalk != nil else { return }
         if chatShowing {
@@ -60,6 +108,7 @@ extension TerminalView {
     /// still the thing the words are written to.
     func openChat() {
         guard let talk = chatTalk else { return }
+        remember(.talk)
         if chatPlate == nil {
             let plate = TerminalChatView()
             plate.spoke = { [weak self] words in self?.speak(words) }
@@ -89,6 +138,7 @@ extension TerminalView {
     /// ticks, and the file is read again from where it left off when the
     /// talk comes back.
     func closeChat() {
+        remember(.screen)
         chatShowing = false
         chatTick?.invalidate()
         chatTick = nil
@@ -165,12 +215,12 @@ extension TerminalView {
         guard bounds.width > 1, bounds.height > 1 else { return }
         if let pill = chatPill {
             let want = pill.wanted
-            var top = bounds.height - want.height - TerminalChatPill.inset
+            var top = bounds.height - want.height - TerminalChatSwitch.inset
             if findPanel != nil, TerminalLook.findPlace == .top {
                 top -= FieldBox.height + 6
             }
             pill.frame = NSRect(
-                x: bounds.width - want.width - TerminalChatPill.inset,
+                x: bounds.width - want.width - TerminalChatSwitch.inset,
                 y: top, width: want.width, height: want.height
             )
             // Not hidden on the alternate screen: that is exactly where

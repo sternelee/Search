@@ -132,7 +132,7 @@ final class TerminalView: NSView, NSTextInputClient {
     /// asked for. Nothing here is a clock: the chip is told by the
     /// island's own news, and the plate reads the file on a slow tick
     /// that exists only while it is up.
-    var chatPill: TerminalChatPill?
+    var chatPill: TerminalChatSwitch?
     var chatPlate: TerminalChatView?
     var chatReader: ChatReader?
     var chatTalk: AgentTalk.Talk?
@@ -777,6 +777,15 @@ final class TerminalView: NSView, NSTextInputClient {
         chatPlate?.refont()
         chatPlate?.needsDisplay = true
         _ = chatPill?.say(chatTalk?.agent.name ?? "", showing: chatShowing)
+        // The Agent View setting says what an agent's terminal opens in,
+        // and a change made in the Settings window is felt by the panes
+        // already open — the same courtesy the Input Bar gets. Written from
+        // the switch too, so the press and the setting are one path.
+        if chatTalk != nil, TerminalLook.agentView == .talk, !chatShowing {
+            openChat()
+        } else if TerminalLook.agentView == .screen, chatShowing {
+            closeChat()
+        }
         // And the status bar's face is the look's own too — its height
         // moves with it, and the layout that follows places it.
         // Cells of a different size — a new face, or more room left at the

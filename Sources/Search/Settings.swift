@@ -605,6 +605,16 @@ struct SettingsPanel: View {
                     )
                 }
                 Rule()
+                Line(
+                    "Agent View",
+                    "What a terminal running Claude Code, Pi or Codex opens in — the screen, or its talk read as a conversation. The switch in the pane's corner changes this too"
+                ) {
+                    Segmented(
+                        options: TerminalAgentView.allCases.map { ($0, $0.title) },
+                        selection: $prefs.terminalAgentView
+                    )
+                }
+                Rule()
                 Line("Padding", "The room left around the cells, in points") {
                     Steps(stops: TerminalLook.paddings, value: $prefs.terminalPadding, home: 4) {
                         String(format: "%.0f", $0)

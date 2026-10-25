@@ -268,13 +268,13 @@ final class AgentChatTests: XCTestCase {
         XCTAssertNil(view.chatPill)
     }
 
-    /// The chip takes a click where it actually is. A hit test is asked in
-    /// the *superview's* coordinates, and the chip sits in a far corner —
-    /// asked against its own bounds it answered no to every real click,
-    /// which is precisely how it was found (a chip drawn, reading right,
-    /// doing nothing).
+    /// The switch takes a click where it actually is. A hit test is asked
+    /// in the *superview's* coordinates, and the switch sits in a far
+    /// corner — asked against its own bounds it answered no to every real
+    /// click, which is precisely how it was found (a switch drawn, reading
+    /// right, doing nothing).
     @MainActor
-    func testTheChipTakesItsClickWhereItStands() {
+    func testTheSwitchTakesItsClickWhereItStands() {
         let terminal = Terminal(command: TerminalCommand(argv: ["/bin/zsh", "-f", "-c", "sleep 10"]))
         let view = TerminalView(terminal: terminal)
         let window = NSWindow(
@@ -284,7 +284,7 @@ final class AgentChatTests: XCTestCase {
         window.contentView = view
         window.orderFrontRegardless()
         view.layoutSubtreeIfNeeded()
-        let pill = TerminalChatPill()
+        let pill = TerminalChatSwitch()
         view.addSubview(pill)
         view.chatPill = pill
         pill.say("Claude Code", showing: false)
@@ -294,12 +294,63 @@ final class AgentChatTests: XCTestCase {
         let middle = NSPoint(x: pill.frame.midX, y: pill.frame.midY)
         XCTAssertTrue(
             pill.hitTest(middle) === pill,
-            "a click on the chip lands on the chip, in the terminal's own coordinates"
+            "a click on the switch lands on the switch, in the terminal's own coordinates"
         )
         XCTAssertNil(
             pill.hitTest(NSPoint(x: 10, y: 10)),
             "and the rest of the pane stays the terminal's"
         )
         window.orderOut(nil)
+    }
+
+    /// Each half of the switch asks for its own side, and the press is
+    /// remembered as the Agent View setting — a person who reads Claude
+    /// Code as a conversation should not have to say so again on the next
+    /// terminal.
+    @MainActor
+    func testEachHalfAsksForItsOwnSideAndTheChoiceIsRemembered() {
+        let plate = TerminalChatSwitch()
+        var asked: [Bool] = []
+        plate.asked = { asked.append($0) }
+        plate.frame = NSRect(x: 0, y: 0, width: plate.wanted.width, height: plate.wanted.height)
+
+        // Both words are drawn, in this order, and the whole thing is wide
+        // enough for them: a switch whose label is cut says nothing.
+        XCTAssertGreaterThan(plate.wanted.width, 90)
+        plate.say("Claude Code", showing: false)
+        XCTAssertEqual(plate.wanted.width, plate.wanted.width, "the agent's name does not widen it")
+
+        func click(_ x: CGFloat) {
+            let at = NSPoint(x: x, y: plate.bounds.midY)
+            let event = NSEvent.mouseEvent(
+                with: .leftMouseDown, location: at, modifierFlags: [],
+                timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1,
+                pressure: 1
+            )!
+            plate.mouseDown(with: event)
+        }
+        click(12)
+        click(plate.bounds.width - 12)
+        XCTAssertEqual(asked, [false, true], "left half is the screen, right half is the talk")
+
+        // The preference and the switch are one path: what the switch says
+        // is what the setting says.
+        let started = TerminalLook.agentView
+        defer { TerminalLook.agentView = started }
+        let view = TerminalView(terminal: Terminal(command: TerminalCommand(
+            argv: ["/bin/zsh", "-f", "-c", "sleep 5"]
+        )))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = view
+        window.orderOut(nil)
+        let talk = AgentTalk.Talk(agent: .pi, id: "x", file: nil, cwd: nil)
+        view.chatTalk = talk
+        view.openChat()
+        XCTAssertEqual(TerminalLook.agentView, .talk, "opening the talk says so")
+        view.closeChat()
+        XCTAssertEqual(TerminalLook.agentView, .screen, "and closing it says that")
     }
 }

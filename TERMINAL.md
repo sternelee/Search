@@ -397,9 +397,24 @@ Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 ses
 
 ## 九、Chat 视图（agent 的对话面）
 
-终端里跑着 Claude Code / Pi（含 OMP）/ Codex 时，窗格右上角浮出一枚小胶囊（写着 agent
-名，激活时点亮）；点一下，整个窗格盖上一块对话面板——agent 的思考、说话、工具调用
-按对话的形状排开，底部一行输入。再点一下或 Esc 收回，终端还是终端。
+终端里跑着 Claude Code / Pi（含 OMP）/ Codex 时，窗格右上角浮出一枚**两段式开关**：
+`Terminal | Chat`，当前模式那一半抬起、文字点满，另一半只有 0.45 的墨。点 Chat，整个
+窗格盖上一块对话面板——agent 的思考、说话、工具调用按对话的形状排开，底部一行输入；
+点 Terminal（或 Esc）收回，终端还是终端。
+
+用两段而不是一枚带圆点的胶囊：胶囊只写 agent 名，得先按一下才知道它做什么；开关把
+两个去处都写出来，按之前就说了自己是什么。左半是屏幕、右半是对话，落在缝上的那一击
+归较近的一半（`mouseDown` 里按 `box(.talk).minX - gap/2` 分），所以中间没有一条死带。
+抬起那一半除 0.20 的亮底之外还有一圈 0.10 的描边——深色地面上纯靠明度差的一格，在
+窗格对过看不出来（先只画亮底，扫像素时两侧只差 0.03 亮度）。
+
+**开关就是设置。** 按哪一半就写进 `terminal.agentView`（`TerminalAgentView {screen, talk}`，
+Settings 里叫 Agent View），新建的终端照它开——一个把 Claude Code 读成对话的人，不该在
+下一个终端里再说一遍。写的时候**开着才写"talk"、关着才写"screen"**（`openChat`/`closeChat`
+各自在状态改完之后写），并且值没变就不写：`terminalLookChanged` 会广播 `TerminalLook.changed`，
+每个窗格都会应答，重复宣告会让窗格把自己正在开的对话再开一次。反过来 Settings 里改这一项
+也会立刻作用到已开的窗格（同一处 `lookChanged()` 里收口）。没有 agent 的窗格不受这条设置
+影响——那里没有第二个视图可去。
 
 做法举自 [ovis](https://github.com/dragongrove/ovis)（herdr 的浏览器客户端）的 Chat 模式：
 **不解析屏幕，读 agent 自己写的原生 transcript JSONL**。ovis 的审计文档
@@ -430,11 +445,12 @@ Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 ses
    带 2pt 左条，agent 0.92，思考 0.40，工具行折叠、点击展开看输出，失败的末尾✗；
    滚轮滚离活端即停跟随，回到底部恢复）与 `TerminalChatView`（纸 + 输入行 + 细分割线）。
    重绘靠签名（每条的词/思考/工具名+摘要+输出+成败，用\u{1}分隔）——工具**回答**到了
-   时同一行内容变长，签名变了才重排。胶囊 `TerminalChatPill` 是第三个视图。
+   时同一行内容变长，签名变了才重排。开关 `TerminalChatSwitch` 是第三个视图。
 4. **`AgentChatPane.swift`** —— TerminalView 的接线：Island 的 `$sessions` 一有变化
    就问这一窗格的 tty 有没有 Talk（注意 `@Published` 的 sink 在 willSet 时送来的是旧数组，
-   所以 sink 直接把新数组传进来）；有 → 建胶囊，没 → 拆。打开时 0.5s Timer 轮询
-   `reader.update()`，长了才重排；关上即停。`placeChat` 把胶囊放在右上角（顶部的查找
+   所以 sink 直接把新数组传进来）；有 → 建开关，没 → 拆（记住的偏好是 Chat 时，开关
+   一出现就把对话打开——否则这条设置在「第一次开 agent」这件事上等于没写）。打开时 0.5s Timer 轮询
+   `reader.update()`，长了才重排；关上即停。`placeChat` 把开关放在右上角（顶部的查找
    面板在场时让位下移）；**alt 屏不藏**——agent 就住在那里。
 
 与 Island 的关系：Island 管的是"提醒"（别的标签页里 agent 在干嘛），Chat 管的是"对话"
@@ -442,8 +458,9 @@ Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 ses
 `Session` 各加了一个可选 `talk`，谁报了路径谁就带上。
 
 测试在 `Tests/SearchTests/AgentChatTests.swift`（7 条）：三家记录的解析、孤儿回答丢弃、
-跟随与半行悬置与重写重读、store 验证与 settle、胶囊出现/点击读取/收起/SessionEnd
-收走（含 Island 状态流转的端到端）。
+跟随与半行悬置与重写重读、store 验证与 settle、开关出现/点击读取/收起/SessionEnd
+收走（含 Island 状态流转的端到端）、开关两半各要自己那一半且点击落在开关上（`frame`
+不是 `bounds`——第一版就是这么错的）、以及按哪一半就翻成偏好。
 
 ## 十、Composer 与模型切换（照着 orbit-pi 的作曲家）
 
