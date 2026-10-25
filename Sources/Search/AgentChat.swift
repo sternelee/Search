@@ -38,6 +38,37 @@ struct ChatLog {
         var failed: Bool
     }
 
+    /// What a turn cost, in the units all three agents agree on. Their
+    /// field names differ (Claude's `input_tokens`, Pi's `input`, Codex's
+    /// `last_token_usage`) but the meaning is the same, and a footer
+    /// quoting one agent's spelling would read as nothing to anyone else.
+    struct Usage: Equatable {
+        var input: Int = 0
+        var output: Int = 0
+        /// Tokens served from the prompt cache — billed differently, and
+        /// usually the largest number in the record, so a footer that
+        /// left them out would look like a rounding error.
+        var cached: Int = 0
+
+        var worth: Bool { input + output + cached > 0 }
+
+        func merging(_ other: Usage) -> Usage {
+            var both = self
+            both.add(other)
+            return both
+        }
+
+        mutating func add(_ other: Usage) {
+            // The largest, not the sum: an agent reports the same turn's
+            // usage more than once (a streamed answer writes a line per
+            // block), and adding those would multiply the count by the
+            // number of lines it took to say.
+            input = max(input, other.input)
+            output = max(output, other.output)
+            cached = max(cached, other.cached)
+        }
+    }
+
     enum Part: Equatable {
         case word(String)
         case thought(String)
@@ -48,12 +79,26 @@ struct ChatLog {
         let id: Int
         let role: Role
         var at: Date?
+        /// When the last thing in the turn was written. The difference is
+        /// how long the turn took — the one measure of "generation time"
+        /// all three transcripts carry, because none of them writes a
+        /// duration of its own.
+        var until: Date? = nil
+        var usage: Usage? = nil
         var parts: [Part]
 
         /// Whether anything in the turn is worth a row: an empty answer
         /// (a tool-only step with no words) is still a row, but a turn
         /// whose every part was dropped is not.
         var worth: Bool { !parts.isEmpty }
+
+        /// Whether any tool in the turn said it failed.
+        var broke: Bool {
+            parts.contains {
+                if case .tool(let tool) = $0 { return tool.failed }
+                return false
+            }
+        }
     }
 
     let agent: AgentTalk.Agent
@@ -113,6 +158,8 @@ struct ChatLog {
         if (raw["isSidechain"] as? Bool) == true { return }
         guard let message = raw["message"] as? [String: Any] else { return }
         let at = date(raw["timestamp"])
+        // What the turn cost, written on the same line as the answer.
+        let cost = Self.usage(message["usage"])
         let role: Role = type == "assistant" ? .agent : .person
         let blocks = message["content"]
         if let text = blocks as? String {
@@ -126,24 +173,24 @@ struct ChatLog {
             case "text":
                 let text = block["text"] as? String ?? ""
                 if role == .person {
-                    if let words = personWords(text) { add(role: role, at: at, .word(words)) }
+                    if let words = personWords(text) { add(role: role, at: at, .word(words), usage: cost) }
                 } else if !text.trimmed.isEmpty {
-                    add(role: role, at: at, .word(text))
+                    add(role: role, at: at, .word(text), usage: cost)
                 }
             case "thinking":
                 let text = block["thinking"] as? String ?? ""
-                if !text.trimmed.isEmpty { add(role: role, at: at, .thought(text)) }
+                if !text.trimmed.isEmpty { add(role: role, at: at, .thought(text), usage: cost) }
             case "tool_use":
                 let id = block["id"] as? String ?? ""
                 let name = block["name"] as? String ?? "tool"
                 let input = block["input"].map(json) ?? ""
                 add(role: .agent, at: at, .tool(Tool(
                     name: name, summary: summary(of: name, input: block["input"]), input: input, output: "", failed: false
-                )), holding: id)
+                )), holding: id, usage: cost)
             case "tool_result":
                 let id = block["tool_use_id"] as? String ?? ""
                 let said = text(block["content"])
-                answer(id, said, failed: (block["is_error"] as? Bool) ?? false)
+                answer(id, said, failed: (block["is_error"] as? Bool) ?? false, at: at)
             default:
                 break
             }
@@ -157,6 +204,7 @@ struct ChatLog {
         guard raw["type"] as? String == "message", let message = raw["message"] as? [String: Any] else { return }
         let role = message["role"] as? String ?? ""
         let at = date(raw["timestamp"]) ?? date(message["timestamp"])
+        let cost = Self.usage(message["usage"])
         let blocks = message["content"]
         if let text = blocks as? String {
             if role == "user", let words = personWords(text) { add(role: .person, at: at, .word(words)) }
@@ -166,7 +214,7 @@ struct ChatLog {
         // A tool's answer is a message of its own, under its own role.
         if role == "toolResult" {
             let id = message["toolCallId"] as? String ?? ""
-            answer(id, text(message["content"]), failed: (message["isError"] as? Bool) ?? false)
+            answer(id, text(message["content"]), failed: (message["isError"] as? Bool) ?? false, at: at)
             return
         }
         for block in blocks {
@@ -174,20 +222,20 @@ struct ChatLog {
             case "text":
                 let said = block["text"] as? String ?? ""
                 if role == "user" {
-                    if let words = personWords(said) { add(role: .person, at: at, .word(words)) }
+                    if let words = personWords(said) { add(role: .person, at: at, .word(words), usage: cost) }
                 } else if !said.trimmed.isEmpty {
-                    add(role: .agent, at: at, .word(said))
+                    add(role: .agent, at: at, .word(said), usage: cost)
                 }
             case "thinking":
                 let said = block["thinking"] as? String ?? ""
-                if !said.trimmed.isEmpty { add(role: .agent, at: at, .thought(said)) }
+                if !said.trimmed.isEmpty { add(role: .agent, at: at, .thought(said), usage: cost) }
             case "toolCall":
                 let id = block["id"] as? String ?? ""
                 let name = block["name"] as? String ?? "tool"
                 add(role: .agent, at: at, .tool(Tool(
                     name: name, summary: summary(of: name, input: block["arguments"]),
                     input: block["arguments"].map(json) ?? "", output: "", failed: false
-                )), holding: id)
+                )), holding: id, usage: cost)
             default:
                 break
             }
@@ -199,6 +247,22 @@ struct ChatLog {
     /// `response_item` and once as an `event_msg`. The response item is
     /// the one kept: it is the transcript, the event is the display cue.
     private mutating func takeCodex(_ raw: [String: Any]) {
+        // A token count is an `event_msg` of its own, arriving after the
+        // answer it counted — the one thing in this file that is not a
+        // `response_item` and is still worth keeping.
+        if raw["type"] as? String == "event_msg" {
+            guard let payload = raw["payload"] as? [String: Any],
+                  payload["type"] as? String == "token_count",
+                  let info = payload["info"] as? [String: Any]
+            else { return }
+            // `last_token_usage` is this turn; `total_token_usage` is the
+            // whole session, which would put the same growing number
+            // under every answer.
+            if let cost = Self.usage(info["last_token_usage"] ?? info["total_token_usage"]) {
+                counted(cost)
+            }
+            return
+        }
         guard raw["type"] as? String == "response_item",
               let payload = raw["payload"] as? [String: Any] else { return }
         let at = date(raw["timestamp"])
@@ -228,7 +292,7 @@ struct ChatLog {
                 input: arguments.map(json) ?? "", output: "", failed: false
             )), holding: id)
         case "function_call_output", "custom_tool_call_output", "local_shell_call_output":
-            answer(payload["call_id"] as? String ?? "", contentText(payload["output"]), failed: false)
+            answer(payload["call_id"] as? String ?? "", contentText(payload["output"]), failed: false, at: at)
         default:
             break
         }
@@ -236,7 +300,9 @@ struct ChatLog {
 
     // MARK: - Putting one part down
 
-    private mutating func add(role: Role, at: Date?, _ part: Part, holding id: String? = nil) {
+    private mutating func add(
+        role: Role, at: Date?, _ part: Part, holding id: String? = nil, usage: Usage? = nil
+    ) {
         // An agent's parts arrive together and belong to one turn: a
         // thought, a tool, a word said in one breath are one answer, and
         // the transcript writes them as separate blocks of one line. A
@@ -245,9 +311,13 @@ struct ChatLog {
         if role == .agent, let last = turns.last, last.role == .agent {
             var turn = turns[turns.count - 1]
             turn.parts.append(part)
+            if let at { turn.until = at }
+            if let usage { turn.usage = (turn.usage ?? Usage()).merging(usage) }
             turns[turns.count - 1] = turn
         } else {
-            turns.append(Turn(id: turns.count, role: role, at: at, parts: [part]))
+            turns.append(Turn(
+                id: turns.count, role: role, at: at, until: at, usage: usage, parts: [part]
+            ))
         }
         revision += 1
         if let id, !id.isEmpty {
@@ -255,14 +325,47 @@ struct ChatLog {
         }
     }
 
-    private mutating func answer(_ id: String, _ output: String, failed: Bool) {
+    /// Usage that arrives on a line of its own, with no part of the talk
+    /// to hang it on: Codex writes a token count as its own event after
+    /// the answer it belongs to. It goes on the last thing the agent
+    /// said, which is the turn it was counted for.
+    private mutating func counted(_ usage: Usage) {
+        guard let last = turns.last, last.role == .agent else { return }
+        var turn = turns[turns.count - 1]
+        turn.usage = (turn.usage ?? Usage()).merging(usage)
+        turns[turns.count - 1] = turn
+        revision += 1
+    }
+
+    private mutating func answer(_ id: String, _ output: String, failed: Bool, at: Date? = nil) {
         guard !id.isEmpty, let where_ = calls.removeValue(forKey: id) else { return }
         guard where_.turn < turns.count, where_.part < turns[where_.turn].parts.count else { return }
         guard case .tool(var tool) = turns[where_.turn].parts[where_.part] else { return }
         tool.output = output
         tool.failed = failed
         turns[where_.turn].parts[where_.part] = .tool(tool)
+        if let at { turns[where_.turn].until = at }
         revision += 1
+    }
+
+    /// The usage fields of one line, named the way that agent names them.
+    /// Absent fields stay zero rather than becoming a wrong number: a
+    /// footer that guessed would be worse than one that says less.
+    private static func usage(_ raw: Any?) -> Usage? {
+        guard let fields = raw as? [String: Any] else { return nil }
+        func count(_ keys: [String]) -> Int {
+            for key in keys {
+                if let n = fields[key] as? Int { return n }
+                if let n = fields[key] as? Double { return Int(n) }
+            }
+            return 0
+        }
+        let usage = Usage(
+            input: count(["input_tokens", "input"]),
+            output: count(["output_tokens", "output"]),
+            cached: count(["cache_read_input_tokens", "cacheRead", "cached_input_tokens"])
+        )
+        return usage.worth ? usage : nil
     }
 
     // MARK: - Reading the shapes' loose ends

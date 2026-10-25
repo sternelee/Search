@@ -28,291 +28,620 @@ import AppKit
 /// talk goes on.
 @MainActor
 final class TerminalChatPaper: NSView {
-    /// One row of the view: a turn's part, and where it goes once the
-    /// width is known. Turns are the model's; items are what a frame
-    /// walks, which is why the layout is kept beside them rather than
-    /// derived every draw.
+    /// One row of the talk. A turn's parts become rows; runs of thought and
+    /// tool work between two things that were *said* are folded into one
+    /// activity row, the way orbit-pi folds a turn's machinery so a
+    /// conversation reads as a conversation.
     private struct Item {
         enum Kind {
             case said(ChatLog.Role)
             case thought
             case tool(ChatLog.Tool)
         }
+
         let kind: Kind
         let text: String
-        /// Laid out at this width: how tall the row is, in points.
+        /// The turn it came from — footers and the rail group by this.
+        let turn: Int
+        /// Which activity group it belongs to, or -1 when it is a row of its
+        /// own (anything that was said).
+        let fold: Int
+        /// The last part of its turn: where that turn's footer goes.
+        let last: Bool
+
         var height: CGFloat = 0
-        /// Where it starts, from the top of the whole talk.
         var top: CGFloat = 0
+        /// False for the tail of a folded group: it takes no room and draws
+        /// nothing, but it may still carry the turn's footer.
+        var body = true
+        /// True for the first row of a folded group: it draws the summary
+        /// instead of its own tool row.
+        var folded = false
     }
 
     private var items: [Item] = []
-    /// What was laid out, said compactly: the talk is only relaid when
-    /// this differs, and a tool's answer arriving is a difference the
-    /// item's own text does not carry (a call laid out twice, once
-    /// answered and once not, is two different rows of the same words).
+    private var turns: [ChatLog.Turn] = []
+    /// Each turn's top in talk points, for the rail.
+    private var turnTops: [CGFloat] = []
+    /// One line per turn — what the paper was last built from.
     private var laid: [String] = []
-    /// The width the heights were measured at. A plate that changes width
-    /// re-measures every row — wrapping is the one thing that cannot be
-    /// carried over.
     private var measured: CGFloat = 0
     private var total: CGFloat = 0
-    /// How far up the talk is scrolled, in points from the bottom. 0 is
-    /// the live end, which is where a person who has not scrolled is.
     private var scroll: CGFloat = 0
-    /// Whether the view is following the end. Scrolling up stops it;
-    /// coming back to the bottom starts it again.
     private var following = true
-    /// Where tool output is folded in — a set of the items a person
-    /// opened. Reset when the talk is replaced, kept while it grows.
-    private var opened: Set<Int> = []
+    /// Tool rows whose output a person opened, by item index.
+    private var openedTools: Set<Int> = []
+    /// Activity groups a person opened, by group number.
+    private var openedGroups: Set<Int> = []
 
-    /// The face the talk is written in: the terminal's own, a step down
-    /// from the grid's so a paragraph of it reads as prose.
-    private var face = TerminalLook.face(size: max(11, TerminalLook.size - 1))
-    private var bold = NSFontManager.shared.convert(
-        TerminalLook.face(size: max(11, TerminalLook.size - 1)), toHaveTrait: .boldFontMask
-    )
+    private let margin: CGFloat = 18
+    private let gutter: CGFloat = 14
+    private let air: CGFloat = 6
+    private let mark: CGFloat = 2
+    /// The rail down the right edge, and the room it claims.
+    private static let rail: CGFloat = 12
+    /// A turn's footer line.
+    private static let footHeight: CGFloat = 16
+    /// A folded group's summary row.
+    private static let activityRow: CGFloat = 18
 
-    /// The talk as it stands, and whether it changed enough to be drawn.
-    /// The reader hands the same log over every tick; a log whose turns
-    /// are still the ones laid out costs nothing.
+    override var isFlipped: Bool { false }
+
+    /// Where a row's words are drawn: past the mark, short of the rail.
+    private var inner: CGFloat {
+        max(80, bounds.width - margin * 2 - gutter - Self.rail)
+    }
+
+    /// The talk wears the terminal's own ground and ink: it is the same
+    /// terminal seen differently, not the app's chrome on top of it.
+    private static var theme: TerminalDraw.Theme { .current(TerminalLook.theme) }
+
+    private var ground: NSColor {
+        let theme = Self.theme
+        return NSColor(srgbRed: CGFloat(theme.ground.x), green: CGFloat(theme.ground.y),
+                       blue: CGFloat(theme.ground.z), alpha: 1)
+    }
+
+    private var ink: NSColor { TerminalFieldPanel.word }
+
+    /// Ink at an alpha, so every row is the same ink seen nearer or further.
+    private func ink(_ alpha: CGFloat) -> NSColor { ink.withAlphaComponent(alpha) }
+
+    /// The one colour that is not ink: a tool that failed.
+    private func bad(_ alpha: CGFloat) -> NSColor { NSColor.systemRed.withAlphaComponent(alpha) }
+
+    private var face: NSFont { TerminalLook.face(size: max(11, TerminalLook.size - 1)) }
+    private var footFace: NSFont { TerminalLook.face(size: max(9, TerminalLook.size - 3)) }
+    private var railFace: NSFont { TerminalLook.face(size: max(9, TerminalLook.size - 4)) }
+
+    /// The talk's turns, for the composer and for tests.
+    var talk: [ChatLog.Turn] { turns }
+
     func take(_ log: ChatLog) {
         var next: [Item] = []
-        for turn in log.turns {
-            for part in turn.parts {
+        var group = 0
+        for (index, turn) in log.turns.enumerated() {
+            var open = false
+            for (place, part) in turn.parts.enumerated() {
+                let last = place == turn.parts.count - 1
                 switch part {
                 case .word(let said):
-                    next.append(Item(kind: .said(turn.role), text: said))
+                    // Words end the run: what comes after them is a new
+                    // piece of machinery, not more of the old one.
+                    open = false
+                    next.append(Item(kind: .said(turn.role), text: said,
+                                     turn: index, fold: -1, last: last))
                 case .thought(let said):
-                    next.append(Item(kind: .thought, text: said))
+                    if !open { group += 1; open = true }
+                    next.append(Item(kind: .thought, text: said,
+                                     turn: index, fold: group, last: last))
                 case .tool(let tool):
-                    next.append(Item(kind: .tool(tool), text: tool.name))
+                    if !open { group += 1; open = true }
+                    next.append(Item(kind: .tool(tool), text: tool.name,
+                                     turn: index, fold: group, last: last))
                 }
             }
         }
+
         var sigs: [String] = []
         for turn in log.turns {
+            var sig = "\(turn.id)|\(turn.at?.timeIntervalSince1970 ?? 0)|\(turn.until?.timeIntervalSince1970 ?? 0)"
+            if let use = turn.usage {
+                sig += "|\(use.input),\(use.output),\(use.cached)"
+            }
             for part in turn.parts {
                 switch part {
-                case .word(let said): sigs.append("w\(said)")
-                case .thought(let said): sigs.append("h\(said)")
-                case .tool(let tool): sigs.append("t\(tool.name)\u{1}\(tool.summary)\u{1}\(tool.output)\u{1}\(tool.failed)")
+                case .word(let said): sig += "|w\(said.count)"
+                case .thought(let said): sig += "|t\(said.count)"
+                case .tool(let tool):
+                    sig += "|k\(tool.name)\(tool.summary)\(tool.output.count)\(tool.failed)"
                 }
             }
+            sigs.append(sig)
         }
         guard sigs != laid else { return }
         laid = sigs
         items = next
-        // A talk that only grew keeps its place; one that was replaced
-        // (a new run in the same pane) starts at the live end again.
-        measured = 0
+        turns = log.turns
+        // A person who opened a tool keeps it open as the talk grows, and
+        // the first rows of a talk start open so nothing is hidden on
+        // arrival.
+        if sigs.count <= 2 {
+            openedGroups = Set(next.map(\.fold).filter { $0 >= 0 })
+        }
+        measure()
         if following { scroll = 0 }
         needsDisplay = true
     }
 
-    func refont() {
-        face = TerminalLook.face(size: max(11, TerminalLook.size - 1))
-        bold = NSFontManager.shared.convert(face, toHaveTrait: .boldFontMask)
-        measured = 0
-        needsDisplay = true
-    }
-
-    /// Back to the live end, following what comes next. A line just
-    /// written is the one thing certain to be followed by an answer.
-    func follow() {
-        scroll = 0
-        following = true
-        needsDisplay = true
-    }
-
-    /// Whether anything is worth a frame: an empty talk draws its own
-    /// line of text, which is still a draw.
-    var empty: Bool { items.isEmpty }
-
-    // MARK: laying the talk out
-
-    private static let margin: CGFloat = 18
-    private static let gutter: CGFloat = 14
-    private static let air: CGFloat = 6
-    /// The bar a person's turn wears on its left, the way a quoted line
-    /// does in an editor.
-    private static let mark: CGFloat = 2
-
-    /// The room the words get, inside the margins and the gutter.
-    private var inner: CGFloat { max(80, bounds.width - Self.margin * 2 - Self.gutter) }
+    // MARK: - measure
 
     private func measure() {
         let width = inner
-        guard width != measured else { return }
+        guard width != measured || turnTops.count != turns.count else { return }
         measured = width
+        turnTops = Array(repeating: 0, count: turns.count)
         var top: CGFloat = 0
+        var seen = -1
+        var lastTurn = -1
         for i in items.indices {
-            items[i].height = height(of: items[i], at: i, width: width)
-            items[i].top = top
-            top += items[i].height + Self.air
+            let item = items[i]
+            if item.turn != lastTurn {
+                if item.turn < turnTops.count { turnTops[item.turn] = top }
+                lastTurn = item.turn
+            }
+            if item.fold >= 0, !openedGroups.contains(item.fold) {
+                if item.fold == seen {
+                    // The rest of the folded run: no room of its own.
+                    items[i].body = false
+                    items[i].folded = false
+                    let h: CGFloat = item.last ? Self.footHeight : 0
+                    items[i].height = h
+                    items[i].top = top
+                    top += h
+                    continue
+                }
+                seen = item.fold
+                items[i].body = true
+                items[i].folded = true
+                var h = Self.activityRow
+                if item.last { h += Self.footHeight }
+                items[i].height = h
+                items[i].top = top
+                top += h + air
+            } else {
+                seen = -1
+                items[i].body = true
+                items[i].folded = false
+                var h = height(of: item, at: i, width: width)
+                if item.last { h += Self.footHeight }
+                items[i].height = h
+                items[i].top = top
+                top += h + air
+            }
         }
         total = top
     }
 
     private func height(of item: Item, at index: Int, width: CGFloat) -> CGFloat {
         switch item.kind {
-        case .said:
-            return max(18, box(item.text, font: face, width: width).height + 4)
+        case .said(.person):
+            return bubble(item.text, width: width).box.height + 2
+        case .said(.agent):
+            return box(item.text, font: face, width: width).height + 2
         case .thought:
-            return max(16, box(item.text, font: face, width: width - Self.gutter).height + 2)
+            let room = max(40, width - 10)
+            return box(item.text, font: face, width: room).height + 2
         case .tool(let tool):
-            // The call is one line — its summary — and the answer is
-            // folded until asked for: a transcript of a busy agent is
-            // mostly output, and output read whole is the screen again.
-            let head = row(tool, width: width)
-            guard opened.contains(index), !tool.output.isEmpty else { return head + 2 }
-            return head + 2 + box(tool.output, font: face, width: width - Self.gutter).height + 6
+            var h = rowHeight
+            if openedTools.contains(index), !tool.output.isEmpty {
+                h += 2 + box(tool.output, font: footFace, width: foldRoom(width)).height
+            }
+            return h
         }
     }
 
-    /// A tool call as one line: whether it failed, what it was, and what
-    /// it was called on.
-    private func row(_ tool: ChatLog.Tool, width: CGFloat) -> CGFloat {
-        let said = (tool.failed ? "✗ " : "⏵ ") + tool.name
-        let line = tool.summary.isEmpty ? said : said + "  " + tool.summary
-        let one = (line as NSString).boundingRect(
-            with: NSSize(width: width - Self.gutter, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-            attributes: [.font: face as Any]
-        )
-        return max(16, min(one.height, 18))
+    private var rowHeight: CGFloat { 18 }
+
+    private func foldRoom(_ width: CGFloat) -> CGFloat {
+        max(40, width - 8)
     }
 
-    private func box(_ text: String, font: NSFont, width: CGFloat) -> NSRect {
-        (text as NSString).boundingRect(
-            with: NSSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin],
-            attributes: [.font: font as Any]
-        )
-    }
+    // MARK: - draw
 
-    // MARK: drawing it
-
-    /// The colours, taken from the terminal's own theme so the plate is
-    /// the same terminal seen differently rather than the app's chrome on
-    /// top of it.
-    private static var theme: TerminalDraw.Theme { .current(TerminalLook.theme) }
-
-    private var ground: NSColor {
-        let theme = Self.theme
-        return NSColor(
-            srgbRed: CGFloat(theme.ground.x), green: CGFloat(theme.ground.y),
-            blue: CGFloat(theme.ground.z), alpha: 1
-        )
-    }
-
-    private var ink: NSColor { TerminalFieldPanel.word }
-
-    override func draw(_ dirtyRect: NSRect) {
-        measure()
+    override func draw(_ dirty: NSRect) {
         ground.setFill()
         bounds.fill()
-        guard !items.isEmpty else {
-            ("This run has not said anything yet." as NSString).draw(
-                in: NSRect(x: Self.margin, y: bounds.height - 40, width: inner, height: 20),
-                withAttributes: [.font: face as Any, .foregroundColor: ink.withAlphaComponent(0.35)]
-            )
+
+        measure()
+        let start = scroll
+        let reachable = bounds.height
+        guard total > 0 else {
+            let words = "This terminal is not running an agent yet."
+            let room = box(words, font: face, width: bounds.width - 40)
+            words.draw(in: NSRect(x: 20, y: (bounds.height - room.height) / 2,
+                                  width: bounds.width - 40, height: room.height),
+                       withAttributes: [.font: face, .foregroundColor: ink(0.35)])
             return
         }
-        // Where the visible part of the talk starts, in talk points: the
-        // talk is laid out from its own top, and the plate is a window
-        // onto the end of it.
-        let reachable = bounds.height
-        let start = max(0, min(scroll, max(0, total - reachable)))
-        // A talk shorter than the plate starts at its top, where a reader
-        // begins, instead of collecting at the bottom and leaving the rest
-        // of the pane blank above it. Longer than the plate, and the clamp
-        // does nothing: the window is onto the end of the talk as before.
         let from = max(0, total - start - reachable)
-        let clip = NSRect(x: 0, y: 0, width: bounds.width, height: reachable)
-        NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(rect: clip).addClip()
+
         for i in items.indices {
             let item = items[i]
             let y = bounds.height - (item.top - from) - item.height
-            guard y + item.height > 0, y < bounds.height else { continue }
-            draw(item, at: y, width: inner, index: i)
+            guard y + item.height > -2, y < bounds.height + 2 else { continue }
+            let top = y + item.height
+            if item.body {
+                let body = item.height - (item.last ? Self.footHeight : 0)
+                if item.folded {
+                    drawActivity(item.fold, top: top, width: inner)
+                } else {
+                    draw(item, at: i, top: top, body: body, width: inner)
+                }
+            }
+            if item.last, item.turn < turns.count {
+                drawFoot(turns[item.turn], at: y, width: inner)
+            }
         }
-        NSGraphicsContext.restoreGraphicsState()
+
+        drawRail(from: from, reachable: reachable)
     }
 
-    private func draw(_ item: Item, at y: CGFloat, width: CGFloat, index: Int) {
-        let x = Self.margin + Self.gutter
+    private func draw(_ item: Item, at index: Int, top: CGFloat, body: CGFloat, width: CGFloat) {
+        let x = margin + gutter
         switch item.kind {
         case .said(.person):
-            // A person's line, marked on the left: the one thing in the
-            // talk that is not the agent's own words.
-            ink.withAlphaComponent(0.5).setFill()
-            NSRect(x: Self.margin, y: y + 1, width: Self.mark, height: max(14, item.height - 2)).fill()
-            (item.text as NSString).draw(
-                in: NSRect(x: x, y: y, width: width, height: item.height),
-                withAttributes: [.font: bold as Any, .foregroundColor: ink]
-            )
+            let shape = bubble(item.text, width: width)
+            let box = NSRect(x: shape.box.minX, y: top - shape.box.height,
+                             width: shape.box.width, height: shape.box.height)
+            let path = NSBezierPath(roundedRect: box, xRadius: 9, yRadius: 9)
+            ink(0.07).setFill()
+            path.fill()
+            ink(0.14).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            item.text.draw(in: NSRect(x: shape.text.minX, y: top - shape.box.height + shape.text.minY,
+                                      width: shape.text.width, height: shape.text.height),
+                           withAttributes: [.font: face, .foregroundColor: ink(0.86)])
+
         case .said(.agent):
-            (item.text as NSString).draw(
-                in: NSRect(x: x, y: y, width: width, height: item.height),
-                withAttributes: [.font: face as Any, .foregroundColor: ink.withAlphaComponent(0.92)]
-            )
+            item.text.draw(in: NSRect(x: x, y: top - body, width: width, height: body),
+                           withAttributes: [.font: face, .foregroundColor: ink(0.88)])
+
         case .thought:
-            // What it thought before saying: dimmer, and set off by the
-            // gutter, so a long reasoning turn never reads as an answer.
-            (item.text as NSString).draw(
-                in: NSRect(x: x, y: y, width: width, height: item.height),
-                withAttributes: [.font: face as Any, .foregroundColor: ink.withAlphaComponent(0.40)]
-            )
+            // A thought is set back behind a hairline so it reads as the
+            // agent's own aside, never as something it said to you.
+            let room = max(40, width - 10)
+            ink(0.13).setFill()
+            NSRect(x: x, y: top - body + 1, width: mark, height: max(0, body - 3)).fill()
+            item.text.draw(in: NSRect(x: x + 10, y: top - body, width: room, height: body),
+                           withAttributes: [.font: face, .foregroundColor: ink(0.40)])
+
         case .tool(let tool):
-            let said = (tool.failed ? "✗ " : "⏵ ") + tool.name + (tool.summary.isEmpty ? "" : "  " + tool.summary)
-            let color = tool.failed ? NSColor.systemRed.withAlphaComponent(0.75) : ink.withAlphaComponent(0.5)
-            (said as NSString).draw(
-                in: NSRect(x: x, y: y, width: width, height: min(item.height, 18)),
-                withAttributes: [.font: face as Any, .foregroundColor: color]
-            )
-            guard opened.contains(index), !tool.output.isEmpty else { return }
-            let fold = NSRect(x: x, y: y - box(tool.output, font: face, width: width).height - 2,
-                              width: width, height: box(tool.output, font: face, width: width).height)
-            ink.withAlphaComponent(0.30).setFill()
-            NSRect(x: x, y: fold.maxY + 2, width: 1, height: fold.height).fill()
-            (tool.output as NSString).draw(
-                in: fold.offsetBy(dx: 8, dy: 0),
-                withAttributes: [.font: face as Any, .foregroundColor: ink.withAlphaComponent(0.45)]
-            )
+            let row = NSRect(x: x, y: top - rowHeight, width: width, height: rowHeight)
+            let open = openedTools.contains(index)
+            let tone: CGFloat = tool.failed ? 0.75 : 0.50
+            let head = (open ? "▾ " : "▸ ") + tool.name
+                + (tool.summary.isEmpty ? "" : "  \(tool.summary)")
+            head.draw(in: row, withAttributes: [
+                .font: face,
+                .foregroundColor: tool.failed ? bad(tone) : ink(tone),
+            ])
+            if open, !tool.output.isEmpty {
+                let room = foldRoom(width)
+                let h = box(tool.output, font: footFace, width: room).height
+                tool.output.draw(in: NSRect(x: x + 8, y: top - rowHeight - 2 - h, width: room, height: h),
+                                 withAttributes: [.font: footFace,
+                                                  .foregroundColor: ink(tool.failed ? 0.62 : 0.36)])
+            }
         }
     }
 
-    // MARK: walking it
+    /// A folded run of thought and tool work, said in a sentence.
+    private func drawActivity(_ fold: Int, top: CGFloat, width: CGFloat) {
+        let open = openedGroups.contains(fold)
+        let words = (open ? "▾ " : "▸ ") + activityWords(fold)
+        let row = NSRect(x: margin + gutter, y: top - Self.activityRow, width: width, height: Self.activityRow)
+        ink(0.10).setFill()
+        NSRect(x: margin + gutter, y: top - Self.activityRow + 1, width: mark,
+               height: max(0, Self.activityRow - 3)).fill()
+        words.draw(in: row, withAttributes: [.font: face, .foregroundColor: ink(0.45)])
+    }
+
+    private func activityWords(_ fold: Int) -> String {
+        var counts: [Kin: Int] = [:]
+        for item in items where item.fold == fold {
+            switch item.kind {
+            case .thought: counts[.thought, default: 0] += 1
+            case .said: break
+            case .tool(let tool): counts[Self.kin(tool.name), default: 0] += 1
+            }
+        }
+        var parts: [String] = []
+        for kin in Kin.allCases {
+            guard let n = counts[kin], n > 0 else { continue }
+            parts.append(kin.words(n))
+        }
+        return parts.isEmpty ? "Worked" : parts.joined(separator: " · ")
+    }
+
+    /// What a tool call was, in the few kinds a person would name. A
+    /// search is not a read: "Read a file" for a grep would be a lie.
+    private enum Kin: CaseIterable {
+        case command, read, search, page, edit, tool, thought
+
+        func words(_ n: Int) -> String {
+            switch self {
+            case .command: return n == 1 ? "Ran a command" : "Ran \(n) commands"
+            case .read: return n == 1 ? "Read a file" : "Read \(n) files"
+            case .search: return n == 1 ? "Searched" : "Searched \(n) times"
+            case .page: return n == 1 ? "Fetched a page" : "Fetched \(n) pages"
+            case .edit: return n == 1 ? "Edited a file" : "Edited \(n) files"
+            case .tool: return n == 1 ? "Used a tool" : "Used \(n) tools"
+            case .thought: return n == 1 ? "Thought once" : "Thought \(n) times"
+            }
+        }
+    }
+
+    private static func kin(_ name: String) -> Kin {
+        let low = name.lowercased()
+        if low.contains("bash") || low.contains("shell") || low.contains("exec") || low.contains("terminal") {
+            return .command
+        }
+        if low.contains("grep") || low.contains("glob") || low.contains("search")
+            || low.contains("find") || low.contains("query") || low.contains("list") {
+            return .search
+        }
+        if low.contains("fetch") || low.contains("web") || low.contains("http") || low.contains("curl") {
+            return .page
+        }
+        if low.contains("read") || low.contains("view") || low.contains("open") {
+            return .read
+        }
+        if low.contains("edit") || low.contains("write") || low.contains("patch") || low.contains("apply") {
+            return .edit
+        }
+        return .tool
+    }
+
+    /// What a turn's footer says: when it ran, how long it took, what it
+    /// cost. Built here, drawn below, and asserted on directly — the one
+    /// part of the talk that is about numbers rather than words.
+    static func foot(_ turn: ChatLog.Turn) -> [String] {
+        var bits: [String] = []
+        if let at = turn.at { bits.append(clock.string(from: at)) }
+        if let span = span(of: turn) { bits.append(span) }
+        if let use = turn.usage, use.worth {
+            bits.append("\(tokens(use.input)) in · \(tokens(use.output)) out")
+            if use.cached > 0 { bits.append("\(tokens(use.cached)) cached") }
+        }
+        return bits
+    }
+
+    private func drawFoot(_ turn: ChatLog.Turn, at y: CGFloat, width: CGFloat) {
+        let bits = Self.foot(turn)
+        guard !bits.isEmpty else { return }
+        let words = bits.joined(separator: "   ")
+        words.draw(in: NSRect(x: margin + gutter, y: y + 1, width: width, height: Self.footHeight - 2),
+                   withAttributes: [.font: footFace, .foregroundColor: ink(0.28)])
+    }
+
+    /// A turn's own span — what the agent took, not the gap until you next
+    /// spoke. Under a second is not worth a number.
+    static func span(of turn: ChatLog.Turn) -> String? {
+        guard let from = turn.at, let to = turn.until ?? turn.at as Date? else { return nil }
+        let seconds = to.timeIntervalSince(from)
+        guard seconds >= 1 else { return nil }
+        if seconds < 60 { return String(format: "%.0fs", seconds) }
+        return String(format: "%.0fm %02ds", (seconds / 60).rounded(.down), seconds.truncatingRemainder(dividingBy: 60))
+    }
+
+    // MARK: - the rail
+
+    private var railRect: NSRect {
+        NSRect(x: bounds.width - 10, y: 8, width: 3, height: max(1, bounds.height - 16))
+    }
+
+    /// A tick per turn down the right edge — the whole talk at a glance, and
+    /// the only way back to something that scrolled away.
+    private func drawRail(from: CGFloat, reachable: CGFloat) {
+        guard total > 0, !turnTops.isEmpty else { return }
+        let rail = railRect
+        // A talk shorter than the view is drawn against the view, not
+        // against itself: its ticks must sit where its words do, and the
+        // band must say "all of this is in front of you".
+        let doc = max(total, reachable)
+
+        // Where you are now. Talk coordinates run oldest-first from the
+        // top, so the older edge of the window is the higher y.
+        let older = max(0, total - scroll - reachable)
+        let newer = min(total, older + reachable)
+        let yOld = rail.minY + (1 - older / doc) * rail.height
+        let yNew = rail.minY + (1 - newer / doc) * rail.height
+        ink(0.07).setFill()
+        NSRect(x: rail.minX - 1, y: yNew, width: rail.width + 2,
+               height: max(2, yOld - yNew)).fill()
+
+        for (i, top) in turnTops.enumerated() {
+            let y = rail.minY + (1 - top / doc) * rail.height
+            let person = i < turns.count && turns[i].role == .person
+            let broke = i < turns.count && (turns[i].parts.contains {
+                if case .tool(let tool) = $0 { return tool.failed }
+                return false
+            })
+            let h: CGFloat = person ? 4 : 2
+            let color = broke ? bad(0.70) : ink(person ? 0.55 : 0.22)
+            color.setFill()
+            NSRect(x: rail.minX, y: max(rail.minY, y - h / 2), width: rail.width, height: h).fill()
+        }
+    }
+
+    /// Jump the talk so a turn sits at the top of what you can see.
+    private func jump(to turn: Int) {
+        measure()
+        guard turn < turnTops.count else { return }
+        let room = max(0, total - bounds.height)
+        scroll = min(room, max(0, total - bounds.height - turnTops[turn]))
+        following = scroll <= 0.5
+        needsDisplay = true
+    }
+
+    /// Which turn a point on the rail is nearest.
+    private func turn(near point: NSPoint) -> Int? {
+        let rail = railRect
+        guard !turnTops.isEmpty, total > 0 else { return nil }
+        let doc = max(total, bounds.height)
+        let want = doc * (1 - (point.y - rail.minY) / max(1, rail.height))
+        var best: Int?
+        var gap = CGFloat.greatestFiniteMagnitude
+        for (i, top) in turnTops.enumerated() where abs(top - want) < gap {
+            gap = abs(top - want)
+            best = i
+        }
+        return best
+    }
+
+    // MARK: - measure
+
+    private func box(_ words: String, font: NSFont, width: CGFloat) -> NSRect {
+        guard !words.isEmpty else { return NSRect(x: 0, y: 0, width: 0, height: 0) }
+        return (words as NSString).boundingRect(
+            with: NSSize(width: max(1, width), height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        )
+    }
+
+    private struct Bubble {
+        var box: NSRect
+        var text: NSRect
+    }
+
+    /// A person's words sit in a box on the right, sized to the words but
+    /// never wider than four fifths of the column.
+    private func bubble(_ words: String, width: CGFloat) -> Bubble {
+        let padH: CGFloat = 11
+        let padV: CGFloat = 7
+        let most = min(width * 0.82, 460)
+        let natural = box(words, font: face, width: most - padH * 2).width
+        let wide = min(most, max(56, natural + padH * 2))
+        let room = max(20, wide - padH * 2)
+        let tall = box(words, font: face, width: room).height
+        let x = margin + gutter + width - wide
+        return Bubble(
+            box: NSRect(x: x, y: 0, width: wide, height: tall + padV * 2),
+            text: NSRect(x: x + padH, y: padV, width: room, height: tall)
+        )
+    }
+
+    // MARK: - the clock and the numbers
+
+    private static let clock: DateFormatter = {
+        let form = DateFormatter()
+        form.dateFormat = "HH:mm"
+        return form
+    }()
+
+    /// Tokens in the units people use — and the decimal is dropped once
+    /// there are three digits to the left of it, because "195.0k" is a
+    /// number pretending to be precise.
+    static func tokens(_ count: Int) -> String {
+        if count >= 1_000_000 { return said(Double(count) / 1_000_000) + "M" }
+        if count >= 1_000 { return said(Double(count) / 1_000) + "k" }
+        return "\(count)"
+    }
+
+    private static func said(_ value: Double) -> String {
+        value >= 100 ? String(format: "%.0f", value) : String(format: "%.1f", value)
+    }
+
+    // MARK: - the talk's shape
+
+    /// Every row the talk draws, in order — its structure without its
+    /// pixels. A folded run of machinery is one row, and the rest of that
+    /// run is not listed at all, so this is exactly what a person sees.
+    var shape: [(kind: String, words: String, rect: NSRect)] {
+        measure()
+        let from = max(0, total - scroll - bounds.height)
+        var out: [(kind: String, words: String, rect: NSRect)] = []
+        for item in items where item.body {
+            let rect = NSRect(x: margin, y: bounds.height - (item.top - from) - item.height,
+                              width: bounds.width, height: item.height)
+            if item.folded {
+                out.append(("activity", activityWords(item.fold), rect))
+                continue
+            }
+            switch item.kind {
+            case .said(let role): out.append((role == .person ? "you" : "agent", item.text, rect))
+            case .thought: out.append(("thought", item.text, rect))
+            case .tool(let tool):
+                out.append(("tool", tool.name + (tool.summary.isEmpty ? "" : " \(tool.summary)"), rect))
+            }
+        }
+        return out
+    }
+
+    // MARK: - following
+
+    /// Put the newest words back under your eyes.
+    func follow() {
+        scroll = 0
+        following = true
+        needsDisplay = true
+    }
+
+    func refont() {
+        measured = 0
+        measure()
+        needsDisplay = true
+    }
 
     override func scrollWheel(with event: NSEvent) {
-        measure()
         let room = max(0, total - bounds.height)
         scroll = min(room, max(0, scroll + event.scrollingDeltaY))
-        // At the live end again: the talk follows from here on, which is
-        // what a person who scrolled back down wants.
         following = scroll <= 0.5
         needsDisplay = true
     }
 
     override func mouseDown(with event: NSEvent) {
-        // A click on a tool's line folds or unfolds its output.
-        measure()
-        let point = convert(event.locationInWindow, from: nil)
-        let start = max(0, min(scroll, max(0, total - bounds.height)))
-        let from = max(0, total - start - bounds.height)
-        for i in items.indices {
-            let y = bounds.height - (items[i].top - from) - items[i].height
-            guard point.y >= y, point.y <= y + items[i].height else { continue }
-            guard case .tool(let tool) = items[i].kind, !tool.output.isEmpty else { return }
-            if opened.contains(i) { opened.remove(i) } else { opened.insert(i) }
-            measured = 0
-            needsDisplay = true
+        let at = convert(event.locationInWindow, from: nil)
+        // The rail first: it is the one target that must never be missed.
+        if at.x >= railRect.minX - 4, let turn = turn(near: at) {
+            jump(to: turn)
             return
         }
+        measure()
+        let from = max(0, total - scroll - bounds.height)
+        // Talk coordinates run from the oldest at the top; the view is
+        // unflipped, so a point's talk coordinate is measured down from
+        // the top of the view.
+        let spot = from + (bounds.height - at.y)
+        for i in items.indices {
+            let item = items[i]
+            guard spot >= item.top, spot <= item.top + item.height else { continue }
+            if item.folded {
+                if openedGroups.contains(item.fold) {
+                    openedGroups.remove(item.fold)
+                } else {
+                    openedGroups.insert(item.fold)
+                }
+                measured = 0
+                measure()
+                needsDisplay = true
+                return
+            }
+            if case .tool = item.kind, item.fold < 0 || openedGroups.contains(item.fold) {
+                if openedTools.contains(i) { openedTools.remove(i) } else { openedTools.insert(i) }
+                measured = 0
+                measure()
+                needsDisplay = true
+                return
+            }
+        }
     }
+
+    /// True while the newest words are under your eyes.
+    var isFollowing: Bool { following }
 }
 
 // MARK: - the whole thing
