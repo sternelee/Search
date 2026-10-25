@@ -416,6 +416,19 @@ Settings 里叫 Agent View），新建的终端照它开——一个把 Claude C
 也会立刻作用到已开的窗格（同一处 `lookChanged()` 里收口）。没有 agent 的窗格不受这条设置
 影响——那里没有第二个视图可去。
 
+**"关掉对话"有两种，只有一种算选择。** 人按 Terminal 那一半是选择；agent 退出时对话自己
+收起来，不是选择。这两种都走 `closeChat`，所以它带一个 `said: Bool = true`——agent 走了走
+`closeChat(said: false)`，**不写偏好**。这条是补测试时才想到的：如果一律写 `screen`，
+那么每次 agent 结束都会把记住的 `chat` 悄悄改写成 `screen`，下一次启动 agent 又回到终端，
+用户记住的偏好等于无效——一个测试恰好暴露了它（`testEachHalfAsksForItsOwnSideAndTheChoiceIsRemembered`
+末尾那条断言）。
+
+**测试里不走 `Shared.prefs`。** `remember` 在 `Store.testing` 下直接写 `Store.settings` 的键。
+不是图省事：在这里构造 `Preferences` 会把它建在"第二个终端打开"那一刻，而它读的 store 在
+第一次触碰时就钉死了整套测试的 defaults suite——哪个套件先开窗格，整个进程就跟着它走，
+后来说"find bar 在顶部"的测试会发现自己从没选过的东西。这个坑真踩过：聊天测试先选了
+Chat，找字条的测试就看到 find bar 在底部。
+
 做法举自 [ovis](https://github.com/dragongrove/ovis)（herdr 的浏览器客户端）的 Chat 模式：
 **不解析屏幕，读 agent 自己写的原生 transcript JSONL**。ovis 的审计文档
 （chat-mode-audit）记着反向路线的学费：没有原生 transcript 时，终端里的菜单/状态行

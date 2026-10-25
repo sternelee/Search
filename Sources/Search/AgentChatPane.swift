@@ -23,7 +23,7 @@ extension TerminalView {
         guard said != chatTalk else { return }
         chatTalk = said
         guard let said else {
-            closeChat()
+            closeChat(said: false)
             chatPill?.removeFromSuperview()
             chatPill = nil
             return
@@ -137,8 +137,14 @@ extension TerminalView {
     /// reader goes with it: a conversation nobody is looking at costs no
     /// ticks, and the file is read again from where it left off when the
     /// talk comes back.
-    func closeChat() {
-        remember(.screen)
+    ///
+    /// `said` is whether a person asked for the screen. The talk also goes
+    /// away on its own when the agent exits, and that is not a preference:
+    /// writing "Terminal" then would quietly undo a remembered "Chat", so
+    /// the next agent would come up in the wrong view with nobody having
+    /// chosen it.
+    func closeChat(said: Bool = true) {
+        if said { remember(.screen) }
         chatShowing = false
         chatTick?.invalidate()
         chatTick = nil

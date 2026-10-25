@@ -352,5 +352,15 @@ final class AgentChatTests: XCTestCase {
         XCTAssertEqual(TerminalLook.agentView, .talk, "opening the talk says so")
         view.closeChat()
         XCTAssertEqual(TerminalLook.agentView, .screen, "and closing it says that")
+
+        // An agent exiting takes the talk away without a person choosing
+        // anything. That must leave the preference alone: writing
+        // "Terminal" there would undo a remembered "Chat" every time a
+        // session ended, and the next agent would open in the wrong view
+        // with nobody having asked for it.
+        view.openChat()
+        XCTAssertEqual(TerminalLook.agentView, .talk)
+        view.closeChat(said: false)
+        XCTAssertEqual(TerminalLook.agentView, .talk, "an agent leaving is not a choice")
     }
 }
