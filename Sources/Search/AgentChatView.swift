@@ -977,6 +977,9 @@ final class TerminalChatView: NSView {
         field.maximumNumberOfLines = Int(Self.mostLines)
         field.lineBreakMode = .byWordWrapping
         addSubview(field)
+        // A picture can arrive by being dropped as well as pasted, and the
+        // two doors lead to the same act.
+        registerForDraggedTypes([.fileURL, .tiff, .png])
         model.pressed = { [weak self] in self?.toggleModels() }
         addSubview(model)
         list.chosen = { [weak self] row in self?.take(row) }
@@ -994,6 +997,76 @@ final class TerminalChatView: NSView {
     /// otherwise be invisible — a copy leaves no trace of its own.
     func say(_ kind: AgentToast.Kind, _ title: String, body: String? = nil) {
         toasts.say(kind, title, body: body)
+    }
+
+    // MARK: - pictures
+
+    /// ⌘V with an image on the pasteboard attaches it. With words on the
+    /// pasteboard it does exactly what it always did — the paste is only
+    /// taken over when there is a picture to take.
+    ///
+    /// Caught here rather than in the field editor because the field editor
+    /// has no idea a picture is anything but characters: its `paste:` would
+    /// drop it on the floor. The thing this view does with a picture — bound
+    /// it, write it to a file, put the path in the line — is this view's
+    /// business, and the field editor is the wrong place to know it.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "v",
+           let (image, data) = Attach.onPasteboard() {
+            take(image, data: data)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    /// A picture attached: bounded, written out, and named in the line.
+    ///
+    /// The path *is* the attachment. An agent's one channel for a picture is
+    /// reading a file, and its Read tool already does that — so nothing here
+    /// has to teach it a new trick, and nothing about the pty is special.
+    func take(_ image: NSImage, data: Data? = nil) {
+        guard let (url, prepared) = Attach.attach(image, source: data) else {
+            say(.error, "That image could not be attached")
+            return
+        }
+        insert(url.path + " ")
+        let saved = prepared.sourceBytes > prepared.data.count
+            ? " (from \(max(1, prepared.sourceBytes / 1024)) KB)"
+            : ""
+        say(.success, "Attached", body: prepared.saying + saved)
+    }
+
+    /// Put words into the line where the caret is, as though they had been
+    /// typed there: the field keeps the keyboard, so a person carries on
+    /// writing around the path instead of losing their place.
+    private func insert(_ words: String) {
+        if let editor = field.currentEditor() {
+            // `replaceCharacters(in:with:)` is on the `NSText` protocol the
+            // editor is typed as; `insertText(_:replacementRange:)` is a
+            // `NSTextView`-only spelling and would not resolve here.
+            let at = editor.selectedRange
+            editor.replaceCharacters(in: at, with: words)
+            editor.selectedRange = NSRange(location: at.location + (words as NSString).length, length: 0)
+        } else {
+            field.stringValue += words
+        }
+        needsLayout = true
+        needsDisplay = true
+    }
+
+    // MARK: - dropped pictures
+
+    /// A picture dropped on the composer is the same act as pasting one —
+    /// the drag is just a different door to it.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        Attach.dragged(sender.draggingPasteboard) == nil ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let (image, data) = Attach.dragged(sender.draggingPasteboard) else { return false }
+        take(image, data: data)
+        return true
     }
 
     /// What the agent can be switched to, and what it is on now. The list
