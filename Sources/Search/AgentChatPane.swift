@@ -64,6 +64,7 @@ extension TerminalView {
             let plate = TerminalChatView()
             plate.spoke = { [weak self] words in self?.speak(words) }
             plate.escaped = { [weak self] in self?.toggleChat() }
+            plate.switched = { [weak self] value in self?.switchModel(to: value) }
             addSubview(plate)
             chatPlate = plate
             // The chip has to stay above the talk, or the switch to go
@@ -75,6 +76,7 @@ extension TerminalView {
         reader.update()
         chatReader = reader
         chatPlate?.take(reader.log)
+        refreshModels()
         chatPlate?.needsLayout = true
         placeChat()
         chatPlate?.needsDisplay = true
@@ -107,6 +109,28 @@ extension TerminalView {
         chatPlate?.paper.follow()
     }
 
+    /// The model list and the chip, from the agent's own catalog — asked
+    /// again whenever the talk is opened or a tick comes back with
+    /// something new, because a run that has just started (or one whose
+    /// model was changed by hand in the terminal) writes the new current
+    /// model where only its transcript says it.
+    func refreshModels() {
+        guard let talk = chatTalk else { return }
+        let rows = AgentModels.rows(for: talk.agent, talk: talk)
+        let now = AgentModels.current(for: talk.agent, talk: talk) ?? ""
+        chatPlate?.takeModels(rows, current: now)
+    }
+
+    /// A row taken in the chat's list: the agent's own `/model` command,
+    /// as though it had been typed. Same channel as everything else here —
+    /// the pty — so the session's own history records the change and the
+    /// screen agrees with the chip a moment later. Nothing is assumed
+    /// about the answer: a model the account has lost says so in the
+    /// terminal, which is where the person is looking anyway.
+    func switchModel(to value: String) {
+        speak(AgentModels.switchCommand(value))
+    }
+
     /// The slow tick, up only while a talk is: the agent's file is read
     /// for what it added. A transcript is appended to, so a tick that
     /// changes nothing reads nothing — but the file is still opened, which
@@ -126,6 +150,12 @@ extension TerminalView {
         chatReader = reader
         guard grew else { return }
         chatPlate?.take(reader.log)
+        // A tick that did come back with something is the one moment the
+        // agent may have written a new current model — after a `/model`
+        // it ran itself, or one typed straight at the screen. Asked only
+        // then, and only while the list is open: the chip alone is not
+        // worth a file read half a second at a time.
+        if chatPlate?.askingModels == true { refreshModels() }
     }
 
     /// Where the chip and the talk go. The chip sits in the pane's own

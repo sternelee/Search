@@ -225,7 +225,11 @@ final class TerminalChatPaper: NSView {
         // onto the end of it.
         let reachable = bounds.height
         let start = max(0, min(scroll, max(0, total - reachable)))
-        let from = total - start - reachable
+        // A talk shorter than the plate starts at its top, where a reader
+        // begins, instead of collecting at the bottom and leaving the rest
+        // of the pane blank above it. Longer than the plate, and the clamp
+        // does nothing: the window is onto the end of the talk as before.
+        let from = max(0, total - start - reachable)
         let clip = NSRect(x: 0, y: 0, width: bounds.width, height: reachable)
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: clip).addClip()
@@ -298,7 +302,7 @@ final class TerminalChatPaper: NSView {
         measure()
         let point = convert(event.locationInWindow, from: nil)
         let start = max(0, min(scroll, max(0, total - bounds.height)))
-        let from = total - start - bounds.height
+        let from = max(0, total - start - bounds.height)
         for i in items.indices {
             let y = bounds.height - (items[i].top - from) - items[i].height
             guard point.y >= y, point.y <= y + items[i].height else { continue }
@@ -321,9 +325,22 @@ final class TerminalChatPaper: NSView {
 final class TerminalChatView: NSView {
     let paper = TerminalChatPaper()
     let field = NSTextField(string: "")
+    /// The model the agent is on, in the composer's footer, and the list
+    /// that opens above it.
+    let model = TerminalModelChip()
+    let list = TerminalModelList()
+
     private var face = TerminalLook.face(size: max(11, TerminalLook.size - 1))
-    private static let margin: CGFloat = 18
-    private static let lineHeight: CGFloat = 30
+    private static let margin: CGFloat = 12
+    private static let inset: CGFloat = 12
+    private static let lineHeight: CGFloat = 28
+    private static let footHeight: CGFloat = 24
+    private static let bottom: CGFloat = 12
+
+    /// Whether the model list is up. Kept here rather than in the list so
+    /// the keyboard can ask one question — "is a list asking for this
+    /// key?" — instead of two views holding half the answer each.
+    private(set) var askingModels = false
 
     /// What a return in the line does: the words, to the terminal, as
     /// though they had been typed at it. The chat has no way of its own
@@ -333,6 +350,19 @@ final class TerminalChatView: NSView {
     /// Escape, or a click outside the line: the talk goes away and the
     /// keyboard goes back to the screen.
     var escaped: (() -> Void)?
+    /// A model chosen from the list: its `value`, to the terminal as the
+    /// agent's own `/model` command.
+    var switched: ((String) -> Void)?
+
+    /// The composer's box, in `bounds` coordinates. Every other part of
+    /// the view is placed against it, so the box is described once.
+    private var box: NSRect {
+        NSRect(
+            x: Self.inset, y: Self.bottom,
+            width: max(80, bounds.width - Self.inset * 2),
+            height: Self.lineHeight + Self.footHeight
+        )
+    }
 
     init() {
         super.init(frame: .zero)
@@ -343,12 +373,13 @@ final class TerminalChatView: NSView {
         field.focusRingType = .none
         field.font = face
         field.textColor = TerminalFieldPanel.word
-        field.placeholderAttributedString = NSAttributedString(
-            string: "Write to the agent…",
-            attributes: [.font: face, .foregroundColor: TerminalFieldPanel.word.withAlphaComponent(0.35)]
-        )
         field.delegate = self
         addSubview(field)
+        model.pressed = { [weak self] in self?.toggleModels() }
+        addSubview(model)
+        list.chosen = { [weak self] row in self?.take(row) }
+        list.isHidden = true
+        addSubview(list)
         refont()
     }
 
@@ -356,6 +387,29 @@ final class TerminalChatView: NSView {
 
     /// The talk, as the reader holds it.
     func take(_ log: ChatLog) { paper.take(log) }
+
+    /// What the agent can be switched to, and what it is on now. The list
+    /// is rebuilt from this, and the chip says the current one in the
+    /// same words the list's rows use — so the open list always has one
+    /// row that is visibly the one in use.
+    func takeModels(_ rows: [AgentModels.Row], current: String) {
+        self.current = current
+        rowsSnapshot = rows
+        let before = model.label
+        _ = model.say(current, open: askingModels)
+        list.take(rows, current: current)
+        // A chip that changed its words has changed its width, and the
+        // list hangs off its corner.
+        if model.label != before { needsLayout = true }
+        if askingModels {
+            list.needsDisplay = true
+            needsLayout = true
+        }
+    }
+
+    /// The current model, as the chip says it.
+    var modelWords: String { current }
+    private var current = ""
 
     func refont() {
         face = TerminalLook.face(size: max(11, TerminalLook.size - 1))
@@ -369,29 +423,109 @@ final class TerminalChatView: NSView {
         needsDisplay = true
     }
 
-    override func layout() {
-        super.layout()
-        let line = Self.lineHeight
-        paper.frame = NSRect(
-            x: 0, y: line, width: bounds.width, height: max(0, bounds.height - line)
-        )
-        field.frame = NSRect(
-            x: Self.margin, y: (line - 18) / 2 + 1,
-            width: max(40, bounds.width - Self.margin * 2), height: 18
-        )
+    // MARK: - the list
+
+    /// Opens the list over the composer, or closes it. What a person is
+    /// typing is not disturbed: the field keeps the keyboard and its text
+    /// while the list is up, the way a command palette does.
+    func toggleModels(open: Bool? = nil) {
+        let want = open ?? !askingModels
+        guard want != askingModels else { return }
+        guard !want || list.holes else { return }
+        askingModels = want
+        list.isHidden = !want
+        _ = model.say(current, open: want)
+        if want {
+            list.take(rowsSnapshot, current: current)
+        }
+        needsLayout = true
+        needsDisplay = true
     }
 
-    /// A hairline over the line, so the typing and the reading are told
-    /// apart the way the dock's plate is told from the grid.
+    /// The rows the list was handed; kept so opening and closing does not
+    /// need them again from the agent.
+    private var rowsSnapshot: [AgentModels.Row] = []
+
+    /// One row taken — by the keyboard or the pointer. The list closes and
+    /// the switch goes to the terminal; the chip says the new model at
+    /// once, so the answer is visible before the agent has drawn anything.
+    func take(_ row: AgentModels.Row) {
+        toggleModels(open: false)
+        current = row.value
+        _ = model.say(row.value, open: false)
+        needsLayout = true
+        switched?(row.value)
+        if let window { window.makeFirstResponder(field) }
+    }
+
+    override func layout() {
+        super.layout()
+        let box = self.box
+        paper.frame = NSRect(
+            x: 0, y: box.maxY, width: bounds.width,
+            height: max(0, bounds.height - box.maxY)
+        )
+        field.frame = NSRect(
+            x: box.minX + 12, y: box.minY + Self.footHeight + (Self.lineHeight - 19) / 2,
+            width: max(40, box.width - 24), height: 19
+        )
+        let want = model.wanted
+        model.frame = NSRect(
+            x: box.minX + 8, y: box.minY + (Self.footHeight - want.height) / 2,
+            width: want.width, height: want.height
+        )
+        guard askingModels else { list.frame = .zero; return }
+        let tall = list.wanted
+        // Above the chip it belongs to, and never off the top of the pane:
+        // a list that opens past the edge would hide its own first rows.
+        var y = box.maxY + 6
+        if y + tall.height > bounds.height - 6 {
+            y = max(6, bounds.height - 6 - tall.height)
+        }
+        let width = min(tall.width, max(120, bounds.width - Self.inset * 2 - 8))
+        list.frame = NSRect(x: box.minX + 8, y: y, width: width, height: tall.height)
+    }
+
+    /// The talk's own ground under everything, then the composer's box: a
+    /// rounded ground one step raised, with the line above and the footer
+    /// under it. The same furniture as the dock's plate, in a second place.
     override func draw(_ dirtyRect: NSRect) {
         TerminalChatView.ground.setFill()
         bounds.fill()
-        TerminalFieldPanel.word.withAlphaComponent(0.12).setStroke()
+
+        let box = self.box
+        let ground = TerminalChatView.ground
+        ground.withAlphaComponent(DockBox.ground).setFill()
+        NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8).fill()
+        TerminalFieldPanel.word.withAlphaComponent(0.11).setStroke()
+        let edge = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        edge.lineWidth = 1
+        edge.stroke()
+
+        // The hairline between the line and its footer, stopped short of
+        // both ends so the box still reads as one thing.
+        TerminalFieldPanel.word.withAlphaComponent(0.07).setStroke()
         let hair = NSBezierPath()
-        hair.move(to: NSPoint(x: 0, y: Self.lineHeight - 0.5))
-        hair.line(to: NSPoint(x: bounds.width, y: Self.lineHeight - 0.5))
+        hair.move(to: NSPoint(x: box.minX + 10, y: box.minY + Self.footHeight - 0.5))
+        hair.line(to: NSPoint(x: box.maxX - 10, y: box.minY + Self.footHeight - 0.5))
         hair.lineWidth = 1
         hair.stroke()
+
+        // What the keys do, at the footer's right: a chat whose only
+        // affordances are a chip and a line would leave return and escape
+        // for a person to guess.
+        let keys = "⏎ send   esc close"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9.5),
+            .foregroundColor: TerminalFieldPanel.word.withAlphaComponent(0.26),
+        ]
+        let said = (keys as NSString).size(withAttributes: attrs)
+        (keys as NSString).draw(
+            at: NSPoint(
+                x: box.maxX - 10 - said.width,
+                y: box.minY + (Self.footHeight - said.height) / 2
+            ), withAttributes: attrs
+        )
     }
 
     /// The talk's own ground, the same one every part of the terminal's
@@ -421,6 +555,30 @@ extension TerminalChatView: NSTextFieldDelegate {
     func control(
         _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
     ) -> Bool {
+        // The list, while it is up, is where the arrow keys go — and a
+        // return takes its row rather than sending the line, so a person
+        // who opened the list to change models is not made to also send
+        // whatever they had half-typed. Escape closes it one step at a
+        // time: list first, then the talk.
+        if askingModels {
+            if selector == #selector(NSResponder.moveUp(_:)) { return list.step(-1) }
+            if selector == #selector(NSResponder.moveDown(_:)) { return list.step(1) }
+            if selector == #selector(NSResponder.insertNewline(_:)) {
+                if let row = list.choose() { take(row) }
+                return true
+            }
+            if selector == #selector(NSResponder.cancelOperation(_:)) {
+                toggleModels(open: false)
+                return true
+            }
+        }
+        // Down, with no list up, opens one: the chip is small and in a
+        // corner, and a switch should not require finding it with the
+        // pointer while the keyboard is already in the line.
+        if selector == #selector(NSResponder.moveDown(_:)) {
+            toggleModels(open: true)
+            return true
+        }
         // Return sends the line; Escape gives the pane back to the
         // terminal, which is where a person who is done asking goes.
         if selector == #selector(NSResponder.insertNewline(_:)) {

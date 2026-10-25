@@ -445,68 +445,58 @@ Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 ses
 跟随与半行悬置与重写重读、store 验证与 settle、胶囊出现/点击读取/收起/SessionEnd
 收走（含 Island 状态流转的端到端）。
 
-## 九、Chat 视图（对着 transcript 读，不对着屏幕猜）
+## 十、Composer 与模型切换（照着 orbit-pi 的作曲家）
 
-终端里跑 Claude Code / Pi / Codex 这类 agent CLI 时，对话在终端里是以 UI 面目出现的
-——重绘、清屏、状态行、转圈。把这套当普通终端滚屏看，人要在一屏噪声里辨认"它说了什么"。
-参考 [ovis](https://github.com/eclipse/ovis)（herdr 的浏览器客户端）的做法：**屏幕是终端的事，
-对话读 agent 自己写的 transcript JSONL**——结构化的真相，不需要猜哪行是答案哪行是边框。
-ovis 的 chat-mode 审计（docs/chat-mode-audit.md）把反面教训写得清楚：不读 transcript 而
-解析终端渲染时，菜单、状态行会被误认成 assistant 消息。所以这里从第一行起就只读文件。
+Chat 视图原来只有一行输入。参考
+[orbit-pi](../../Downloads/orbit-main/crates/orbit-pi) 的 `ComposerInput`（`composer.rs`），
+把它做成一块**作曲家**：上面是对话，中间一行写给 agent，下面一条**页脚**——左边一枚
+模型胶囊，右边写着 `⏎ send   esc close`。整个盒子是圆角的一次抬升（`DockBox.ground` +
+一圈 0.11 的亮边，和输入坞的盘子同一套家具），一行与页脚之间有一条**缩进到两端之外**的
+细线——盒子仍然是"一整个东西"，而不是叠了两块。
 
-**四个新文件，两处接线，零新依赖。**
+**模型清单从哪来：不猜，读各家自己已经写好的目录**（`AgentModels.swift`）。
 
-1. **`AgentTalk.swift` —— 这条会话是哪家的哪一场。** hook 事件里本来就有答案：Claude 的
-   hook payload 自带 `transcript_path`；pi 的扩展现在多报一个 `_sessionFile`
-   （`ctx.sessionManager.getSessionFile()`）；Codex 的话里带 `rollout_path`。`Talk {agent,
-   id, file, cwd}` 从文件名取 id（claude/codex 是整个 stem，pi 是最后一个 `_` 之后——
-   pi 的文件名是 `时间戳_UUID.jsonl`）。**文件此刻可能还不存在**：pi 要到第一条 assistant
-   消息才落盘，所以 file 允许为 nil，`settle` 拿着 id 去那家的 store（`~/.claude/projects`、
-   `~/.pi/agent/sessions`、`~/.codex/sessions`，各认自家环境变量改的道）里枚举找
-   stem 后缀匹配的 `.jsonl`，找到且过验才补上。**过验**：realpath 解析后在 store 之内、
-   是 `.jsonl`、是普通文件——hook 报来的路径不可尽信，不能让一条伪造的话把读文件的指头
-   伸到任意目录。同一 tty 的新 talk 顶掉旧 talk（`--resume` 或 /clear 之后 session 换了文件）。
+| agent | 目录 | 现在的模型 | `/model` 参数 |
+|---|---|---|---|
+| Claude Code | `settings.json` 的 `modelPicker.options`（label/description/model） | transcript 里最后一条 assistant 的 `message.model`，没有就 settings 的 `model` | 模型 id |
+| Pi / OMP | `models.json` 的 `providers[*].models[]` | 会话文件里最后一条 `model_change` 的 `provider/modelId`，没有就 settings 的 `defaultProvider` + `defaultModel` | `provider/model` |
+| Codex | `models_cache.json` 的 `models[]`（slug / display_name） | `config.toml` 第一个 `[table]` **之前**的 `model` | slug |
 
-2. **`AgentChat.swift` —— 把三家的记录读成一份对话。** `ChatLog` 只有两种角色
-   （person / agent）、三种块（word / thought / tool）。三家各写各的形状，各配一个 take：
-   claude 记 user/assistant 与块数组（text/thinking/tool_use/tool_result，跳过 isSidechain）；
-   pi 记 `type:"message"` 与块（text/thinking/toolCall），toolResult 靠 `toolCallId` 回填；
-   codex 只有 `type:"response_item"` 可用（message/reasoning/function_call 与 *_call_output，
-   assistant 给别人的 channel 不算）。**合并规则**：agent 的 thought+tool+word 是一口气，
-   连续的 agent 块并进一个 turn；person 的一行就是一行，不并——人说了两句是两句。
-   工具的 `calls` 表挂着没回话的调用，答案迟到也找得到挂它的位置；没主人的答案丢弃。
-   person 一侧的噪声（`<command-name>`、`<environment_context>`、`<system-reminder>`、
-   `<task-`、`<local-command`、`<command-`、`<user_instructions>` 开头）整行扔掉——那是
-   CLI 自言自语的信封，不是人说过的话。**`ChatReader` 跟读**：记 offset 与 stamp
-   （size+mtime+file id），长了就从断点续读，半行留在 carry 里下回再拼；变小或换了 inode
-   （`--resume` 重写文件）就整个重来。轮询只在面板开着时跑（0.5 s Timer），不开不读。
+三家都认自家环境变量改的道（`CLAUDE_CONFIG_DIR` / `PI_CODING_AGENT_DIR` / `CODEX_HOME`），
+和 Island 装 hook 时认的是同一批。**没有目录就不给行**——凭空造一张清单会让程序往
+agent 嘴里塞一个它没听过的 `/model`，然后终端里冒出一条用户没要求的错误。这条取舍写进了
+测试（`testAnAgentWithNoCatalogOffersNoRows`）。
 
-3. **`AgentChatView.swift` —— 纸、输入行、胶囊。** `TerminalChatPaper` 是纯 NSView：
-   person 加粗带 2pt 左条，agent 常重，thought 淡到 0.40，工具行折起（名字+一句摘要），
-   点开才见输出，失败的带红 ✗；滚轮从活头数（滚上来就不再跟底，滚回底继续跟）。
-   重画看的是**签名**而不是文本——工具的答案晚到时块文本没变，签名（含输出与成败）变了，
-   所以答案一到整张纸重排。`TerminalChatView` 是纸加一行无边框输入框；**说出去的话写进
-   PTY + `\r`**（ovis 同款）：终端永远是真相，回终端能看到同一句话进了 CLI 自己的输入框，
-   Chat 视图自己不持有对话的另一半——下一轮 assistant 消息落进 transcript，读回来才显示。
-   `TerminalChatPill` 是窗格右上角的胶囊（认出 agent 才出现；点一下开关 Chat；开着时点
-   亮）。
+**读尾部，不读整份。** 一天下来一份 transcript 是几 MB，而答案永远在最后几条里：Claude 的
+`message.model` 与 Pi 的 `model_change` 都从文件末尾 256 KB 里找，被 seek 切掉的那半行
+（除非它就是文件的头）不算记录。写测试时造了 4000 条 90 字节的假话把第一次 `model_change`
+挤出窗口，确认读的是尾部的第二次。
 
-4. **`AgentChatPane.swift` —— TerminalView 上的接线。** `watchTalk` 订阅
-   `Island.shared.$sessions`（注意 `@Published` 在 willSet 时投递，sink 里读共享单例看到的是
-   旧数组——所以订阅把新数组当参数递进来），按 tty 对上 talk；talk 变了就换/撤胶囊，
-   开着的 Chat 顺势换读新文件。Escape 在输入框上（cancelOperation）关掉 Chat，键盘还给
-   终端。**交替屏不藏胶囊**：agent CLI 常住在 alternate screen，藏了就永远见不着。
+**切换就是那条命令。** 选一行 → 往 PTY 写 `/model <value>\r`（`AgentModels.switchCommand`），
+和 Chat 里说话走同一条道。理由和 Chat 自己一样：终端是真相，CLI 自己的 `/model` 才会
+把变更写进会话历史、让屏幕和胶囊同时改口。我们不假装知道结果——账号没有的模型，agent
+会在终端里报错，而那正是用户在看着的地方。胶囊当场先改成新名字（`TerminalChatView.takeModels`
+→ `model.say`），所以点完立刻有回应，不必等 agent 回话。
 
-接线两处：`Island.swift` 的事件与 session 多带一个 `talk`（SessionStart 建档，之后的事件
-若又报了文件就补上）；`IslandHooks.swift` 的 pi 扩展 `said()` 改收 `ctx`，多报
-`_sessionFile`（每报必问而不是开局问一次——pi 开局那会儿文件还没影）。
+**弹层的几何。** `TerminalModelList` 是 NSView 不是 NSMenu：要画分组标题（provider 名）、
+要画每行的说明（context / reasoning / in use）、要在打字的同时让下面的输入行保留文本。
+打开时先落在**现在用的那一行**（也标一颗小点），所以"打开 + 回车"什么都不会变。↑↓ 走行、
+跳过标题（`step` 里 do-while 到非 head 为止，绕回不算移动过）；⏎ 选中、Esc 收一层（先收
+列表再收 Chat）、↓ 在列表没开时**打开**它——胶囊在角落，模型切换不该要求用手指去找。
+鼠标点行也直接选。列表开在盒子上方，**超出窗格顶部就贴着顶边往下压**，绝不把前几行开到
+窗外。
 
-**为什么不扫进程**：macOS 上 `sysctl(KERN_PROCARGS2)` 能拿到 argv、`PROC_PIDVNODEPATHINFO`
-能拿到 cwd、`proc_listchildpids` 能递归子进程——spike 实测能认出全机 23 个 agent 进程，
-但同一 cwd 下多个 pi 并存，进程认不出"是哪一场会话"；fd 表里也没有 transcript（CLI 写完
-就关，不长期持有）。所以会话身份只能走 hook 报的 session_id/文件路径——这本来就是 Island
-已经铺好的路。
+**一个踩到的真 bug**：列表在 `take` 时就被塞了行，那时它还 zero-size，`scrollHighlightIntoView`
+用 `bounds.height == 0` 一算就把 scroll 滚到了末尾——截图上一看模型名全在下面，开头
+（provider 标题、第一行）不见了。修法两层：`scrollHighlightIntoView` 在高度不足 1pt 时
+直接 return，并在 `layout()` 里补算一次（那时高度才是真的）。
 
-测试在 `Tests/SearchTests/AgentChatTests.swift`（7 条）：三家记录各自读成话、没主人的答案
-丢弃、跟读与半行 carry 与重写重来、store 验真（店外不算、报来的不可读不算、settle 找回）、
-端到端（chip 出现、点开读到两轮、再点收起、SessionEnd 胶囊退场）。
+**第二个**：对话比面板短时，`from = total - start - reachable` 是负数，整段话被顶到面板
+**最下面**，上面 80% 空白。改成 `from = max(0, total - start - reachable)`：短的对话从
+顶上开始读，长的照旧是"窗口对着话的末尾"。同一个错在 `mouseDown` 的命中换算里也修了。
+
+测试在 `Tests/SearchTests/AgentComposerTests.swift`（8 条）：三家目录各自的读法（含 provider
+分组与 in use 标记）、没目录就是空、Pi 的 `model_change` 压过 settings、Codex 只认第一张
+表之前的 `model`、读尾部时被切掉的半行不算、选择写出 `/model <value>`、以及作曲家各部件
+的位置关系（纸在盒子上、行在盒子里、胶囊在页脚、列表开在盒子上方且不出窗格、打开时落在
+在用的那行）。整套 358 条测试 0 失败。
