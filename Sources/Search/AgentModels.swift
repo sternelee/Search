@@ -122,8 +122,8 @@ enum AgentModels {
                 guard let id = model["id"] as? String else { continue }
                 let name = model["name"] as? String ?? id
                 var note: [String] = []
-                if let window = model["contextWindow"] as? Int {
-                    note.append("\(window / 1000)k context")
+                if let window = model["contextWindow"] as? Int, window > 0 {
+                    note.append(context(window))
                 }
                 if (model["reasoning"] as? Bool) == true { note.append("reasoning") }
                 rows.append(Row(
@@ -134,6 +134,14 @@ enum AgentModels {
         return rows
     }
 
+    /// A context window said the way people say it: 1048576 tokens is 1M,
+    /// not "1048k" — every power of two would otherwise read as a number
+    /// nobody recognises. Millions and thousands, never a division that
+    /// leaves a remainder nobody would quote.
+    private static func context(_ tokens: Int) -> String {
+        tokens >= 1_000_000 ? "\(tokens / 1_000_000)M context" : "\(tokens / 1000)k context"
+    }
+
     private static func piHome() -> URL {
         let env = ProcessInfo.processInfo.environment
         if let said = env["PI_CODING_AGENT_DIR"], !said.isEmpty {
@@ -141,6 +149,7 @@ enum AgentModels {
         }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pi/agent")
     }
+
 
     /// A pi session records every move as `{"type":"model_change",
     /// "provider":…,"modelId":…}`, so the last one in the run's own file

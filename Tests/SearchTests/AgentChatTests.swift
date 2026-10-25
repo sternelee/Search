@@ -249,6 +249,15 @@ final class AgentChatTests: XCTestCase {
         XCTAssertTrue(view.chatShowing)
         let turns = view.chatReader?.log.turns.count ?? 0
         XCTAssertEqual(turns, 2, "the plate reads the agent's own record")
+        // The composer's chip is wired to the same question its list is:
+        // opening the talk asks the agent what it is on, and the chip says
+        // that answer rather than staying blank. (What the answer is
+        // depends on this Mac's catalogs, so only the wiring is asserted.)
+        XCTAssertEqual(
+            view.chatPlate?.modelWords,
+            AgentModels.current(for: .pi, talk: view.chatTalk) ?? "",
+            "the chip says the model the agent is on"
+        )
 
         view.toggleChat()
         XCTAssertNil(view.chatPlate)
