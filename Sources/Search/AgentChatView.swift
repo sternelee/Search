@@ -73,6 +73,11 @@ final class TerminalChatPaper: NSView {
     private var openedTools: Set<Int> = []
     /// Activity groups a person opened, by group number.
     private var openedGroups: Set<Int> = []
+    /// An answer's markdown, parsed and measured once per width. A talk of
+    /// hundreds of rows is re-laid out on every scroll, and parsing prose
+    /// on every frame would be work done for nothing — the words did not
+    /// change, only where they are being looked at.
+    private var proseCache: [Int: [Prose.Piece]] = [:]
 
     private let margin: CGFloat = 18
     private let gutter: CGFloat = 14
@@ -163,6 +168,7 @@ final class TerminalChatPaper: NSView {
         laid = sigs
         items = next
         turns = log.turns
+        proseCache = [:]
         // A person who opened a tool keeps it open as the talk grows, and
         // the first rows of a talk start open so nothing is hidden on
         // arrival.
@@ -179,6 +185,10 @@ final class TerminalChatPaper: NSView {
     private func measure() {
         let width = inner
         guard width != measured || turnTops.count != turns.count else { return }
+        // The width changed, so every answer has to be measured again — the
+        // cache is keyed by item, and an item's height is a fact about the
+        // width it was measured at.
+        proseCache = [:]
         measured = width
         turnTops = Array(repeating: 0, count: turns.count)
         var top: CGFloat = 0
@@ -228,10 +238,10 @@ final class TerminalChatPaper: NSView {
         case .said(.person):
             return bubble(item.text, width: width).box.height + 2
         case .said(.agent):
-            return box(item.text, font: face, width: width).height + 2
+            return prose(item, at: index, width: width).reduce(0) { $0 + $1.before + $1.height } + 2
         case .thought:
             let room = max(40, width - 10)
-            return box(item.text, font: face, width: room).height + 2
+            return prose(item, at: index, width: room).reduce(0) { $0 + $1.before + $1.height } + 2
         case .tool(let tool):
             var h = rowHeight
             if openedTools.contains(index), !tool.output.isEmpty {
@@ -239,6 +249,24 @@ final class TerminalChatPaper: NSView {
             }
             return h
         }
+    }
+
+    /// What an answer is made of, parsed and measured at the width it will
+    /// be drawn in. Cached: the words change when the agent says more, not
+    /// when the view is scrolled.
+    private func prose(_ item: Item, at index: Int, width: CGFloat) -> [Prose.Piece] {
+        if let had = proseCache[index] { return had }
+        let tone: CGFloat
+        switch item.kind {
+        case .thought: tone = 0.40
+        default: tone = 0.88
+        }
+        let pieces = Prose.pieces(
+            Prose.blocks(item.text), width: width,
+            style: Prose.Style(face: face, base: face.pointSize, ink: ink, tone: tone)
+        )
+        proseCache[index] = pieces
+        return pieces
     }
 
     private var rowHeight: CGFloat { 18 }
@@ -305,8 +333,7 @@ final class TerminalChatPaper: NSView {
                            withAttributes: [.font: face, .foregroundColor: ink(0.86)])
 
         case .said(.agent):
-            item.text.draw(in: NSRect(x: x, y: top - body, width: width, height: body),
-                           withAttributes: [.font: face, .foregroundColor: ink(0.88)])
+            drawProse(prose(item, at: index, width: width), at: top, width: width, shift: 0)
 
         case .thought:
             // A thought is set back behind a hairline so it reads as the
@@ -314,8 +341,7 @@ final class TerminalChatPaper: NSView {
             let room = max(40, width - 10)
             ink(0.13).setFill()
             NSRect(x: x, y: top - body + 1, width: mark, height: max(0, body - 3)).fill()
-            item.text.draw(in: NSRect(x: x + 10, y: top - body, width: room, height: body),
-                           withAttributes: [.font: face, .foregroundColor: ink(0.40)])
+            drawProse(prose(item, at: index, width: room), at: top, width: room, shift: 10)
 
         case .tool(let tool):
             let row = NSRect(x: x, y: top - rowHeight, width: width, height: rowHeight)
@@ -334,6 +360,47 @@ final class TerminalChatPaper: NSView {
                                  withAttributes: [.font: footFace,
                                                   .foregroundColor: ink(tool.failed ? 0.62 : 0.36)])
             }
+        }
+    }
+
+    /// A run of prose: each block drawn as what it is. The words carry
+    /// their own marks (bold, code, links); the shape carries the rest — a
+    /// code block's ground, a quote's bar, a rule's line.
+    private func drawProse(_ pieces: [Prose.Piece], at top: CGFloat, width: CGFloat, shift: CGFloat) {
+        var y = top
+        for piece in pieces {
+            y -= piece.before
+            let h = piece.height
+            let left = margin + gutter + shift
+            let room = max(20, width - piece.inset)
+            if piece.band {
+                ink(0.05).setFill()
+                NSRect(x: left, y: y - h, width: width, height: h).fill()
+            }
+            if piece.bar {
+                ink(0.14).setFill()
+                NSRect(x: left, y: y - h + 2, width: mark, height: max(0, h - 4)).fill()
+            }
+            if case .rule = piece.block {
+                ink(0.16).setFill()
+                NSRect(x: left, y: y - 1, width: width, height: 1).fill()
+                y -= h
+                continue
+            }
+            // A band's padding is inside its height, so its words start
+            // below the top edge; everything else starts at the top.
+            let textTop = piece.band ? y - 4 : y
+            piece.text.draw(with: NSRect(x: left + piece.inset, y: textTop - h,
+                                        width: room, height: h),
+                            options: [.usesLineFragmentOrigin, .usesFontLeading])
+            if case .code(let language, _) = piece.block, let language, !language.isEmpty {
+                let label = NSAttributedString(string: language, attributes: [
+                    .font: footFace, .foregroundColor: ink(0.30),
+                ])
+                let size = label.size()
+                label.draw(at: NSPoint(x: left + width - size.width - 8, y: y - 3 - size.height))
+            }
+            y -= h
         }
     }
 
@@ -581,6 +648,13 @@ final class TerminalChatPaper: NSView {
         return out
     }
 
+    /// How much paper the talk takes — the document's own height, not the
+    /// view's. A conversation of the same words written flat is shorter.
+    var written: CGFloat {
+        measure()
+        return total
+    }
+
     // MARK: - following
 
     /// Put the newest words back under your eyes.
@@ -592,6 +666,7 @@ final class TerminalChatPaper: NSView {
 
     func refont() {
         measured = 0
+        proseCache = [:]
         measure()
         needsDisplay = true
     }
