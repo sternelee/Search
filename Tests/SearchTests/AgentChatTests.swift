@@ -258,4 +258,39 @@ final class AgentChatTests: XCTestCase {
         island.heard(IslandEvent(source: "pi", name: "SessionEnd", session: "run-chat", tty: terminal.pty, cwd: nil))
         XCTAssertNil(view.chatPill)
     }
+
+    /// The chip takes a click where it actually is. A hit test is asked in
+    /// the *superview's* coordinates, and the chip sits in a far corner —
+    /// asked against its own bounds it answered no to every real click,
+    /// which is precisely how it was found (a chip drawn, reading right,
+    /// doing nothing).
+    @MainActor
+    func testTheChipTakesItsClickWhereItStands() {
+        let terminal = Terminal(command: TerminalCommand(argv: ["/bin/zsh", "-f", "-c", "sleep 10"]))
+        let view = TerminalView(terminal: terminal)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = view
+        window.orderFrontRegardless()
+        view.layoutSubtreeIfNeeded()
+        let pill = TerminalChatPill()
+        view.addSubview(pill)
+        view.chatPill = pill
+        pill.say("Claude Code", showing: false)
+        view.placeChat()
+        view.layoutSubtreeIfNeeded()
+
+        let middle = NSPoint(x: pill.frame.midX, y: pill.frame.midY)
+        XCTAssertTrue(
+            pill.hitTest(middle) === pill,
+            "a click on the chip lands on the chip, in the terminal's own coordinates"
+        )
+        XCTAssertNil(
+            pill.hitTest(NSPoint(x: 10, y: 10)),
+            "and the rest of the pane stays the terminal's"
+        )
+        window.orderOut(nil)
+    }
 }

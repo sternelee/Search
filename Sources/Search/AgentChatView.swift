@@ -493,8 +493,15 @@ final class TerminalChatPill: NSView {
 
     /// Only the chip itself takes a click: the frame around it must stay
     /// the terminal's, or a corner would stop being part of the pane.
+    ///
+    /// The point arrives in the *superview's* space — the terminal's,
+    /// where the chip sits in a corner a screen away from its own origin
+    /// — so it is `frame`, not `bounds`, that says whether it landed.
+    /// Asked against `bounds`, no click ever did: the chip drew itself
+    /// perfectly and was pure scenery, which is how it was found (by
+    /// clicking one on a live pane and watching nothing happen).
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        frame.contains(point) ? self : nil
     }
 
     override func mouseDown(with event: NSEvent) {

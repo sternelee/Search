@@ -30,6 +30,14 @@ struct SearchApp: App {
         // it says should be heard, not held until the first settings panel
         // happens to open one (see Island).
         Island.shared.start()
+        // The hooks already installed are rewritten before any agent could
+        // run: a fix to the command or to the pi extension has to reach the
+        // agents somebody installed it into, and nothing else writes those
+        // files twice (see IslandHooks.keepCurrent). A test run writes into
+        // nobody's home.
+        if !Store.testing, let bridge = try? IslandHooks.writeBridge(Store.file("Terminal")) {
+            IslandHooks.keepCurrent(bridge)
+        }
     }
 
     var body: some Scene {

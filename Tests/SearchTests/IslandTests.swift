@@ -486,6 +486,52 @@ final class IslandTests: XCTestCase {
 
     // MARK: - the hooks
 
+    /// An install that was installed stays usable: the command and the pi
+    /// script are written again from today's text, so a fix reaches agents
+    /// somebody hooked weeks ago. Nothing else is touched — an agent
+    /// nobody installed stays that way.
+    func testWhatWasInstalledIsKeptCurrent() throws {
+        let home = room
+        let claude = home.appendingPathComponent(".claude", isDirectory: true)
+        let uninstalled = home.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: uninstalled, withIntermediateDirectories: true)
+        let bridge = home.appendingPathComponent("Application Support/search-island.sh").path
+
+        // As an older version left it: the path unquoted, which sh split
+        // on the space in "Application Support", and an extension that
+        // says nothing of where pi keeps its record.
+        let settings = claude.appendingPathComponent("settings.json")
+        let ours: [[String: Any]] = [["type": "command", "command": bridge + " claude"]]
+        let row: [String: Any] = ["hooks": ours]
+        try json(["hooks": Dictionary(uniqueKeysWithValues: IslandHooks.said.map { ($0, [row]) })])
+            .write(to: settings)
+        let extensions = home.appendingPathComponent(".pi/agent/extensions", isDirectory: true)
+        try FileManager.default.createDirectory(at: extensions, withIntermediateDirectories: true)
+        try "// an old copy".write(
+            to: extensions.appendingPathComponent(IslandHooks.piName), atomically: true, encoding: .utf8
+        )
+
+        IslandHooks.keepCurrent(bridge, home: home)
+
+        let after = try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as? [String: Any]
+        let hook = (after?["hooks"] as? [String: Any])?["SessionStart"] as? [[String: Any]]
+        let command = (hook?.first?["hooks"] as? [[String: Any]])?.first?["command"] as? String
+        XCTAssertEqual(command, "'" + bridge + "' claude", "the path is quoted, so sh keeps it one word")
+        XCTAssertEqual(
+            (hook ?? []).count, 1,
+            "the old row is replaced, not joined by a second one"
+        )
+        let script = try String(
+            contentsOf: extensions.appendingPathComponent(IslandHooks.piName), encoding: .utf8
+        )
+        XCTAssertTrue(script.contains("_sessionFile"), "the extension says where the record is")
+        XCTAssertEqual(
+            (try? FileManager.default.contentsOfDirectory(atPath: uninstalled.path))?.isEmpty, true,
+            "an agent nobody installed into is left alone"
+        )
+    }
+
     /// The bridge is written once, runs (not just sits), and says the
     /// socket by the user's own id and the source it's told — the two
     /// things the server reads of it.
@@ -497,6 +543,17 @@ final class IslandTests: XCTestCase {
         XCTAssertTrue(text.contains("X-Search-Event: ${2:-}"), "the bridge passes the moment through for the ones that don't say it")
         XCTAssertTrue(text.contains("hookSpecificOutput"), "only a decision is worth the agent's ears")
         XCTAssertTrue(bridge.hasSuffix("/" + IslandHooks.bridgeName), "the bridge is where it was put")
+        // A hook is run with its output piped, so its own ps says ?? even
+        // though its agent sits in a terminal: the walk up is the only way
+        // the pane is ever named — and a pane never named is a chip never
+        // shown (found live: claude on ttys006, hook said tty=??).
+        XCTAssertTrue(text.contains("PID=$$"), "the bridge starts at itself")
+        XCTAssertTrue(text.contains("ps -o tty=,ppid="), "and asks for the parent at the same time")
+        XCTAssertTrue(text.contains("-lt 8"), "bounded, like pi's extension")
+        XCTAssertFalse(
+            text.contains("TTY=$(ps -o tty= -p $$ 2>/dev/null)"),
+            "it does not trust its own terminal, which a hook never has"
+        )
         // Runs: the one permission that makes a hook a hook.
         let mode = try FileManager.default.attributesOfItem(atPath: bridge)[.posixPermissions] as? Int
         XCTAssertEqual(mode, 0o755, "the bridge runs")

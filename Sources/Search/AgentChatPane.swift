@@ -18,7 +18,8 @@ extension TerminalView {
     /// one comparison away — and the only thing that decides whether the
     /// chip exists at all.
     func watchTalk(_ now: [Island.Session]? = nil) {
-        let said = (now ?? Island.shared.sessions).first { $0.tty == terminal.pty }?.talk
+        let all = now ?? Island.shared.sessions
+        let said = all.first { $0.tty == terminal.pty }?.talk
         guard said != chatTalk else { return }
         chatTalk = said
         guard let said else {

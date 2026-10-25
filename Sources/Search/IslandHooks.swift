@@ -84,10 +84,26 @@ enum IslandHooks {
         [ -S "$SOCK" ] || exit 0
 
         # The terminal is the one fact the hook can't be told and must know
-        # for itself: this shell is the agent's child, and the agent's
-        # terminal is this one's. ps says ttysNNN; the /dev is Search's to add.
-        TTY=$(ps -o tty= -p $$ 2>/dev/null)
-        case "$TTY" in '' | '?' | '??') TTY='' ;; *) TTY="/dev/$TTY" ;; esac
+        # for itself. Not its own: an agent runs a hook with its output
+        # piped, so the hook has no terminal at all (`ps` says ??) even
+        # though the agent that spawned it sits in one. Walk up instead,
+        # the way pi's extension does, until a process has a tty — the
+        # agent and its shell are both above this one, and the nearest
+        # with a terminal is the pane the words are meant for.
+        TTY=''
+        PID=$$
+        N=0
+        while [ -z "$TTY" ] && [ "$N" -lt 8 ]; do
+            FOUND=$(ps -o tty=,ppid= -p "$PID" 2>/dev/null)
+            TTY=$(printf '%s' "$FOUND" | awk '{print $1}')
+            case "$TTY" in
+                '' | '?' | '??') TTY='' ;;
+            esac
+            PID=$(printf '%s' "$FOUND" | awk '{print $2}')
+            case "$PID" in '' | 0 | 1) break ;; esac
+            N=$((N + 1))
+        done
+        [ -n "$TTY" ] && TTY="/dev/$TTY"
 
         # The saying, kept whole; an empty one says nothing and is not sent.
         BODY=$(cat)
@@ -145,7 +161,7 @@ enum IslandHooks {
             rows.removeAll { ours($0, bridge: bridge) }
             var hook: [String: Any] = [
                 "type": "command",
-                "command": bridge + " \(source)" + (carriesEvent ? " \(event)" : ""),
+                "command": quoted(bridge) + " \(source)" + (carriesEvent ? " \(event)" : ""),
             ]
             // A saying is answered the moment it arrives — a short
             // leash in case it isn't, for Qwen hangs on one that doesn't
@@ -284,7 +300,7 @@ enum IslandHooks {
         for event in cursorSaid {
             var rows = hooks[event] as? [[String: Any]] ?? []
             rows.removeAll { ours($0, bridge: bridge) }
-            rows.append(["command": bridge + " cursor \(event)"])
+            rows.append(["command": quoted(bridge) + " cursor \(event)"])
             hooks[event] = rows
         }
         settings["hooks"] = hooks
@@ -331,7 +347,7 @@ enum IslandHooks {
             var rows = hooks[event] as? [[String: Any]] ?? []
             rows.removeAll { ours($0, bridge: bridge) }
             rows.append([
-                "type": "command", "bash": bridge + " copilot \(event)", "timeoutSec": 5,
+                "type": "command", "bash": quoted(bridge) + " copilot \(event)", "timeoutSec": 5,
             ])
             hooks[event] = rows
         }
@@ -644,7 +660,70 @@ enum IslandHooks {
         """
     }
 
+    // MARK: Keeping what's installed current
+
+    /// Writes every hook that is already installed again, from today's
+    /// command and today's script. An install is a promise to be kept:
+    /// the bridge's path has a space in it that once broke every hook
+    /// silently ("/bin/sh: /Users/…/Library/Application: No such file"),
+    /// and the pi extension grew a field an older copy on disk knows
+    /// nothing of — and neither fix reached anyone who had already
+    /// installed, because nothing ever wrote those files a second time.
+    ///
+    /// Only ever does what a person already asked for: an agent that was
+    /// never installed stays that way. A home that isn't there is a CLI
+    /// that isn't either, and its own check says no for it.
+    static func keepCurrent(_ bridge: String, home: URL? = nil) {
+        let home = home ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        // Told a home, it is the home and nothing else overrides it — that
+        // is what a test needs, and what the app always answers nil to.
+        let told = home == nil
+        func folder(_ path: String, told env: String) -> URL {
+            guard told else { return home.appendingPathComponent(path) }
+            return ProcessInfo.processInfo.environment[env].map(URL.init(fileURLWithPath:))
+                ?? home.appendingPathComponent(path)
+        }
+        // The homes are the settings screen's, env overrides and all: a
+        // file written for a home nobody installs into is litter.
+        let claude = folder(".claude", told: "CLAUDE_CONFIG_DIR")
+        let codex = folder(".codex", told: "CODEX_HOME")
+        let gemini = folder(".gemini", told: "")
+        let cursor = folder(".cursor", told: "")
+        let qwen = folder(".qwen", told: "QWEN_HOME")
+        let grok = folder(".grok", told: "GROK_HOME")
+        let droid = folder(".factory", told: "")
+        let copilot = folder(".copilot", told: "")
+        if claudeHooked(claude, bridge: bridge) { try? installClaude(claude, bridge: bridge) }
+        if codexHooked(codex, bridge: bridge) { try? installCodex(codex, bridge: bridge) }
+        if geminiHooked(gemini, bridge: bridge) { try? installGemini(gemini, bridge: bridge) }
+        if cursorHooked(cursor, bridge: bridge) { try? installCursor(cursor, bridge: bridge) }
+        if qwenHooked(qwen, bridge: bridge) { try? installQwen(qwen, bridge: bridge) }
+        if grokHooked(grok, bridge: bridge) { try? installGrok(grok, bridge: bridge) }
+        if droidHooked(droid, bridge: bridge) { try? installDroid(droid, bridge: bridge) }
+        if copilotHooked(copilot, bridge: bridge) { try? installCopilot(copilot, bridge: bridge) }
+        // Pi and Oh My Pi keep the same file, each in its own home, and
+        // the file says which source it speaks for — the pair is known
+        // here, so it needn't be asked.
+        for (path, source) in [(".pi/agent", "pi"), (".omp/agent", "omp")] {
+            let pi = home.appendingPathComponent(path)
+            if extensionIn(pi) { try? putExtension(pi, bridge: bridge, source: source) }
+        }
+    }
+
     // MARK: Inside
+
+    /// The bridge as a shell command word. A hook's command is run by sh,
+    /// which splits on spaces, and the bridge lives in Application Support
+    /// — a folder with a space in it. Written plain, every hook of one of
+    /// these agents dies on the first word ("/bin/sh: /Users/.../Library/
+    /// Application: No such file"), silently, in the agent's own terminal.
+    /// Quoted only when it has to be, and the path quoted is still the
+    /// path: `ours` recognises the hook by it either way.
+    static func quoted(_ bridge: String) -> String {
+        bridge.contains(" ") || bridge.contains("'")
+            ? "'" + bridge.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            : bridge
+    }
 
     /// Whether a row of settings is ours: the command is the bridge,
     /// whatever else the row says. Ours is told by what it runs, not by
