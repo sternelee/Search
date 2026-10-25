@@ -112,6 +112,39 @@ struct ChatLog {
     /// The tail of the file that is not a complete line yet.
     private var carry = Data()
 
+    /// What the run is holding in its window right now: the newest turn's
+    /// input — the cached part included, since a cache read is still in the
+    /// window — plus what that turn answered. Not a sum over the talk: an
+    /// agent's window holds the conversation once, and adding every turn's
+    /// input would count the same words again for every turn that carried
+    /// them.
+    var spent: Int {
+        for turn in turns.reversed() {
+            guard let usage = turn.usage, usage.worth else { continue }
+            return usage.input + usage.cached + usage.output
+        }
+        return 0
+    }
+
+    /// True while the agent is mid-work, read off the file rather than
+    /// asked of the screen: a person's question nobody has answered yet, a
+    /// tool it reached for, or a thought it is still in the middle of. An
+    /// answer — the last thing said being the agent's own words — ends it.
+    /// This is what puts the working row under the talk and takes it away.
+    var working: Bool {
+        guard let last = turns.last else { return false }
+        if last.role == .person { return true }
+        guard let tail = last.parts.last else { return true }
+        switch tail {
+        case .word: return false
+        case .thought, .tool: return true
+        }
+    }
+    /// How much the run's model can hold, when the agent writes it down.
+    /// Codex is the one that does, once per turn; for the others the
+    /// number comes from the catalog instead, so this stays nil.
+    private(set) var window: Int? = nil
+
     init(agent: AgentTalk.Agent) {
         self.agent = agent
     }
@@ -260,6 +293,17 @@ struct ChatLog {
             // under every answer.
             if let cost = Self.usage(info["last_token_usage"] ?? info["total_token_usage"]) {
                 counted(cost)
+            }
+            return
+        }
+        // What the run can hold, stated by Codex itself at the top of each
+        // turn. This is the one place any of the three agents writes the
+        // window into the record, so the chat reads it here rather than
+        // keeping a table of models that would go stale.
+        if raw["type"] as? String == "turn_context" {
+            let said = raw["payload"] as? [String: Any] ?? [:]
+            if let window = said["model_context_window"] as? Int, window > 0 {
+                self.window = window
             }
             return
         }

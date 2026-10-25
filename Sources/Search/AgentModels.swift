@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 // What models an agent in this terminal can be switched to, and what it is
 // on now. Read from the files each CLI already keeps — never by asking the
@@ -25,10 +25,30 @@ enum AgentModels {
         let note: String
         /// A heading rather than a choice: a section's name, over its rows.
         var head: Bool = false
+        /// How much this model can hold, when the catalog says. The chat's
+        /// ring needs the number, not the words `note` puts around it.
+        var window: Int? = nil
 
         static func head(_ name: String) -> Row {
             Row(label: name, value: "", note: "", head: true)
         }
+    }
+
+    /// The context window a model's own name states, when it states one:
+    /// `group/auto[1m]` is a million tokens and `…[128k]` is 128 thousand.
+    /// This is the CLI's own way of naming the variant it runs, so it is
+    /// read rather than guessed — a name that says nothing returns nil,
+    /// and the chat then shows the count without a ring instead of
+    /// inventing a denominator.
+    static func window(of model: String) -> Int? {
+        guard model.hasSuffix("]"), let open = model.lastIndex(of: "["), open < model.index(before: model.endIndex) else {
+            return nil
+        }
+        let inside = model[model.index(after: open)..<model.index(before: model.endIndex)]
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        guard let unit = inside.last, unit == "m" || unit == "k",
+              let number = Int(inside.dropLast()), number > 0 else { return nil }
+        return unit == "m" ? number * 1_000_000 : number * 1_000
     }
 
     /// The rows the agent offers, grouped the way its own picker groups
@@ -96,7 +116,7 @@ enum AgentModels {
                   let model = option["model"] as? String else { return nil }
             var note = option["description"] as? String ?? ""
             if model == current { note = note.isEmpty ? "in use" : note + " · in use" }
-            return Row(label: label, value: model, note: note)
+            return Row(label: label, value: model, note: note, window: window(of: model))
         }
     }
 
@@ -122,12 +142,15 @@ enum AgentModels {
                 guard let id = model["id"] as? String else { continue }
                 let name = model["name"] as? String ?? id
                 var note: [String] = []
-                if let window = model["contextWindow"] as? Int, window > 0 {
-                    note.append(context(window))
+                var window: Int? = nil
+                if let said = model["contextWindow"] as? Int, said > 0 {
+                    note.append(context(said))
+                    window = said
                 }
                 if (model["reasoning"] as? Bool) == true { note.append("reasoning") }
                 rows.append(Row(
-                    label: name, value: "\(provider)/\(id)", note: note.joined(separator: " · ")
+                    label: name, value: "\(provider)/\(id)", note: note.joined(separator: " · "),
+                    window: window
                 ))
             }
         }
@@ -251,5 +274,36 @@ enum AgentModels {
     private static func json(_ file: URL) -> [String: Any]? {
         guard let data = try? Data(contentsOf: file) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+}
+
+/// How full the agent's context window is. The numbers come from the
+/// transcript (the agent states what it spent) and from whatever said what
+/// the window is; nothing here estimates either one.
+enum ContextMeter {
+    /// The fraction used, or nil when there is nothing to say — no window
+    /// known, or nothing spent yet. Clamped, because a run that has
+    /// overflowed its window would otherwise draw a ring past itself.
+    static func fraction(used: Int, window: Int) -> CGFloat? {
+        guard window > 0, used > 0 else { return nil }
+        return min(1, CGFloat(used) / CGFloat(window))
+    }
+
+    /// The ring's colour: the terminal's own ink until the window is
+    /// nearly full, then a warning, then an error. A ring that only ever
+    /// changed length would make a person read the arc to know how bad it
+    /// is; the colour says it before the length does.
+    static func tint(_ fraction: CGFloat, ink: NSColor) -> NSColor {
+        if fraction >= 0.90 { return .systemRed }
+        if fraction >= 0.70 { return .systemOrange }
+        return ink.withAlphaComponent(0.75)
+    }
+
+    /// `<1%` rather than `0%`: a window with something in it is not empty,
+    /// and rounding it away would say the agent has spent nothing.
+    static func percent(used: Int, window: Int) -> String {
+        guard let fraction = fraction(used: used, window: window) else { return "" }
+        let rounded = (fraction * 100).rounded()
+        return used > 0 && rounded < 1 ? "<1%" : "\(Int(rounded))%"
     }
 }

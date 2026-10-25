@@ -114,6 +114,14 @@ extension TerminalView {
             plate.spoke = { [weak self] words in self?.speak(words) }
             plate.escaped = { [weak self] in self?.toggleChat() }
             plate.switched = { [weak self] value in self?.switchModel(to: value) }
+            // Option-click on a row puts it on the pasteboard. The whole of
+            // what was said, not the line under the pointer: a line of a
+            // wrapped paragraph is not something anybody wants on its own.
+            plate.paper.copied = { words in
+                let board = NSPasteboard.general
+                board.clearContents()
+                board.setString(words, forType: .string)
+            }
             addSubview(plate)
             chatPlate = plate
             // The chip has to stay above the talk, or the switch to go
@@ -129,7 +137,7 @@ extension TerminalView {
         chatPlate?.needsLayout = true
         placeChat()
         chatPlate?.needsDisplay = true
-        startChatTick()
+        startChatTick(Self.quietTick)
         if let field = chatPlate?.field, let window { window.makeFirstResponder(field) }
     }
 
@@ -187,31 +195,50 @@ extension TerminalView {
         speak(AgentModels.switchCommand(value))
     }
 
-    /// The slow tick, up only while a talk is: the agent's file is read
-    /// for what it added. A transcript is appended to, so a tick that
-    /// changes nothing reads nothing — but the file is still opened, which
-    /// is why this is half a second and not a frame.
-    private func startChatTick() {
-        guard chatTick == nil else { return }
-        chatTick = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+    /// How often the agent's file is looked at. Half a second while the
+    /// agent is quiet, and twenty times faster while it is working: the
+    /// band on the working row is the one thing in this view that moves
+    /// without the file changing, and a band that stepped twice a second
+    /// would read as a broken thing rather than a busy one. The faster
+    /// tick stops the moment the work does, which is why the view still
+    /// spends no frames on a conversation nobody is adding to.
+    private static let quietTick: TimeInterval = 0.5
+    private static let workTick: TimeInterval = 1.0 / 12
+
+    /// The tick, up only while a talk is: the agent's file is read for
+    /// what it added. A transcript is appended to, so a tick that changes
+    /// nothing reads nothing — but the file is still opened, which is why
+    /// the quiet tick is half a second and not a frame.
+    private func startChatTick(_ every: TimeInterval) {
+        chatTick?.invalidate()
+        chatTick = Timer.scheduledTimer(withTimeInterval: every, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.readChat() }
         }
     }
 
     /// One look at the file: what it added, laid on the plate — and the
-    /// plate is only asked to draw when something did come in.
+    /// plate is only asked to lay anything out when something did come in.
+    /// The working state and the context count are said every tick, though:
+    /// the row under the talk has to be able to move while the file is
+    /// still, and a count is worth a redraw the moment it changes.
     func readChat() {
         guard chatShowing, var reader = chatReader else { return }
         let grew = reader.update()
         chatReader = reader
-        guard grew else { return }
-        chatPlate?.take(reader.log)
-        // A tick that did come back with something is the one moment the
-        // agent may have written a new current model — after a `/model`
-        // it ran itself, or one typed straight at the screen. Asked only
-        // then, and only while the list is open: the chip alone is not
-        // worth a file read half a second at a time.
-        if chatPlate?.askingModels == true { refreshModels() }
+        if grew {
+            chatPlate?.take(reader.log)
+            // A tick that did come back with something is the one moment
+            // the agent may have written a new current model — after a
+            // `/model` it ran itself, or one typed straight at the screen.
+            // Asked only then, and only while the list is open: the chip
+            // alone is not worth a file read half a second at a time.
+            if chatPlate?.askingModels == true { refreshModels() }
+        }
+        let working = reader.log.working
+        chatPlate?.paper.beat(working: working)
+        chatPlate?.beat(working: working, used: reader.log.spent)
+        let wants = working ? Self.workTick : Self.quietTick
+        if chatTick?.timeInterval != wants { startChatTick(wants) }
     }
 
     /// Where the chip and the talk go. The chip sits in the pane's own

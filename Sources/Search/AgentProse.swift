@@ -584,4 +584,71 @@ enum Prose {
         }
         return out
     }
+
+    // MARK: - a tool's output, when it is a diff
+
+    /// What one line of a diff does.
+    enum Diff {
+        /// `diff --git`, `--- a/x`, `+++ b/x`: the file's name, not a
+        /// removal and an addition.
+        case file
+        /// `@@ -1,7 +1,9 @@` — where in the file this hunk is.
+        case hunk
+        case added
+        case removed
+        /// A line that was already there, and the rest of the output.
+        case context
+    }
+
+    /// A tool's output read as a diff, line by line — the one place in a
+    /// transcript where colour carries something a person needs: which
+    /// lines are there now and which are gone.
+    ///
+    /// nil when the output is not a diff, so an ordinary command's output
+    /// keeps its own colour. Two shapes count as a diff: a hunk header, or
+    /// a run with both an addition and a removal. A lone `+` in prose
+    /// ("1 + 1") and a file header are neither.
+    static func diff(_ text: String, face: NSFont, ink: NSColor) -> NSAttributedString? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard !lines.isEmpty else { return nil }
+        var kinds: [Diff] = []
+        var hunks = 0, added = 0, removed = 0
+        for line in lines {
+            let kind: Diff
+            if line.hasPrefix("@@") {
+                kind = .hunk
+                hunks += 1
+            } else if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff ") {
+                kind = .file
+            } else if line.hasPrefix("+") {
+                kind = .added
+                added += 1
+            } else if line.hasPrefix("-") {
+                kind = .removed
+                removed += 1
+            } else {
+                kind = .context
+            }
+            kinds.append(kind)
+        }
+        guard hunks > 0 || (added > 0 && removed > 0) else { return nil }
+
+        let out = NSMutableAttributedString()
+        for (n, line) in lines.enumerated() {
+            if n > 0 { out.append(NSAttributedString(string: "\n", attributes: [.font: face])) }
+            var traits: [NSAttributedString.Key: Any] = [
+                .font: face,
+                .foregroundColor: ink.withAlphaComponent(0.36),
+            ]
+            switch kinds[n] {
+            case .file: traits[.foregroundColor] = ink.withAlphaComponent(0.30)
+            case .hunk: traits[.foregroundColor] = ink.withAlphaComponent(0.58)
+            case .added: traits[.foregroundColor] = NSColor.systemGreen.withAlphaComponent(0.82)
+            case .removed: traits[.foregroundColor] = NSColor.systemRed.withAlphaComponent(0.82)
+            case .context: break
+            }
+            out.append(NSAttributedString(string: line, attributes: traits))
+        }
+        return out
+    }
 }

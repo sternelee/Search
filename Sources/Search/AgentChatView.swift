@@ -32,7 +32,7 @@ final class TerminalChatPaper: NSView {
     /// tool work between two things that were *said* are folded into one
     /// activity row, the way orbit-pi folds a turn's machinery so a
     /// conversation reads as a conversation.
-    private struct Item {
+    struct Item {
         enum Kind {
             case said(ChatLog.Role)
             case thought
@@ -78,6 +78,15 @@ final class TerminalChatPaper: NSView {
     /// on every frame would be work done for nothing — the words did not
     /// change, only where they are being looked at.
     private var proseCache: [Int: [Prose.Piece]] = [:]
+    /// True while the agent is mid-work. A row of its own, below the talk,
+    /// saying what it is doing — and the only thing on this paper that
+    /// moves without the file changing.
+    private(set) var working = false
+    /// True when the last measure was made with the working row in place,
+    /// so the row appearing or going re-measures the paper.
+    private var measuredWork = false
+    /// A person asked for something to be put on the pasteboard.
+    var copied: ((String) -> Void)?
 
     private let margin: CGFloat = 18
     private let gutter: CGFloat = 14
@@ -89,6 +98,8 @@ final class TerminalChatPaper: NSView {
     private static let footHeight: CGFloat = 16
     /// A folded group's summary row.
     private static let activityRow: CGFloat = 18
+    /// The row that says the agent is still working.
+    private static let workRow: CGFloat = 22
 
     override var isFlipped: Bool { false }
 
@@ -184,7 +195,10 @@ final class TerminalChatPaper: NSView {
 
     private func measure() {
         let width = inner
-        guard width != measured || turnTops.count != turns.count else { return }
+        guard width != measured || turnTops.count != turns.count || measuredWork != working else {
+            return
+        }
+        measuredWork = working
         // The width changed, so every answer has to be measured again — the
         // cache is keyed by item, and an item's height is a fact about the
         // width it was measured at.
@@ -230,7 +244,7 @@ final class TerminalChatPaper: NSView {
                 top += h + air
             }
         }
-        total = top
+        total = top + (working ? Self.workRow : 0)
     }
 
     private func height(of item: Item, at index: Int, width: CGFloat) -> CGFloat {
@@ -312,7 +326,59 @@ final class TerminalChatPaper: NSView {
             }
         }
 
+        // The working row is not part of the talk — it is what the talk has
+        // not got yet — so it is drawn after the last turn rather than
+        // being one of the items.
+        if working {
+            let top = bounds.height - (total - Self.workRow - from)
+            if top > -Self.workRow, top - Self.workRow < bounds.height {
+                drawWorking(at: top, width: inner)
+            }
+        }
+
         drawRail(from: from, reachable: reachable)
+    }
+
+    /// What the agent is doing, in the fewest words that are true: the tool
+    /// it last reached for, or nothing more than that it is going.
+    var workingWords: String {
+        guard let last = items.last else { return "Working" }
+        switch last.kind {
+        case .tool(let tool):
+            let said = tool.name + (tool.summary.isEmpty ? "" : "  \(tool.summary)")
+            return said.trimmed
+        case .thought: return "Thinking"
+        case .said: return "Working"
+        }
+    }
+
+    /// The row that says the agent is still going. Its words carry a band
+    /// of brighter ink travelling across them; the band is paid for by the
+    /// agent's own work — when the work stops, the row and its motion both
+    /// go, which is why this paper still has no clock of its own.
+    private func drawWorking(at top: CGFloat, width: CGFloat) {
+        let y = top - Self.workRow
+        let words = workingWords
+        let room = NSRect(x: margin + gutter + 12, y: y + 3,
+                          width: max(20, width - 12), height: Self.workRow - 6)
+        // A dot that is filled while working, so the row still says what it
+        // is on a frame where the band happens to be off the words.
+        ink(0.55).setFill()
+        NSBezierPath(ovalIn: NSRect(x: margin + gutter + 1, y: y + Self.workRow / 2 - 2.5,
+                                    width: 5, height: 5)).fill()
+        words.draw(in: room, withAttributes: [.font: face, .foregroundColor: ink(0.32)])
+
+        // The band. Its place comes from the wall clock rather than from a
+        // stored start, so it is already in motion the first time it is
+        // drawn; nothing here keeps time between frames.
+        let phase = CGFloat(CACurrentMediaTime().truncatingRemainder(dividingBy: 1.7) / 1.7)
+        let span = room.width
+        let band = max(70, span * 0.32)
+        NSGraphicsContext.saveGraphicsState()
+        NSRect(x: room.minX - band + phase * (span + band * 2), y: room.minY,
+               width: band, height: room.height).clip()
+        words.draw(in: room, withAttributes: [.font: face, .foregroundColor: ink(0.95)])
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private func draw(_ item: Item, at index: Int, top: CGFloat, body: CGFloat, width: CGFloat) {
@@ -356,9 +422,17 @@ final class TerminalChatPaper: NSView {
             if open, !tool.output.isEmpty {
                 let room = foldRoom(width)
                 let h = box(tool.output, font: footFace, width: room).height
-                tool.output.draw(in: NSRect(x: x + 8, y: top - rowHeight - 2 - h, width: room, height: h),
-                                 withAttributes: [.font: footFace,
-                                                  .foregroundColor: ink(tool.failed ? 0.62 : 0.36)])
+                let where_ = NSRect(x: x + 8, y: top - rowHeight - 2 - h, width: room, height: h)
+                // A diff says which lines are there now and which are gone,
+                // and it is the one kind of output where colour carries
+                // something a person needs rather than something they like.
+                if let painted = Prose.diff(tool.output, face: footFace, ink: ink) {
+                    painted.draw(with: where_, options: [.usesLineFragmentOrigin, .usesFontLeading])
+                } else {
+                    tool.output.draw(in: where_, withAttributes: [
+                        .font: footFace, .foregroundColor: ink(tool.failed ? 0.62 : 0.36),
+                    ])
+                }
             }
         }
     }
@@ -664,6 +738,17 @@ final class TerminalChatPaper: NSView {
         needsDisplay = true
     }
 
+    /// The pane says the agent is working, or that it has stopped. The
+    /// paper redraws either way: the row appearing and the row going are
+    /// both changes a person is meant to see.
+    func beat(working: Bool) {
+        if self.working != working {
+            self.working = working
+            measure()
+        }
+        needsDisplay = true
+    }
+
     func refont() {
         measured = 0
         proseCache = [:]
@@ -691,6 +776,16 @@ final class TerminalChatPaper: NSView {
         // unflipped, so a point's talk coordinate is measured down from
         // the top of the view.
         let spot = from + (bounds.height - at.y)
+        // Option-click puts the thing under the pointer on the pasteboard —
+        // the whole of what the agent said, not the line that happens to be
+        // under the pointer, because a line of a wrapped paragraph is not
+        // something anybody wants alone.
+        if event.modifierFlags.contains(.option) {
+            if let item = item(at: spot) {
+                copied?(item.text)
+            }
+            return
+        }
         for i in items.indices {
             let item = items[i]
             guard spot >= item.top, spot <= item.top + item.height else { continue }
@@ -713,6 +808,11 @@ final class TerminalChatPaper: NSView {
                 return
             }
         }
+    }
+
+    /// The row a talk coordinate lands in, if it lands in one at all.
+    func item(at spot: CGFloat) -> Item? {
+        items.first { spot >= $0.top && spot <= $0.top + $0.height }
     }
 
     /// True while the newest words are under your eyes.
@@ -840,6 +940,12 @@ final class TerminalChatView: NSView {
         let before = model.label
         _ = model.say(current, open: askingModels)
         list.take(rows, current: current)
+        // The window of the model the agent is on: the catalog's word for
+        // it, or the number its own name carries. A row that says nothing
+        // leaves the ring off rather than inventing a denominator.
+        let row = rows.first { !$0.head && $0.value == current }
+        contextWindow = row?.window ?? AgentModels.window(of: current) ?? 0
+        needsDisplay = true
         // A chip that changed its words has changed its width, and the
         // list hangs off its corner.
         if model.label != before { needsLayout = true }
@@ -852,6 +958,33 @@ final class TerminalChatView: NSView {
     /// The current model, as the chip says it.
     var modelWords: String { current }
     private var current = ""
+
+    /// What the agent has spent of its window, and how big the window is.
+    /// Both come from the agent's own records: the count from the
+    /// transcript, the window from its catalog or the model's own name.
+    /// Zero means nothing knows, and then there is no ring to draw.
+    private(set) var contextUsed = 0
+    private(set) var contextWindow = 0
+    /// True while the agent is mid-work — the dot in the footer.
+    private(set) var working = false
+
+    /// What the pane learned on its last look: whether the agent is
+    /// working, what it has spent, and what it has to spend. Redraws only
+    /// when something of it changed, so a quiet agent costs no frames.
+    func beat(working: Bool, used: Int) {
+        let changed = self.working != working || contextUsed != used
+        self.working = working
+        contextUsed = used
+        if changed { needsDisplay = true }
+    }
+
+    /// The ring's share of the footer, and where it sits.
+    private static let ring: CGFloat = 13
+    private var ringBox: NSRect {
+        let box = self.box
+        return NSRect(x: box.maxX - 10 - Self.ring, y: box.minY + (Self.footHeight - Self.ring) / 2,
+                      width: Self.ring, height: Self.ring)
+    }
 
     func refont() {
         face = TerminalLook.face(size: max(11, TerminalLook.size - 1))
@@ -956,21 +1089,78 @@ final class TerminalChatView: NSView {
         hair.lineWidth = 1
         hair.stroke()
 
-        // What the keys do, at the footer's right: a chat whose only
-        // affordances are a chip and a line would leave return and escape
-        // for a person to guess.
+        // The context ring, at the footer's right: how much of the window
+        // this run has spent. Drawn only when both numbers are known — a
+        // ring with no denominator would be a decoration pretending to be
+        // a measurement.
+        var right = box.maxX - 10
+        if contextWindow > 0, contextUsed > 0 {
+            drawRing()
+            right = ringBox.minX - 6
+        }
+        // The working dot, left of everything else: the footer is the one
+        // part of the composer that is always on screen, so the answer to
+        // "is it still going?" belongs here and not only under the talk.
+        if working {
+            right -= 9
+            TerminalFieldPanel.word.withAlphaComponent(0.7).setFill()
+            NSBezierPath(ovalIn: NSRect(x: right, y: box.minY + Self.footHeight / 2 - 2.5,
+                                        width: 5, height: 5)).fill()
+        }
+
+        // What the keys do, beside it: a chat whose only affordances are a
+        // chip and a line would leave return and escape for a person to
+        // guess.
         let keys = "⏎ send   ⇧⏎ newline   esc close"
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9.5),
             .foregroundColor: TerminalFieldPanel.word.withAlphaComponent(0.26),
         ]
         let said = (keys as NSString).size(withAttributes: attrs)
+        let keyX = max(box.minX + 10, right - said.width)
         (keys as NSString).draw(
-            at: NSPoint(
-                x: box.maxX - 10 - said.width,
-                y: box.minY + (Self.footHeight - said.height) / 2
-            ), withAttributes: attrs
+            at: NSPoint(x: keyX, y: box.minY + (Self.footHeight - said.height) / 2),
+            withAttributes: attrs
         )
+    }
+
+    /// How full the window is: an arc, the count, and the percentage. The
+    /// arc alone would make a person read a length to know how bad it is,
+    /// so the colour carries it too — the terminal's own ink until the
+    /// window is nearly full, then a warning, then an error.
+    private func drawRing() {
+        let room = ringBox
+        let centre = NSPoint(x: room.midX, y: room.midY)
+        let radius = Self.ring / 2 - 1.5
+        TerminalFieldPanel.word.withAlphaComponent(0.16).setStroke()
+        let track = NSBezierPath()
+        track.appendArc(withCenter: centre, radius: radius, startAngle: 0, endAngle: 360)
+        track.lineWidth = 1.5
+        track.stroke()
+
+        if let fraction = ContextMeter.fraction(used: contextUsed, window: contextWindow) {
+            let colour = ContextMeter.tint(fraction, ink: TerminalFieldPanel.word)
+            colour.setStroke()
+            let arc = NSBezierPath()
+            // From the top, clockwise, the way a clock reads: a person
+            // looking at a ring already knows where "more" goes.
+            arc.appendArc(withCenter: centre, radius: radius,
+                          startAngle: 90, endAngle: 90 - 360 * fraction, clockwise: true)
+            arc.lineWidth = 1.5
+            arc.stroke()
+            // The percentage, in the middle: the ring says roughly, the
+            // number says exactly, and both fit in a footer this size.
+            let words = ContextMeter.percent(used: contextUsed, window: contextWindow)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 7.5, weight: .medium),
+                .foregroundColor: colour,
+            ]
+            let size = (words as NSString).size(withAttributes: attrs)
+            (words as NSString).draw(
+                at: NSPoint(x: centre.x - size.width / 2, y: centre.y - size.height / 2),
+                withAttributes: attrs
+            )
+        }
     }
 
     /// The talk's own ground, the same one every part of the terminal's
