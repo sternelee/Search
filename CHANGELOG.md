@@ -13,6 +13,10 @@ in [ROADMAP.md](ROADMAP.md).
 
 ### Added
 
+- A task that stopped where only a person could go on can be taken up again from the tasks page — "Take it up" makes it due now with the goal, the page and the provider it was set with, so the person does what the bot couldn't (a password, a code from another place) in the tab the task already opened, then says so, rather than asking the bot for the whole of it over again. A task that comes round again is left to its own clock, and one still running is left to finish. `python3 Tests/chores.py` checks it.
+
+- What's left is only a person's to do is named for what it is — "This needs you" over the model's own words, on the panel and on the tab — so the one paragraph that is the person's work to do isn't read as the end of a thought.
+
 - A task that comes round again says what came of its last round: a round that ended where only a person could go on is kept with the task — "waiting for its next round — its last round needed you: <the words>" — rather than the task reading as waiting with nothing behind it. A round cut off by Search closing is not left as "running now" for good either: it says "interrupted — Search stopped during this run. No actions were replayed." `python3 Tests/chores.py` checks both.
 
 - An Agent Chat tab, from File › New Agent Chat and nowhere else: a tab that is a talk with the agent, not a page — the bot's own conversation at full width, its reach every tab in the row (itself never among the listing), the page in front its page of the moment, and every act naming its tab when none is. The rules are the bot's own, unchanged: acts wait for your Allow, an Always covers the page's own acts, beyond the page asks, a close always asks. The tab is closed like any tab and its talk goes with it; it pins to nothing, splits with nothing, is scripted to nobody, and is not kept for the next time the browser opens. `python3 Tests/chat_tab.py` checks it the hidden way — the tab in the row by name, the listing shown to the model with the chat left out, an act on a named tab held and read back, a command refused, a close asked under Auto, the talk gone with its tab, a thought shown before its answer and never read back
@@ -30,6 +34,16 @@ in [ROADMAP.md](ROADMAP.md).
 - The bot can close a tab — a `{"close": "tab-id"}` line in its reply, `this` for the page it's on — and it is the one act that asks even under Auto: a tab is the person's own to close, so every close waits for their Allow, Auto on or off. A task come due may put its own page away, and no other. `python3 Tests/bot_panel.py` checks both sides of it — refused and the tab stays, Auto doesn't skip it, allowed and it closes
 
 ### Changed
+
+- A read of a table is a read of its rows: they come with it, under the page's own header, as many as a reply carries (3000 characters), and what didn't fit is counted — "60 rows not shown". The panel's read had the rows without the header and stopped at a flat twenty; it now carries the header and as many rows as fit. `python3 Tests/agent_automation.py` checks the rows ride with the read.
+
+- A page's story said again and again is kept once and counted — "log: spinning (×40)" — rather than filling the hundred-line ring with one sentence and pushing out the failure that started it.
+
+- A list in an answer keeps what the model wrote: a numbered list keeps its numbers (1. stays 1., 10. stays 10.), a nested item is drawn under the item it belongs to, and the reply as it comes is shown as the words inside a fence rather than the fence and its language word. `swift test --filter MarkdownTests` and `--filter DraftTests` check each.
+
+- An agent's css= or id= finds what a person sees inside a shadow host: a selector the page's own reader can't answer is looked for in every place a thing can be, so a box inside a host is named like anything else. XPath is left where it was — a path is read from the document, and a shadow root is no part of it.
+
+- A model's thinking is named for what it is — "Thinking…" over the grey words — so a model thinking for a minute isn't read as a model gone quiet. A tool's answer cut at the reply's limit says it was cut, rather than reading as the tool's own broken answer, and a skill named in another case ("market watch" for "Market Watch") is the same skill, not a missing one.
 
 - A reference an agent was given — a `@12` from a snapshot — names the page as it was shown and only as it was shown. Kept across a page that has changed under it, the reference is a promise to something the person never saw, so acting on one now says so instead of guessing: the page changed, take another snapshot. Every ref carries a line of what it was given to (its role, its name, its kind, where it points, whether it is disabled) and is checked against the page again when it is acted on. `python3 Tests/agent_automation.py` and `python3 Tests/bot_panel.py` check the refs still work on a page that hasn't moved, and that a page that has is refused.
 
