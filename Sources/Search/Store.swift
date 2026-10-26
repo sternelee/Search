@@ -15,6 +15,7 @@ enum Store {
     /// once wrote over somebody's real session, and asking a person to
     /// remember a flag is not a safeguard.
     static var testing: Bool {
+        if ProcessInfo.processInfo.processName == "xctest" { return true }
         if ProcessInfo.processInfo.environment["SEARCH_PROBE"] != nil { return true }
         return Bundle.main.executablePath?.contains("/.build/") == true
     }

@@ -14,6 +14,12 @@ final class AIAddressTests: XCTestCase {
 
     override func tearDown() {
         Store.settings.removeObject(forKey: AIProvider.addressesKey)
+        // The host-named account survives a plain forget (the address is
+        // gone from settings by now, so the default account is the only
+        // one found): every host this test named a key for goes too, or
+        // the next process sharing the test keychain sees a fixture that
+        // was never his.
+        AIKeys.held(for: .openAI).forEach { AIKeys.forget(.openAI, host: $0.host) }
         AIKeys.forget(.openAI)
         super.tearDown()
     }
@@ -80,6 +86,9 @@ final class AIAddressTests: XCTestCase {
     }
 
     func testAKeyIsKeptForTheHostItWasSavedUnder() {
+        // This host's fixture is durable in the test keychain; a previous
+        // test process must not make the "no key yet" assertion order-dependent.
+        AIKeys.forget(.openAI, host: "relay.example")
         // A test run keeps keys in memory (see AIKeys.save), which is enough
         // to see which host a key belongs to.
         XCTAssertEqual(AIKeys.save("sk-one", for: .openAI), .kept)

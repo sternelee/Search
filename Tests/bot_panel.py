@@ -62,7 +62,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = str(ROOT / "build" / "Search.app")
+APP = os.environ.get("SEARCH_TEST_APP", str(ROOT / "build" / "Search.app"))
 HOME = os.path.expanduser("~")
 def use(name):
     """This checkout's own world for a suite: the name, then a tag made from
