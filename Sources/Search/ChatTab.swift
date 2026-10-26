@@ -339,13 +339,10 @@ private struct ChatEventView: View {
                 .padding(10)
                 .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         case .human:
-            // What's left is only a person's to do: the answer's own shape,
-            // with an edge drawn around it, so what's needed of the person
-            // stands out from the answers.
-            MarkdownText(open: openLink, text: event.words, size: 13, color: Palette.ink)
-                .padding(10)
-                .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.ink.opacity(0.35), lineWidth: 1))
+            // What's left is only a person's to do: an answer's own shape
+            // with an edge around it, named for what it is — the turn is
+            // over, and what comes next is the person's.
+            HumanCard(open: openLink, words: event.words)
         case .card:
             EmptyView()
         case .trouble:
@@ -370,11 +367,36 @@ extension ChatStage {
     }
 }
 
-// MARK: - the card
+// MARK: - the cards
 
 /// An act that waits on you: what it is, aimed at what, the whole of what it
 /// will do — and the three answers. One card for the tab and the panel, so a
 /// run's asking looks the same wherever the conversation is drawn.
+/// What's left is only a person's to do — a password, a code from another
+/// place, a payment: the model's own words for what it needs, said as an
+/// answer is said, and named for what it is. The turn has stopped there and
+/// nothing runs until the person takes it up, which a card that looked like
+/// any other answer did not say: read in a conversation of answers, a
+/// paragraph that happens to be the last one looks like the end of a
+/// thought, not the start of the person's work.
+struct HumanCard: View {
+    let open: (URL) -> Void
+    let words: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("This needs you")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Palette.ink)
+            MarkdownText(open: open, text: words, size: 13, color: Palette.ink)
+        }
+        .padding(10)
+        .background(Palette.wash.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(Palette.ink.opacity(0.35), lineWidth: 1))
+    }
+}
+
 struct ApprovalCard: View {
     let pending: Bot.Pending
     /// Where the run stands while it waits, when it is still working.

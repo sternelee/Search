@@ -1889,6 +1889,15 @@ final class Bench {
                 }
                 Chores.shared.remove(id)
                 answer(["removed": id.uuidString])
+            case "again":
+                // A task taken up again by the person, the page it was set
+                // on already open in their tab: due now, for the clock's
+                // next look (see Chores.again).
+                guard let id = (request["id"] as? String).flatMap(UUID.init(uuidString:)) else {
+                    answer(["error": "chores again ID"]); return
+                }
+                answer(["again": Chores.shared.again(id)?.id.uuidString ?? "",
+                        "tasks": Chores.shared.listed()])
             case "list":
                 answer(["tasks": Chores.shared.listed()])
             case "tick":

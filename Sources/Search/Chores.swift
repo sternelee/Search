@@ -115,6 +115,26 @@ final class Chores: ObservableObject {
         keep()
     }
 
+    /// A task taken up again: due now, so the clock's next look runs it —
+    /// with the goal, the page and the provider it was set with. For the
+    /// tasks that stopped where only a person could go on: they do what
+    /// the person couldn't (the password, the code from another place) in
+    /// the tab the task's page was already opened in, then say so, rather
+    /// than asking the bot for the whole of it over again. A task that
+    /// comes round again is left to its own clock, and a task still
+    /// running is left to finish.
+    @discardableResult func again(_ id: UUID) -> Chore? {
+        guard let place = tasks.firstIndex(where: { $0.id == id }),
+              tasks[place].state != .running,
+              tasks[place].every == nil else { return nil }
+        tasks[place].at = Date()
+        tasks[place].state = .waiting
+        tasks[place].words = nil
+        tasks[place].lastState = nil
+        keep()
+        return tasks[place]
+    }
+
     /// What came of a run: the answer it ended with, or the trouble
     /// (Browser.runChore, when the bot's turn is over). A task that comes
     /// round again is set for its next round instead — done or not, what

@@ -546,6 +546,66 @@ def case_round_person(t):
          and tasks[0]["at"] > time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 60)), tasks)
 
 
+def case_again(t):
+    """a task that stopped where only a person could go on: taken up again by the person, the goal and the page kept"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    bt("use", provider="ollama")
+
+    at = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 5))
+    added = chores("add", goal="Sign in and read what's behind it",
+                   at=at, page=f"{BASE}/form")
+    t.ok("a task set for a time already come", bool(added.get("added")), added)
+    ident = added["added"]
+
+    script.clear(); seen.clear()
+    script.extend([
+        '{"say":"the sign-in is in my way"}',
+        '{"human":"the sign-in wants its password"}',
+    ])
+    chores("tick")
+    until(t, lambda s: any(e["kind"] == "human" for e in s.get("events", [])), within=60,
+          doing="the task the clock set the bot on")
+    tasks = chores("list").get("tasks", [])
+    t.ok("the task stopped where only a person can go on",
+         len(tasks) == 1 and tasks[0]["state"] == "human" and tasks[0]["words"] == "the sign-in wants its password", tasks)
+
+    # The person does what it couldn't — the password, in the tab the task
+    # opened — then takes the task up again: due now, the goal and the page
+    # it was set with kept, so the bot is not asked the whole of it again.
+    again = chores("again", id=ident)
+    t.ok("the task taken up again, its goal and page kept",
+         again.get("again") == ident and len(again.get("tasks", [])) == 1
+         and again["tasks"][0]["goal"] == "Sign in and read what's behind it"
+         and again["tasks"][0]["page"] == f"{BASE}/form"
+         and again["tasks"][0]["state"] == "waiting"
+         and again["tasks"][0]["words"] == "", again.get("tasks"))
+    t.ok("…and due now, not at a time of its own",
+         again["tasks"][0]["at"] <= time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 1)),
+         again["tasks"][0]["at"])
+
+    # The clock's next look runs it, and this round comes to its answer.
+    script.clear(); seen.clear()
+    script.extend(['{"answer":"read it: three orders, all shipped"}'])
+    chores("tick")
+    until(t, lambda s: any(e["kind"] == "answer" for e in s.get("events", [])), within=60,
+          doing="the task taken up again")
+    tasks = chores("list").get("tasks", [])
+    t.ok("the task taken up again comes to its answer",
+         len(tasks) == 1 and tasks[0]["state"] == "done"
+         and tasks[0]["words"] == "read it: three orders, all shipped", tasks)
+
+    # A task that comes round again is left to its own clock: taking it up
+    # by hand would run it beside the round it is already set for.
+    tasks = chores("list").get("tasks", [])
+    chores("remove", id=ident)
+    at = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + 300))
+    round = chores("add", goal="Pull the feed", at=at, page=f"{BASE}/form", every=600)
+    taken = chores("again", id=round["added"])
+    t.ok("a task that comes round again isn't taken up by hand",
+         taken.get("again") == "" and taken["tasks"][0]["state"] == "waiting", taken.get("tasks"))
+
+
 def case_round_missed(t):
     """rounds that find Search closed: skipped to the next, not missed"""
     setup(); launch()
@@ -565,7 +625,7 @@ def case_round_missed(t):
 
 def main():
     t = T()
-    for case in [case_list, case_note, case_time, case_run, case_person, case_missing, case_round, case_round_person, case_round_gap, case_round_missed]:
+    for case in [case_list, case_note, case_time, case_run, case_person, case_missing, case_round, case_round_person, case_again, case_round_gap, case_round_missed]:
         print(f"— {case.__doc__}")
         try:
             case(t)

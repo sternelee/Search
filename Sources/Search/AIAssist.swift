@@ -1137,6 +1137,18 @@ private struct ChoresList: View {
 
     /// A task's time, as a person reads it: for one that comes round
     /// again, the gap and the next time it comes.
+    /// Where a task stands when the person can take it up again: it
+    /// stopped — the answer never came, the time was missed, or what's left
+    /// is only a person's to do — and it isn't a task that comes round
+    /// again, whose own clock is what brings it back.
+    private static func takeUp(_ task: Chores.Chore) -> Bool {
+        guard task.every == nil else { return false }
+        switch task.state {
+        case .human, .missed, .failed, .interrupted: return true
+        case .waiting, .running, .done: return false
+        }
+    }
+
     private func timing(_ task: Chores.Chore) -> String {
         if let every = task.every {
             return "every \(Chores.gap(every)) · next \(Chores.spoken(task.at))"
@@ -1156,6 +1168,18 @@ private struct ChoresList: View {
                             if drawn {
                                 AISettings.Stand(task.state == .waiting ? "Waiting" : spoken(task))
                             } else {
+                                // A task that stopped where only a person
+                                // could go on is taken up again from here,
+                                // once they have done what it couldn't:
+                                // the page it was set on is already open
+                                // in its tab, and the goal, the page and
+                                // the provider are all in it still. Asking
+                                // the bot for the whole of it over again is
+                                // asking it to be told what it already
+                                // knows.
+                                if Self.takeUp(task) {
+                                    Pill("Take it up") { chores.again(task.id) }
+                                }
                                 Pill("Remove") { chores.remove(task.id) }
                             }
                         }
