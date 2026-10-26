@@ -222,12 +222,7 @@ struct BotPanel: View {
             // thought, over the saying when one follows, and kept in the
             // record as a thought when it's done (see Bot.musing).
             if let muse = bot.musing, !muse.words.isEmpty {
-                Text(verbatim: muse.words)
-                    .font(.system(size: 12))
-                    .italic()
-                    .foregroundStyle(Palette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .id(muse.id)
+                ThinkingView(words: muse.words).id(muse.id)
             }
             // The reply as it comes: a saying on the panel, grown piece
             // by piece while the model is still saying it.

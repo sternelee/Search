@@ -137,12 +137,7 @@ struct ChatStage: View {
                     // kept in the record as a thought when it's done (see
                     // Bot.musing).
                     if let muse = bot.musing, !muse.words.isEmpty {
-                        Text(verbatim: muse.words)
-                            .font(.system(size: 12))
-                            .italic()
-                            .foregroundStyle(Palette.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .id(muse.id)
+                        ThinkingView(words: muse.words).id(muse.id)
                     }
                     // The reply as it comes: a saying on the tab, grown piece
                     // by piece while the model is still saying it.
@@ -379,6 +374,29 @@ extension ChatStage {
 /// any other answer did not say: read in a conversation of answers, a
 /// paragraph that happens to be the last one looks like the end of a
 /// thought, not the start of the person's work.
+/// The model's thinking as it comes: muted, over the saying it's on the way
+/// to — and named for what it is, because a thought still arriving and one
+/// that has stopped arriving are the same grey words otherwise, and the
+/// person watching a model think for a minute should know it is thinking
+/// rather than gone. One view for the panel and the tab.
+struct ThinkingView: View {
+    let words: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Thinking…")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Palette.faint)
+            Text(verbatim: words)
+                .font(.system(size: 12))
+                .italic()
+                .foregroundStyle(Palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+}
+
 struct HumanCard: View {
     let open: (URL) -> Void
     let words: String
