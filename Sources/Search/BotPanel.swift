@@ -269,34 +269,10 @@ struct BotPanel: View {
     }
 
     private func actCard(_ pending: Bot.Pending) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("\(pending.act.verb)  \(pending.act.target)")
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(Palette.ink)
-                .lineLimit(2)
-            if !pending.act.text.isEmpty {
-                // Whole, never folded to a couple of lines: a command to
-                // run, a thought to keep, a task's goal — the person
-                // allows what they can read all of.
-                Text(verbatim: pending.act.text)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Palette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(spacing: 8) {
-                Pill("Allow", filled: true) { bot.resolve(true) }
-                Pill("Always") { bot.always() }
-                Pill("Refuse") { bot.resolve(false) }
-                if bot.working {
-                    Spacer(minLength: 0)
-                    Text(bot.status ?? "working…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.faint)
-                }
-            }
-        }
-        .padding(12)
-        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        ApprovalCard(pending: pending,
+                     status: bot.working ? bot.status ?? "working…" : nil,
+                     resolve: { bot.resolve($0) },
+                     always: { bot.always() })
     }
 
     private func noticeCard(_ notice: String) -> some View {

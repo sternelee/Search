@@ -937,6 +937,10 @@ struct Door: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
+        // A door is a glyph and nothing else: what it says on hover is what
+        // it should say aloud, rather than the name of the symbol.
+        .accessibilityLabel(help.isEmpty ? icon : help)
+        .accessibilityAddTraits(on ? .isSelected : [])
         .animation(Motion.quick, value: hovering)
         .animation(Motion.quick, value: on)
     }
