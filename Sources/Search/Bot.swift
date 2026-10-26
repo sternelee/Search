@@ -958,8 +958,7 @@ final class Loop {
                         // still arriving — the rest of the line waits for the
                         // whole of it (see Loop.wordsComing). Not every piece holds
                         // a piece: a line can be thinking, or empty.
-                        let head = whole.drop(while: { " \n\t\r".contains($0) })
-                        var grown = head.first == "{" ? (Loop.wordsComing(in: whole) ?? "") : String(head)
+                        var grown = Loop.wordsStanding(in: whole) ?? ""
                         if !piece.words.isEmpty, !grown.isEmpty {
                             if grown.count > Bot.pageful { grown = String(grown.prefix(Bot.pageful)) + "…" }
                             bot.grow(draft, grown)
@@ -1041,6 +1040,32 @@ final class Loop {
             return held
         }
         return nil
+    }
+
+    /// The words a reply is standing on while it's still coming: what the
+    /// person is being shown this moment, whatever shape the reply is in.
+    /// A JSON line says it in its say or its answer (see wordsComing); a
+    /// model that wraps its line in a fence — as models do, whatever the
+    /// prompt says — says it inside the fence, and the fence and the
+    /// language word over it are not words to read; a reply in plain words
+    /// says it plainly. Nothing yet is nothing.
+    static func wordsStanding(in reply: String) -> String? {
+        let head = reply.drop(while: { " \n\t\r".contains($0) })
+        for fence in ["```", "~~~"] where head.hasPrefix(fence) {
+            var body = head.dropFirst(fence.count)
+            // The fence's own line holds the language and nothing else: it
+            // goes by, and until it has, there is nothing yet to show.
+            guard let lineEnd = body.firstIndex(of: "\n") else { return "" }
+            body = body[body.index(after: lineEnd)...]
+            // A fence not yet closed — the reply is still coming — keeps
+            // the words it has come to.
+            if let shut = body.range(of: fence) { body = body[..<shut.lowerBound] }
+            let inside = body.drop(while: { " \n\t\r".contains($0) })
+            if inside.first == "{" { return wordsComing(in: String(body)) ?? "" }
+            return String(body)
+        }
+        if head.first == "{" { return wordsComing(in: reply) ?? "" }
+        return String(head)
     }
 
     /// The words a reply holds for the person, taken while it's still

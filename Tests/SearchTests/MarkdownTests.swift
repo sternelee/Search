@@ -43,6 +43,36 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(blocks[4].words, "a number")
     }
 
+    func testANumberedListKeepsItsNumbers() {
+        // A list of steps read 1, 2, 3 is a list of steps: the mark the
+        // model wrote is the mark drawn, not a dot for every item.
+        let blocks = markdownBlocks(of: "1. first\n2. second\n10. tenth")
+        XCTAssertEqual(blocks.map(\.kind), [.bullet, .bullet, .bullet])
+        XCTAssertEqual(blocks.map(\.mark), ["1.", "2.", "10."])
+        XCTAssertEqual(blocks.map(\.words), ["first", "second", "tenth"])
+        // A bracket after the number is the model's way too, and keeps it.
+        XCTAssertEqual(markdownBlocks(of: "1) first").first?.mark, "1)")
+    }
+
+    func testADashAndAStarAreTheSameMark() {
+        // A dash and a star both mean "an item": one dot, as this app
+        // draws an item — the point is that it's an item, not the glyph.
+        let blocks = markdownBlocks(of: "- a dash\n* a star\n+ a plus")
+        XCTAssertEqual(blocks.map(\.mark), ["•", "•", "•"])
+    }
+
+    func testANestedItemSitsUnderItsItem() {
+        // An item under an item is indented under it, the way it was
+        // written: flattened to the top, which item belongs to which is
+        // lost, and a nested list reads as one list of peers.
+        let blocks = markdownBlocks(of: "- top\n  - under it\n    - under that\n- top again")
+        XCTAssertEqual(blocks.map(\.depth), [0, 1, 2, 0])
+        XCTAssertEqual(blocks.map(\.words), ["top", "under it", "under that", "top again"])
+        // A tab counts as two spaces, the way models indent; and an
+        // indent past what a narrow panel can draw stops at it.
+        XCTAssertEqual(markdownBlocks(of: "\t- a tab\n            - nine spaces").map(\.depth), [1, 5])
+    }
+
     func testCodeBlockKeepsItsWordsWhole() {
         // A code block holds its own words: nothing inside it is read as
         // a mark — a fence inside a fence stays, a heading stays.
@@ -141,7 +171,11 @@ final class MarkdownTests: XCTestCase {
         A **bold** point and [a link](https://example.com).
 
         - first
+          - under it
         - second
+
+        1. a step
+        2. another
 
         ```js
         console.log("hi")

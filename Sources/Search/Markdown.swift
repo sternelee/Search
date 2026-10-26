@@ -41,6 +41,16 @@ struct MarkdownBlock: Identifiable, Equatable {
     /// the heading without its hashes, the bullet without its dash,
     /// the code block exactly as written, fences and all.
     let words: String
+    /// A list item's own mark, as the model wrote it: a dot for a dash or
+    /// a star, the number for a numbered one. A list of steps read
+    /// 1, 2, 3 is a list of steps; read •, •, • it is a list, and the
+    /// order the model gave it is the point of it.
+    var mark: String = "•"
+    /// How deep in a list the item sits, in steps of two spaces: an item
+    /// under an item is indented under it, the way it was written. A
+    /// nested list flattened to the top reads as one list of peers, and
+    /// which item belongs to which is lost.
+    var depth: Int = 0
 }
 
 /// The answer in blocks: split on the blank lines, then each block
@@ -84,9 +94,10 @@ func markdownBlocks(of text: String) -> [MarkdownBlock] {
             flushParagraph()
             continue
         }
-        if isBullet(trimmed) {
+        if let item = bullet(trimmed) {
             flushParagraph()
-            blocks.append(MarkdownBlock(id: blocks.count, kind: .bullet, words: unbullet(trimmed)))
+            blocks.append(MarkdownBlock(id: blocks.count, kind: .bullet, words: item.words,
+                                        mark: item.mark, depth: indent(of: line)))
             continue
         }
         // A heading: one to six hashes and a space.
@@ -108,21 +119,38 @@ func markdownBlocks(of text: String) -> [MarkdownBlock] {
     return blocks
 }
 
-/// A bullet, the model's way: a dash, a star, or a number with a dot.
-private func isBullet(_ line: String) -> Bool {
-    let patterns = ["- ", "* ", "+ "]
-    for pattern in patterns where line.hasPrefix(pattern) { return true }
-    let digits = line.prefix { $0.isNumber }
-    return !digits.isEmpty && line.dropFirst(digits.count).hasPrefix(". ")
-}
-
-/// The words under the bullet's mark: the dash or the number, off.
-private func unbullet(_ line: String) -> String {
+/// A list item, the model's way: a dash, a star, or a number with a dot
+/// (or a bracket) — its mark and the words under it, both kept. A dot
+/// stands for every mark that isn't a number: what a dash or a star means
+/// is "an item", and the dot is how this app draws one.
+private func bullet(_ line: String) -> (mark: String, words: String)? {
     for pattern in ["- ", "* ", "+ "] where line.hasPrefix(pattern) {
-        return String(line.dropFirst(pattern.count))
+        return ("•", String(line.dropFirst(pattern.count)))
     }
     let digits = line.prefix { $0.isNumber }
-    return String(line.dropFirst(digits.count + 2))
+    guard !digits.isEmpty else { return nil }
+    let rest = line.dropFirst(digits.count)
+    if rest.hasPrefix(". ") {
+        // The number, and the dot: the model's own, so a list that starts
+        // at 1 and runs to 12 reads as it was written, and a list that
+        // starts at 3 says it starts at 3.
+        return (digits + ".", String(rest.dropFirst(2)))
+    }
+    if rest.hasPrefix(") ") { return (digits + ")", String(rest.dropFirst(2))) }
+    return nil
+}
+
+/// How deep in a list a line sits: two spaces (or a tab) to a step, the
+/// way models indent, capped where an indented line stops being readable
+/// in the panel it's drawn in.
+private func indent(of line: String) -> Int {
+    var spaces = 0
+    for char in line {
+        if char == " " { spaces += 1 }
+        else if char == "\t" { spaces += 2 }
+        else { break }
+    }
+    return min(spaces / 2, 5)
 }
 
 /// A heading's level and its words: the hashes, off.
@@ -224,13 +252,20 @@ struct MarkdownText: View {
                 case .bullet:
                     // A bullet wraps like a paragraph: held to one line it
                     // would run on past the edge of the panel it's read in.
+                    // The mark is the model's own — a dot for an item, the
+                    // number for a step — and the item sits as deep in the
+                    // list as it was written.
                     HStack(alignment: .top, spacing: 6) {
-                        Text("•").font(.system(size: size)).foregroundStyle(Palette.faint)
+                        Text(block.mark)
+                            .font(.system(size: size))
+                            .foregroundStyle(Palette.faint)
+                            .frame(minWidth: markWidth, alignment: .trailing)
                         Text(markdownInline(block.words, size: size, color: color))
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                             .environment(\.openURL, OpenURLAction { url in openLink(url) })
                     }
+                    .padding(.leading, CGFloat(block.depth) * 12)
                 case .code:
                     // A code block: as written, in the mono face, on a
                     // wash of its own — no marks read inside it.
@@ -247,6 +282,11 @@ struct MarkdownText: View {
             }
         }
     }
+
+    /// The column a list item's mark is held in: wide enough for two
+    /// digits and their dot, so an item numbered 10 keeps its words in the
+    /// same column as an item numbered 9.
+    private var markWidth: CGFloat { size * 1.6 }
 
     /// The link, opened the browser's way — never by the words alone.
     private func openLink(_ url: URL) -> OpenURLAction.Result {
