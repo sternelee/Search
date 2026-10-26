@@ -1121,12 +1121,17 @@ private struct ChoresList: View {
     /// A task's state, as a person reads it.
     private func spoken(_ task: Chores.Chore) -> String {
         switch task.state {
-        case .waiting: return task.every != nil ? "waiting for its next round" : "waiting"
+        case .waiting:
+            if task.lastState == .human {
+                return "waiting for its next round — its last round needed you: \(task.words ?? "")"
+            }
+            return task.every != nil ? "waiting for its next round" : "waiting"
         case .running: return "running now"
         case .done: return "done — \(task.words ?? "")"
         case .human: return "needs you — \(task.words ?? "")"
         case .failed: return "didn't come to it — \(task.words ?? "")"
         case .missed: return "missed — \(task.words ?? "")"
+        case .interrupted: return "interrupted — \(task.words ?? "")"
         }
     }
 

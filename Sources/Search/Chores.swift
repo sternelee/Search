@@ -18,7 +18,7 @@ final class Chores: ObservableObject {
     /// One task for a time to come: the goal in the bot's own words, the
     /// page it was set on, and what came of it when its time came.
     struct Chore: Codable, Identifiable, Equatable {
-        enum State: String, Codable { case waiting, running, done, failed, human, missed }
+        enum State: String, Codable { case waiting, running, done, failed, human, missed, interrupted }
         var id = UUID()
         var goal: String
         var at: Date
@@ -33,6 +33,10 @@ final class Chores: ObservableObject {
         var words: String?
         /// When the person set it.
         var made = Date()
+        /// What came of the round before this one, for a task that comes
+        /// round again: a round that ended where only a person can go on is
+        /// said in the list, so the next round isn't read as the first.
+        var lastState: State?
     }
 
     static let shared = Chores()
@@ -60,6 +64,13 @@ final class Chores: ObservableObject {
                 tasks[place].state = .missed
                 tasks[place].words = "its time came while Search wasn't running"
             }
+        }
+        // A round cut off by Search closing is not a round still running:
+        // nothing was replayed when Search came back, and the task says so
+        // rather than sitting in "running now" for good.
+        for place in tasks.indices where tasks[place].state == .running {
+            tasks[place].state = .interrupted
+            tasks[place].words = "Search stopped during this run. No actions were replayed."
         }
         keep()
     }
@@ -111,6 +122,11 @@ final class Chores: ObservableObject {
     /// off; a round that went wrong tries again at its next time.
     func finished(_ id: UUID, state: Chore.State, words: String?) {
         guard let place = tasks.firstIndex(where: { $0.id == id }) else { return }
+        // What came of this round is kept even when the task rolls on to its
+        // next one: a round that ended where only a person can go on is said
+        // in the list, rather than the task reading as waiting with nothing
+        // behind it (see AIAssist's spoken(_:)).
+        tasks[place].lastState = state
         if let every = tasks[place].every, every >= Self.roundLeast {
             tasks[place].at = Date().addingTimeInterval(every)
             tasks[place].state = .waiting
@@ -170,6 +186,7 @@ final class Chores: ObservableObject {
             "id": $0.id.uuidString, "goal": $0.goal, "at": iso.string(from: $0.at),
             "every": $0.every.map { Int($0) } ?? 0,
             "page": $0.page, "state": $0.state.rawValue, "words": $0.words ?? "",
+            "lastState": $0.lastState?.rawValue ?? "",
         ] as [String: Any] }
     }
 }
