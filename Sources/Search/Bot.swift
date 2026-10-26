@@ -472,6 +472,12 @@ final class Bot: ObservableObject, Identifiable {
     /// More of the page than this is a page the model shouldn't be shown
     /// whole: it can ask for the rest.
     nonisolated static let pageful = 6000
+
+    /// How much of a table's rows or a list's items one read comes back as:
+    /// enough of a table to work from, and not more than a reply carries.
+    /// What doesn't fit is said — how many rows were left — so a read that
+    /// came back short is known to be short, not taken for the whole.
+    nonisolated static let readful = 3000
     /// Longer than any one reply needs.
     nonisolated static let longest = 8000
 
@@ -1562,24 +1568,49 @@ final class Loop {
                 if let rows = said["rows"] as? [[String]] {
                     let count = said["count"] as? Int ?? rows.count
                     let held = said["more"] as? Int ?? 0
-                    let shown = rows.prefix(20)
-                        .map { $0.joined(separator: " | ") }
-                        .joined(separator: "; ")
+                    // The table's own names come with it: a row of cells
+                    // with no header over them is a row of cells to guess
+                    // at, and the header is the page's own words for them.
+                    let head = said["header"] as? [String] ?? []
+                    var lines: [String] = []
+                    if !head.isEmpty { lines.append(head.joined(separator: " | ")) }
+                    var spent = lines.first?.count ?? 0
+                    for row in rows {
+                        let line = row.joined(separator: " | ")
+                        if spent + line.count + 1 > Bot.readful, !lines.isEmpty { break }
+                        lines.append(line)
+                        spent += line.count + 1
+                    }
+                    let shown = lines.count - (head.isEmpty ? 0 : 1)
+                    let left = count - shown + held
                     act.outcome = "read"
                     bot.tell(Bot.Event(kind: .act, words: "", act: act))
                     self.observe(note: "You read \(target): a table of \(count) rows"
                         + (held > 0 ? " (\(held) not shown)" : "")
-                        + ". \(String(shown.prefix(1200)))", full: false, first: false)
+                        + (head.isEmpty ? "" : ", header \(head.joined(separator: ", "))")
+                        + ". " + lines.joined(separator: "; ")
+                        + (left > 0 ? " (\(left) rows not shown)" : ""),
+                        full: false, first: false)
                     return
                 }
                 if let items = said["items"] as? [String] {
                     let count = said["count"] as? Int ?? items.count
                     let held = said["more"] as? Int ?? 0
+                    var lines: [String] = []
+                    var spent = 0
+                    for item in items {
+                        if spent + item.count + 1 > Bot.readful, !lines.isEmpty { break }
+                        lines.append(item)
+                        spent += item.count + 1
+                    }
+                    let left = count - lines.count + held
                     act.outcome = "read"
                     bot.tell(Bot.Event(kind: .act, words: "", act: act))
                     self.observe(note: "You read \(target): a list of \(count) items"
                         + (held > 0 ? " (\(held) not shown)" : "")
-                        + ". \(String(items.joined(separator: " · ").prefix(1200)))", full: false, first: false)
+                        + ". " + lines.joined(separator: " · ")
+                        + (left > 0 ? " (\(left) items not shown)" : ""),
+                        full: false, first: false)
                     return
                 }
                 let value = (said["value"] ?? said["text"]).flatMap { $0 as? String } ?? "nothing"

@@ -484,6 +484,22 @@ def case_tables(t):
     reading = next((m["content"] for m in asked if "read:" in m["content"]), "")
     t.ok("the model is told the shape of it, shortly",
          "a table of 2 rows" in reading and "header Name, Where" in reading, reading)
+    # The rows themselves are the read: a reply that says "a table of 2
+    # rows" and no row has found nothing, whatever the count says.
+    t.ok("…and the rows themselves come with it, under their header",
+         "Name | Where" in reading and "Ada | home" in reading
+         and "Grace | away" in reading, reading)
+
+    # A table too long for one reply says how many rows it left — so a read
+    # that came back short is known to be short, and not taken for all of it.
+    script.clear(); seen.clear()
+    script.extend(["ACT read css=#big", "ANSWER done"])
+    ag("run", id="p1", provider="ollama", task="read the big table")
+    reading = next((m["content"] for m in seen[-1]["messages"] if "read:" in m["content"]), "")
+    t.ok("a table too long to tell whole carries its header and rows",
+         "header N" in reading and "row 0 | value 0" in reading, reading[:300])
+    t.ok("…and says how many rows it left out",
+         "rows not shown" in reading, reading[-200:])
 
 
 def case_talk(t):

@@ -257,6 +257,12 @@ enum Agent {
     /// What the model is told it is and has. One line back, always: an act,
     /// or the answer. Plain text, so every provider answers it — the apps on
     /// this Mac included — and no tool-calling wire format is needed.
+    /// How much of a table's rows or a list's items one read carries: a
+    /// reply the model can read whole, and enough of a table to work from.
+    /// What doesn't fit is said — how many rows were left — so a read that
+    /// came back short is known to be short, not taken for the whole.
+    static let readful = 3000
+
     private static let system = """
         You are an agent driving a web browser. You see one page as a list of what it holds, \
         each thing with a kind, a name and a number (@n). Reply with exactly ONE line and nothing else:
@@ -468,21 +474,46 @@ enum Agent {
                             reply = "console:\n\(done["text"] ?? "")"
                         } else if act.verb == "read" {
                             // A table or a list comes as its shape, not its
-                            // flattened text — what it holds said shortly,
-                            // the rows themselves in the answer's reply.
+                            // flattened text — and the shape is what the
+                            // model asked for: the rows themselves, under
+                            // their header, as many as a reply carries. A
+                            // read that said "a table of 260 rows" and no
+                            // row is a read that found nothing.
                             if let rows = done["rows"] as? [[String]] {
                                 let count = done["count"] as? Int ?? rows.count
                                 let held = done["more"] as? Int ?? 0
                                 let head = done["header"] as? [String] ?? []
+                                var lines: [String] = []
+                                if !head.isEmpty { lines.append(head.joined(separator: " | ")) }
+                                var spent = lines.first?.count ?? 0
+                                for row in rows {
+                                    let line = row.joined(separator: " | ")
+                                    if spent + line.count + 1 > Agent.readful, !lines.isEmpty { break }
+                                    lines.append(line)
+                                    spent += line.count + 1
+                                }
+                                let shown = lines.count - (head.isEmpty ? 0 : 1)
+                                let left = count - shown + held
                                 reply = "read: a table of \(count) rows"
                                     + (held > 0 ? " (\(held) not shown)" : "")
                                     + (head.isEmpty ? "" : ", header \(head.joined(separator: ", "))")
+                                    + "\n" + lines.joined(separator: "\n")
+                                    + (left > 0 ? "\n(\(left) rows not shown)" : "")
                             } else if let items = done["items"] as? [String] {
                                 let count = done["count"] as? Int ?? items.count
                                 let held = done["more"] as? Int ?? 0
+                                var lines: [String] = []
+                                var spent = 0
+                                for item in items {
+                                    if spent + item.count + 1 > Agent.readful, !lines.isEmpty { break }
+                                    lines.append(item)
+                                    spent += item.count + 1
+                                }
+                                let left = count - lines.count + held
                                 reply = "read: a list of \(count) items"
                                     + (held > 0 ? " (\(held) not shown)" : "")
-                                    + ": \(items.prefix(10).joined(separator: " · "))"
+                                    + ": " + lines.joined(separator: " · ")
+                                    + (left > 0 ? "\n(\(left) items not shown)" : "")
                             } else {
                                 reply = "read: \(done["text"] ?? "") value \(done["value"] ?? "") href \(done["href"] ?? "")"
                             }
