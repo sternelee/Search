@@ -722,10 +722,16 @@ enum Agent {
             return s;
           }
           function snapshot(full) {
+            // The refs name the page as it is shown now, and only as it is
+            // shown now: a @12 from an older snapshot names something the
+            // person never saw, and acting on it is acting on a guess.
+            W.els = {}; W.next = 1; W.marks = {}; W.url = location.href;
             var lines = [], n = 0, seen = new Map();
             var vw = window.innerWidth || 1280, vh = window.innerHeight || 800;
             function give(el) {
-              if (!seen.has(el)) { var r = '@' + (W.next++); W.els[r] = el; seen.set(el, r) }
+              if (!seen.has(el)) {
+                var r = '@' + (W.next++); W.els[r] = el; W.marks[r] = mark(el); seen.set(el, r);
+              }
               return seen.get(el);
             }
             function pad(d) { var s = ''; for (var i = 0; i < d; i++) s += '  '; return s }
@@ -891,6 +897,12 @@ enum Agent {
             if (!one) throw 'nothing matches ' + target;
             return one;
           }
+          /// What a ref was given to, as a line: the same element read again
+          /// is the same line, and a page rebuilt under it is not.
+          function mark(el) {
+            return JSON.stringify([roleOf(el), nameOf(el), el.type || '', el.href || '',
+              el.disabled || false, el.getAttribute('aria-disabled'), el.getAttribute('name')]);
+          }
           function scrollMid(el) {
             try { el.scrollIntoView({ block: 'center', inline: 'center' }) } catch (e) { try { el.scrollIntoView() } catch (e2) {} }
           }
@@ -946,6 +958,14 @@ enum Agent {
           }
           function act(verb, target, text) {
             var el = resolve(target);
+            // A ref is a promise about the page as it was last shown. Kept
+            // across a page that has changed under it, the promise is to
+            // something the person never saw — said, not guessed at.
+            if (target.charAt(0) === '@') {
+              if (W.url !== location.href) throw 'the page changed — take another snapshot before acting';
+              if (!W.els[target]) throw 'that ref is from an older snapshot — take another one';
+              if (W.marks[target] !== mark(el)) throw 'the target changed — take another snapshot and ask again';
+            }
             if (!el.focus) throw 'not something the page can act on';
             scrollMid(el);
             if (verb === 'click') {
