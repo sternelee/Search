@@ -38,8 +38,8 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = str(ROOT / "build" / "Search.app")
-BRIDGE = str(ROOT / "build" / "Search.app" / "Contents" / "MacOS" / "search-mcp")
+APP = os.environ.get("SEARCH_TEST_APP", str(ROOT / "build" / "Search.app"))
+BRIDGE = str(Path(APP) / "Contents" / "MacOS" / "search-mcp")
 HOME = os.path.expanduser("~")
 def use(name):
     """This checkout's own world for a suite: the name, then a tag made from

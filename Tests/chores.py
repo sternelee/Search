@@ -41,7 +41,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = str(ROOT / "build" / "Search.app")
+APP = os.environ.get("SEARCH_TEST_APP", str(ROOT / "build" / "Search.app"))
 HOME = os.path.expanduser("~")
 def use(name):
     """This checkout's own world for a suite: the name, then a tag made from
@@ -519,6 +519,33 @@ def case_round_gap(t):
     t.ok("no task came of it", chores("list").get("tasks") == [], chores("list"))
 
 
+def case_round_person(t):
+    """a recurring round that ends where only a person can go on: the next round is set anyway, the need kept as its last round's state"""
+    setup(); launch()
+    cmd({"do": "ai", "action": "mock", "url": f"http://127.0.0.1:{srv.server_port}/"})
+    bt("use", provider="ollama")
+
+    at = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() - 5))
+    added = chores("add", goal="Sign in and read what's behind it", at=at,
+                   page=f"{BASE}/form", every=120)
+    t.ok("a recurring round set for a time already come", added.get("every") == 120, added)
+
+    script.clear(); seen.clear()
+    script.extend([
+        '{"say":"the sign-in is in my way"}',
+        '{"human":"the sign-in wants its password"}',
+    ])
+    chores("tick")
+    until(t, lambda s: any(e["kind"] == "human" for e in s.get("events", [])), within=60,
+          doing="the recurring round the clock set the bot on")
+    tasks = chores("list").get("tasks", [])
+    t.ok("the next round is set even so, the need kept as its last round's state",
+         len(tasks) == 1 and tasks[0]["every"] == 120 and tasks[0]["state"] == "waiting"
+         and tasks[0]["lastState"] == "human"
+         and tasks[0]["words"] == "the sign-in wants its password"
+         and tasks[0]["at"] > time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 60)), tasks)
+
+
 def case_round_missed(t):
     """rounds that find Search closed: skipped to the next, not missed"""
     setup(); launch()
@@ -538,7 +565,7 @@ def case_round_missed(t):
 
 def main():
     t = T()
-    for case in [case_list, case_note, case_time, case_run, case_person, case_missing, case_round, case_round_gap, case_round_missed]:
+    for case in [case_list, case_note, case_time, case_run, case_person, case_missing, case_round, case_round_person, case_round_gap, case_round_missed]:
         print(f"— {case.__doc__}")
         try:
             case(t)

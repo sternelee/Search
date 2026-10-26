@@ -153,6 +153,8 @@ struct TabBar: View {
                     // Back, forward, reload, and the bookmarks, at the far end
                     // of the row. The dropdown hangs from the last one.
                     HStack(spacing: Metrics.tabGap) {
+                        Door(icon: "bubble.left.and.bubble.right", on: browser.botsShowing,
+     help: browser.botsShowing ? "Hide Bots — conversations keep running" : "Bots") { browser.toggleBots() }
                         // Only while a download is running, and a moment after.
                         FetchDoor(browser: browser, fetches: browser.fetches)
                         ExtensionSlot()

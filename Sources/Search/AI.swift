@@ -20,7 +20,7 @@ enum AI {
 }
 
 /// Where the answers come from.
-enum AIProvider: String, CaseIterable, Identifiable {
+enum AIProvider: String, Codable, CaseIterable, Identifiable {
     /// The model downloaded to this Mac, run by Search's own engine (AIEngine).
     case thisMac
     case anthropic, openAI, gemini, openRouter
@@ -136,7 +136,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
 /// How hard the model thinks before it speaks: the reasoning effort sent
 /// with each request, where the provider supports it. Off for providers
 /// that don't think, and for the engine on this Mac (its model never does).
-enum BotThinking: String, CaseIterable, Identifiable {
+enum BotThinking: String, Codable, CaseIterable, Identifiable {
     case off, low, medium, high
     var id: String { rawValue }
     var name: String {

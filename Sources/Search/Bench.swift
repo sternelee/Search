@@ -1364,6 +1364,10 @@ final class Bench {
             // act, read, wait, run — a task in words carried out by a model.
             Agent.handle(request, browser: browser, pick: { self.find(request, in: browser) }, answer: answer)
 
+        case "bots":
+            guard Store.testing else { answer(["error": "bots only works on a --test run"]); return }
+            BotsBench.handle(request, browser: browser, answer: answer)
+
         case "bot":
             // The bot (see Bot.swift) as a run can drive it: opened, asked,
             // its held acts allowed or refused, its cards tapped. Only on a
@@ -1383,7 +1387,7 @@ final class Bench {
                 guard let tab = find(request, in: browser) else { answer(missing(request)); return }
                 if let everywhere = request["every"] as? Bool { browser.botEverywhere = everywhere }
                 browser.select(tab)
-                browser.openBot()
+                browser.openBot(legacyProbe: true)
                 answer(["open": browser.botting != nil, "notice": browser.botting?.notice ?? "",
                         "trouble": browser.botting?.trouble ?? "", "every": browser.botting?.mode == .every])
             case "ask":
@@ -1484,7 +1488,7 @@ final class Bench {
             guard Store.testing else { answer(["error": "chat only works on a --test run"]); return }
             switch request["action"] as? String {
             case "new":
-                guard let tab = browser.openChat() else { answer(["error": "the chat couldn't open — Settings › AI"]); return }
+                guard let tab = browser.openLegacyChat() else { answer(["error": "the chat couldn't open — Settings › AI"]); return }
                 answer(["open": true, "id": Bench.short(tab)])
             case "close":
                 // ⌘W on the chat tab, stood in for.

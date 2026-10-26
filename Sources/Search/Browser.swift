@@ -332,7 +332,17 @@ final class Browser: NSObject, ObservableObject {
     var cycling = false
 
     var active: Tab? { tabs.first { $0.id == activeID } }
-    var fieldShowing: Bool { editing || active?.isBlank ?? true }
+    /// The field stands over the page, and over that alone. The Bots panel
+    /// is beside the page, so the field is not kept back for it — but it is
+    /// not put up in front of it either: with nothing typed and nothing
+    /// asked for, an empty box over a page someone is reading beside a
+    /// conversation is noise. The caret's being in a conversation is not
+    /// what the page's blankness is about (see botTyping).
+    var fieldShowing: Bool { editing || ((active?.isBlank ?? true) && !botTyping) }
+
+    /// Whether the caret is in one of the conversations: what is typed there
+    /// is the conversation's, and a blank page beside it is nobody's.
+    @Published var botTyping = false
 
     /// Typed plus whatever the field is quietly finishing for you.
     var completed: String {
@@ -347,6 +357,18 @@ final class Browser: NSObject, ObservableObject {
     @Published var assisting: Assistant?
     /// The bot's talk about the page, while it is open (see Bot).
     @Published var botting: Bot?
+    @Published var botsShowing = false
+    /// The conversation filling the stage instead of standing beside a page:
+    /// a way of showing the panel, so it goes when the panel goes (see
+    /// Browser.hideBots). Set from the conversation's own header.
+    @Published var botsFull = false
+    /// Where the Bots panel and the page beside it were laid out, as
+    /// SwiftUI put them: read by the tests (BotsBench) and by nothing that
+    /// draws. The page's view says nothing of this on its own — a blank tab
+    /// has none — so the split states its own geometry.
+    var botRoom: CGRect = .zero
+    var botPageRoom: CGRect = .zero
+    @Published var botWorkspace = BotWorkspaceLayout()
     /// The talks the Agent Chat tabs are having, one apiece, for as long
     /// as their tabs stand in the row (see ChatTab.swift).
     @Published var chatBots: [Tab.ID: Bot] = [:]
@@ -2629,6 +2651,8 @@ final class Browser: NSObject, ObservableObject {
     }
 
     func select(_ tab: Tab, floatPrevious: Bool = true) {
+        // The Bots panel stays where it is: it is beside the page, and going
+        // to another page is what it is beside (see App's roomedStage).
         if let pair = split(for: tab), activeSplit?.id == pair.id, activeID != tab.id {
             focusPane(tab)
             return
@@ -2682,6 +2706,14 @@ final class Browser: NSObject, ObservableObject {
     func closeFront() {
         if peekTab != nil { closePeek() }
         else if closePanel() { return }
+        else if botsShowing, let id = botWorkspace.focused, !botWorkspace.panes.isEmpty {
+            // Only the pane in front: ⌘W on the panel closes the conversation
+            // it is showing, and the page beside it is left alone. A panel
+            // holding nothing, or one who has clicked away from every pane,
+            // goes itself — the page behind is not what ⌘W was aimed at.
+            closeBotPane(id)
+        }
+        else if botsShowing { hideBots() }
         else if let tab = active { close(tab) }
     }
 
@@ -3360,6 +3392,8 @@ final class Browser: NSObject, ObservableObject {
     /// may be waiting on its page.
     @discardableResult
     func open(_ url: URL, foreground: Bool, atEnd: Bool = false, from source: Tab? = nil, mayWait: Bool = false) -> Tab {
+        // The panel stays beside whatever page the window shows, including
+        // one opened in front of it.
         // An extension's own page is served only to a view built from that
         // extension's configuration.
         let url = Browser.page(url)
@@ -4045,7 +4079,8 @@ final class Browser: NSObject, ObservableObject {
     // MARK: - the address field
 
     /// ⌘L. The current address comes up selected, so typing over it replaces it
-    /// and Escape puts it back.
+    /// and Escape puts it back. The Bots panel stays where it is: it is
+    /// beside the page, and typing an address is done on the page.
     func edit() {
         summoning = false
         // Never a name and password written into the address: they would be

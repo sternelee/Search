@@ -18,7 +18,7 @@ final class Chores: ObservableObject {
     /// One task for a time to come: the goal in the bot's own words, the
     /// page it was set on, and what came of it when its time came.
     struct Chore: Codable, Identifiable, Equatable {
-        enum State: String, Codable { case waiting, running, done, failed, human, missed }
+        enum State: String, Codable { case waiting, running, done, failed, human, missed, interrupted }
         var id = UUID()
         var goal: String
         var at: Date
@@ -33,6 +33,8 @@ final class Chores: ObservableObject {
         var words: String?
         /// When the person set it.
         var made = Date()
+        var botID: UUID?
+        var lastState: State?
     }
 
     static let shared = Chores()
@@ -61,6 +63,10 @@ final class Chores: ObservableObject {
                 tasks[place].words = "its time came while Search wasn't running"
             }
         }
+        for place in tasks.indices where tasks[place].state == .running {
+            tasks[place].state = .interrupted
+            tasks[place].words = "Search stopped during this run. No actions were replayed."
+        }
         keep()
     }
 
@@ -79,8 +85,7 @@ final class Chores: ObservableObject {
     /// with the person's own work waits for the next look.
     func tick() {
         guard let browser, !tasks.contains(where: { $0.state == .running }) else { return }
-        guard !(browser.botting?.busy ?? false),
-              let place = tasks.firstIndex(where: { $0.state == .waiting && $0.at <= Date() }) else { return }
+        guard let place = tasks.firstIndex(where: { $0.state == .waiting && $0.at <= Date() }) else { return }
         tasks[place].state = .running
         keep()
         browser.runChore(tasks[place])
@@ -92,8 +97,8 @@ final class Chores: ObservableObject {
     static let roundLeast: TimeInterval = 60
 
     /// A task set (Bot's own later line, or a test run's say-so).
-    @discardableResult func add(goal: String, at: Date, page: String, provider: String, model: String, every: TimeInterval? = nil) -> Chore {
-        let task = Chore(goal: goal, at: at, page: page, provider: provider, model: model, every: every)
+    @discardableResult func add(goal: String, at: Date, page: String, provider: String, model: String, every: TimeInterval? = nil, botID: UUID? = nil) -> Chore {
+        let task = Chore(goal: goal, at: at, page: page, provider: provider, model: model, every: every, botID: botID)
         tasks.append(task)
         keep()
         return task
@@ -104,13 +109,22 @@ final class Chores: ObservableObject {
         keep()
     }
 
+    func assignBot(_ id: UUID, profileID: UUID) {
+        guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[index].botID = profileID
+        keep()
+    }
+
     /// What came of a run: the answer it ended with, or the trouble
     /// (Browser.runChore, when the bot's turn is over). A task that comes
-    /// round again is set for its next round instead — done or not, what
-    /// came of this round kept as its words — until the person takes it
-    /// off; a round that went wrong tries again at its next time.
+    /// round again is set for its next round instead — done, wrong, or
+    /// ended where only a person can go on; what came of this round is
+    /// kept as its words, and a round that needed the person is recorded
+    /// as its last round's state, said so in the list — until the person
+    /// takes it off. A round that went wrong tries again at its next time.
     func finished(_ id: UUID, state: Chore.State, words: String?) {
         guard let place = tasks.firstIndex(where: { $0.id == id }) else { return }
+        tasks[place].lastState = state
         if let every = tasks[place].every, every >= Self.roundLeast {
             tasks[place].at = Date().addingTimeInterval(every)
             tasks[place].state = .waiting
@@ -170,6 +184,7 @@ final class Chores: ObservableObject {
             "id": $0.id.uuidString, "goal": $0.goal, "at": iso.string(from: $0.at),
             "every": $0.every.map { Int($0) } ?? 0,
             "page": $0.page, "state": $0.state.rawValue, "words": $0.words ?? "",
+            "lastState": $0.lastState?.rawValue ?? "",
         ] as [String: Any] }
     }
 }
@@ -208,11 +223,29 @@ extension Browser {
             }
             // Each round stands on its own: no talk taken up from the
             // page's last one, which would grow round over round.
-            openBot(over: tab, takeUp: false)
-            guard let bot = botting, bot.tab == tab.id else {
+            Bots.shared.configure(prefs, browser: self)
+            var assigned = chore.botID
+            if assigned == nil, let provider = AIProvider(rawValue: chore.provider) {
+                assigned = Bots.shared.profiles.first {
+                    !$0.archived && !$0.deleted && $0.provider == provider && $0.model == chore.model
+                }?.id
+                if assigned == nil {
+                    var profile = BotProfile(name: "Scheduled Assistant", provider: provider, model: chore.model)
+                    profile.permissions.commands = true // still refused while unattended
+                    profile.permissions.memory = false
+                    profile.permissions.skills = Set(Skills.listed().map(\.name))
+                    if Bots.shared.put(profile) { assigned = profile.id }
+                }
+                if let assigned { Chores.shared.assignBot(chore.id, profileID: assigned) }
+            }
+            guard let profileID = assigned,
+                  let session = Bots.shared.create(profileID: profileID, browser: self, tabs: [tab],
+                                                   title: "Task: " + String(chore.goal.prefix(80))) else {
                 Chores.shared.finished(chore.id, state: .failed, words: "the bot couldn't open over its page")
                 return
             }
+            let bot = session.runtime
+            if Store.testing { botting = bot }
             bot.auto = true
             var draft = "The task the person set for this time: \(chore.goal). No one may be watching — don't draw a card, it waits for a tap that may never come, and nothing beyond the page goes (no commands, no clipboard, no tools, no history): there is no one there to allow it. Work the page, and when it's done, answer with what you have; when what's left is only a person's to do — a password, a code from another place, a payment — say {\"human\": \"what's needed of them\"} and stop."
             if let every = chore.every {
@@ -222,7 +255,8 @@ extension Browser {
             // an answer, a trouble, what only a person can do, or a card
             // waiting for a tap no one may ever give (a tap or a new ask
             // carries it on).
-            bot.onOver = { trouble in
+            bot.onOver = { [weak bot] trouble in
+                guard let bot else { return }
                 if let trouble {
                     Chores.shared.finished(chore.id, state: .failed, words: trouble)
                 } else if let human = bot.events.last(where: { $0.kind == .human })?.words {

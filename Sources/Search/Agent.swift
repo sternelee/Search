@@ -637,6 +637,15 @@ enum Agent {
           var req = \(json);
           var W = window.__searchAgent;
           if (!W) W = window.__searchAgent = { next: 1, els: {} };
+          if (req.scope) {
+            var scopes = window.__searchAgentScopes || (window.__searchAgentScopes = {});
+            if (!scopes[req.scope]) {
+              var keys = Object.keys(scopes);
+              if (keys.length >= 32) delete scopes[keys[0]];
+              scopes[req.scope] = { next: 1, els: {}, fingerprints: {} };
+            }
+            W = scopes[req.scope];
+          }
           var cut = 80, LIMIT = 1500;
           function trim(s) { return (s === null || s === undefined ? '' : s + '').replace(/\\s+/g, ' ').trim() }
           function short(s) { s = trim(s); return s.length > cut ? s.slice(0, cut - 1) + '…' : s }
@@ -722,10 +731,14 @@ enum Agent {
             return s;
           }
           function snapshot(full) {
+            if (req.scope) { W.els = {}; W.fingerprints = {}; W.url = location.href }
             var lines = [], n = 0, seen = new Map();
             var vw = window.innerWidth || 1280, vh = window.innerHeight || 800;
             function give(el) {
-              if (!seen.has(el)) { var r = '@' + (W.next++); W.els[r] = el; seen.set(el, r) }
+              if (!seen.has(el)) {
+                var r = '@' + (W.next++); W.els[r] = el; seen.set(el, r);
+                if (req.scope) W.fingerprints[r] = fingerprint(el);
+              }
               return seen.get(el);
             }
             function pad(d) { var s = ''; for (var i = 0; i < d; i++) s += '  '; return s }
@@ -891,6 +904,10 @@ enum Agent {
             if (!one) throw 'nothing matches ' + target;
             return one;
           }
+          function fingerprint(el) {
+            return JSON.stringify([roleOf(el), nameOf(el), el.type || '', el.href || '',
+              el.disabled || false, el.getAttribute('aria-disabled'), el.getAttribute('name')]);
+          }
           function scrollMid(el) {
             try { el.scrollIntoView({ block: 'center', inline: 'center' }) } catch (e) { try { el.scrollIntoView() } catch (e2) {} }
           }
@@ -946,6 +963,11 @@ enum Agent {
           }
           function act(verb, target, text) {
             var el = resolve(target);
+            if (req.scope) {
+              if (W.url !== location.href) throw 'the page changed — take another snapshot before acting';
+              var ref = Object.keys(W.els).find(function (r) { return W.els[r] === el });
+              if (!ref || W.fingerprints[ref] !== fingerprint(el)) throw 'the target changed — take another snapshot and ask again';
+            }
             if (!el.focus) throw 'not something the page can act on';
             scrollMid(el);
             if (verb === 'click') {

@@ -297,9 +297,11 @@ enum AIDescribed {
 
     /// The bot's half of it: a tool is an act beyond the page, and what it
     /// says is material to read.
-    static func forTheBot() -> String {
-        let tools = tools(reading: false).map { "TOOLS\n\($0)" }
-        let skills = skills().map { "SKILLS\n\($0)" }
+    static func forTheBot(permissions: BotPermissions? = nil) -> String {
+        let permittedTools = MCPHub.shared.listed().filter { permissions?.tools.contains($0.qualified) ?? true }
+        let permittedSkills = Skills.listed().filter { permissions?.skills.contains($0.name) ?? true }
+        let tools = permittedTools.isEmpty ? nil : "TOOLS\n" + permittedTools.map(\.described).joined(separator: "\n")
+        let skills = permittedSkills.isEmpty ? nil : "SKILLS\n" + permittedSkills.map { "- \($0.name) — \($0.description)" }.joined(separator: "\n")
         guard tools != nil || skills != nil else { return "" }
         var said = """
 

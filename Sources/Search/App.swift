@@ -52,9 +52,6 @@ struct SearchApp: App {
                     .shortcut("file.newTab")
                 Button("New Private Tab") { browser.newShyTab() }
                     .shortcut("file.newPrivateTab")
-                // A tab that is a talk with the agent, not a page — from
-                // here and nowhere else (see ChatTab.swift).
-                Button("New Agent Chat") { browser.openChat() }
                 Button(browser.reopenTitle) { browser.reopen() }
                     .shortcut("file.reopen")
                     .disabled(browser.ghosts.isEmpty && Browsers.lastClosedAt == nil)
@@ -92,6 +89,11 @@ struct SearchApp: App {
                     .disabled(!browser.finding)
             }
             CommandGroup(replacing: .toolbar) {
+                Toggle("Bots", isOn: Binding(
+                    get: { browser.botsShowing },
+                    set: { _ in browser.toggleBots() }
+                ))
+                .shortcut("view.bots")
                 Toggle("Show Tabs in Sidebar", isOn: Binding(
                     get: { browser.prefs.sidebar },
                     set: { _ in browser.toggleSidebar() }
@@ -383,7 +385,7 @@ struct ContentView: View {
             // it and is resized once, not on every frame of the slide: laid out
             // again thirty times a second, the page juddered along its right
             // edge and overshot the window with the spring (see `room`).
-            stage
+            roomedStage
                 .padding(.leading, sideOnRight ? 0 : roomed.width)
                 .padding(.trailing, sideOnRight ? roomed.width : 0)
                 .padding(.top, roomed.height)
@@ -426,18 +428,104 @@ struct ContentView: View {
     // Page that is never rebuilt from one tab to the next (see Stage.swift).
     @ViewBuilder
     private var stage: some View {
-        if browser.prefs.splitView {
-            SplitStage(browser: browser)
-        } else if let tab = browser.active {
+        if let tab = browser.active {
             if tab.chat, let bot = browser.chatBots[tab.id] {
                 // A tab that is a talk, not a page: the chat fills the stage
                 // and nothing of a page's chrome is drawn over it.
                 ChatStage(browser: browser, bot: bot)
+            } else if browser.prefs.splitView {
+                SplitStage(browser: browser)
             } else {
                 pageStage(tab)
             }
         } else {
             Palette.ground
+        }
+    }
+
+    /// The stage with the Bots panel beside it, when it is up: the page is
+    /// still the page — the panel is another room down the right, and the
+    /// page is laid out in the rest, not drawn over. The edge between them
+    /// is pulled as the column's is (see BotEdge).
+    ///
+    /// Filling the window with the conversation is the same row with the
+    /// page given no width rather than a second layout: a page taken out of
+    /// the view tree is a page rebuilt, and the panel is opaque over it
+    /// either way.
+    @ViewBuilder
+    private var roomedStage: some View {
+        if browser.botsShowing {
+            GeometryReader { room in
+                HStack(spacing: 0) {
+                    stage
+                        .frame(maxWidth: browser.botsFull ? 0 : .infinity, maxHeight: .infinity)
+                        .clipped()
+                        .background(GeometryReader { page in
+                            Color.clear.preference(key: BotsRoom.self,
+                                                   value: page.frame(in: .global))
+                        })
+                        .onPreferenceChange(BotsRoom.self) { browser.botPageRoom = $0 }
+                    if !browser.botsFull { BotEdge(browser: browser) }
+                    BotsWorkspace(browser: browser, embedded: true)
+                        .frame(width: browser.botsFull ? nil : panelWidth(in: room.size.width))
+                        .frame(maxWidth: browser.botsFull ? .infinity : nil, maxHeight: .infinity)
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+            .animation(Motion.glide, value: browser.botsShowing)
+            .animation(Motion.glide, value: browser.botsFull)
+        } else {
+            stage
+        }
+    }
+
+    /// The width the panel actually gets, which is the width it was asked for
+    /// only when there is room for the page too. A window too narrow to hold
+    /// both minima keeps the page at its 280 and lets the panel take what is
+    /// left: the conversation is the thing standing beside the page, so it is
+    /// the thing that gives way rather than crushing the page into a strip.
+    private func panelWidth(in room: CGFloat) -> CGFloat {
+        let wanted = browser.prefs.botWidth
+        guard room > 0 else { return wanted }
+        return min(wanted, max(0, room - Metrics.pageMin - BotEdge.width))
+    }
+
+    /// The edge between the page and the Bots panel: the same hairline the
+    /// column's edge is, pulled the same way, and clicked to go back to the
+    /// width it started at.
+    private struct BotEdge: View {
+        static let width: CGFloat = 9
+
+        @ObservedObject var browser: Browser
+        @State private var onEdge = false
+        @State private var grabbed: CGFloat?
+
+        var body: some View {
+            Rectangle()
+                .fill(Palette.hairline)
+                .frame(width: onEdge || grabbed != nil ? 2 : 1)
+                .frame(width: Self.width)
+                .contentShape(Rectangle())
+                .onHover { over in
+                    onEdge = over
+                    if over { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                        .onChanged { value in
+                            if grabbed == nil { grabbed = browser.prefs.botWidth }
+                            // The panel is on the right, so pulling the edge
+                            // left — a negative drag — makes it wider.
+                            let wanted = (grabbed ?? browser.prefs.botWidth) - value.translation.width
+                            browser.prefs.botWidth = min(Metrics.botPanelMax,
+                                                         max(Metrics.botPanelMin, wanted))
+                        }
+                        .onEnded { _ in grabbed = nil }
+                )
+                .modifier(OneClick(double: true) {
+                    withAnimation(Motion.settle) { browser.prefs.botWidth = Metrics.botPanel }
+                })
+                .animation(Motion.quick, value: onEdge)
         }
     }
 
@@ -550,6 +638,15 @@ struct ContentView: View {
         .animation(Motion.settle, value: browser.offering)
     }
 
+    /// How much room the Bots panel is actually taking at the trailing edge,
+    /// edge included. Zero until it has been placed once, which is why the
+    /// width it was asked for stands in for it.
+    private var botsRoom: CGFloat {
+        guard browser.botsShowing else { return 0 }
+        let placed = browser.botRoom.width
+        return (placed > 0 ? placed : browser.prefs.botWidth) + BotEdge.width
+    }
+
     /// The address field: raised over a page by ⌘L or ⌘K, and standing on its
     /// own whenever a tab has nowhere to be yet.
     @ViewBuilder
@@ -557,13 +654,19 @@ struct ContentView: View {
         // SplitStage owns the field whenever Split View is enabled, including
         // an ordinary tab that is not currently paired. Drawing it here too
         // leaves two offset address fields on a blank tab.
-        if browser.fieldShowing, !browser.prefs.splitView {
+        if browser.fieldShowing, !browser.prefs.splitView, !browser.botsFull {
             Omnibox(browser: browser, over: !(browser.active?.isBlank ?? true))
                 // Centred on the page, not on the window. The column of tabs
                 // is not what the field is standing over, and dimming it along
                 // with the page says otherwise.
                 .padding(.leading, sidebar && !sideOnRight ? browser.prefs.sideWidth : 0)
                 .padding(.trailing, sidebar && sideOnRight ? browser.prefs.sideWidth : 0)
+                // And over the page, not over the Bots panel beside it: a
+                // blank page keeps the field, and a conversation keeps its
+                // own box unwrapped. Measured from the panel's placed width
+                // rather than the width it was asked for, so a narrow window
+                // that squeezed the panel does not also squeeze the field.
+                .padding(.trailing, browser.botsShowing ? botsRoom : 0)
                 .transition(.scale(scale: 0.97).combined(with: .opacity))
         }
     }
@@ -728,9 +831,9 @@ struct ContentView: View {
     /// WebAuthn refuses to run on a document that isn't focused, and so do a
     /// number of paste and shortcut handlers pages install for themselves.
     private func handBack() {
-        guard !browser.fieldShowing, browser.editingTab == nil else { return }
+        guard !browser.botsShowing, !browser.fieldShowing, browser.editingTab == nil else { return }
         DispatchQueue.main.async {
-            guard !browser.fieldShowing, browser.editingTab == nil else { return }
+            guard !browser.botsShowing, !browser.fieldShowing, browser.editingTab == nil else { return }
             guard let web = browser.active?.web, let window = web.window else { return }
             if let responder = window.firstResponder as? NSView,
                responder === web || responder.isDescendant(of: web) { return }
@@ -1175,6 +1278,13 @@ struct ContentView: View {
             }
             // The same panels in the same order as ⌘W (Browser.closeFront).
             if browser.closePanel() { return true }
+            // Full screen is one step of the panel's own: Escape brings the
+            // page back beside the conversation, and the panel's × (or the
+            // door) is what puts it away.
+            if browser.botsFull {
+                withAnimation(Motion.glide) { browser.botsFull = false }
+                return true
+            }
             if browser.suggesting != nil {
                 browser.dropChoice()
                 return true

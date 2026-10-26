@@ -21,40 +21,18 @@ import A2UISwiftUI
 struct ChatStage: View {
     @ObservedObject var browser: Browser
     @ObservedObject var bot: Bot
+    /// Its own row of name and status, for a tab that has only this in it. A
+    /// conversation in the Bots panel already says what it is and how its run
+    /// stands in the panel's own header, and two headers in one narrow room
+    /// spend the room on saying it twice.
+    var showsHeader = true
     @FocusState private var typing: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.muted)
-                Text("Agent Chat")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Palette.ink)
-                Text("every tab")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.faint)
-                Spacer(minLength: 0)
-                if bot.working {
-                    Text(bot.status ?? "working…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.faint)
-                }
-                // The talk's width: the column it is read in, or the whole
-                // tab — asked for at the top right and remembered (see
-                // Preferences.chatWide).
-                Door(icon: browser.prefs.chatWide ? "arrow.down.right.and.arrow.up.left"
-                                                   : "arrow.up.left.and.arrow.down.right",
-                     on: browser.prefs.chatWide,
-                     help: browser.prefs.chatWide ? "Centre the talk" : "Fill the tab") {
-                    browser.prefs.chatWide.toggle()
-                }
+            if showsHeader {
+                header
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
-
             if let notice = bot.notice {
                 noticeCard(notice)
                     .frame(maxWidth: browser.prefs.chatWide ? .infinity : 720, alignment: .leading)
@@ -75,14 +53,16 @@ struct ChatStage: View {
             Rectangle().fill(Palette.hairline).frame(height: 1)
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
-                    TextField("", text: $bot.draft, prompt: Text("Ask the agent — it works every tab you have open…").foregroundStyle(Palette.faint))
+                    TextField("", text: $bot.draft, prompt: Text(bot.context == nil
+                        ? "Ask the agent — it works every tab you have open…"
+                        : "Message this Bot…").foregroundStyle(Palette.faint))
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
                         .foregroundStyle(Palette.ink)
                         .focused($typing)
                         .onSubmit { bot.submit() }
-                        .disabled(bot.notice != nil || bot.busy)
-                    if bot.busy {
+                        .disabled(bot.notice != nil || bot.occupied)
+                    if bot.occupied {
                         StopButton { bot.stop() }
                     } else if bot.notice == nil {
                         let canSend = !bot.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -117,7 +97,41 @@ struct ChatStage: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Palette.ground)
-        .onAppear { typing = true }
+        .onAppear { if bot.profile == nil { typing = true } }
+    }
+
+    /// What the tab holding this is, what it can read, and how wide it is read
+    /// — the narrow header a conversation filling a tab keeps for itself.
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Palette.muted)
+            Text(bot.profile == nil ? "Agent Chat" : "Conversation")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Palette.ink)
+            Text(bot.context == nil ? "every tab" : "\(bot.context?.selected.count ?? 0) pages attached")
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.faint)
+            Spacer(minLength: 0)
+            if bot.working {
+                Text(bot.status ?? "working…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.faint)
+            }
+            // The talk's width: the column it is read in, or the whole
+            // tab — asked for at the top right and remembered (see
+            // Preferences.chatWide).
+            Door(icon: browser.prefs.chatWide ? "arrow.down.right.and.arrow.up.left"
+                                               : "arrow.up.left.and.arrow.down.right",
+                 on: browser.prefs.chatWide,
+                 help: browser.prefs.chatWide ? "Centre the talk" : "Fill the tab") {
+                browser.prefs.chatWide.toggle()
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
     }
 
     // MARK: - the talk
@@ -190,36 +204,12 @@ struct ChatStage: View {
 
     // MARK: - the asking
 
-    /// An act that waits on you: nothing has touched anything yet. The
-    /// same card the panel holds, on the width of a tab.
+    /// An act that waits on you: nothing has touched anything yet.
     private func actCard(_ pending: Bot.Pending) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("\(pending.act.verb)  \(pending.act.target)")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Palette.ink)
-                .lineLimit(2)
-            if !pending.act.text.isEmpty {
-                // Whole, never folded: a command to run, a thought to keep,
-                // a task's goal — the person allows what they can read all of.
-                Text(verbatim: pending.act.text)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Palette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(spacing: 8) {
-                Pill("Allow", filled: true) { bot.resolve(true) }
-                Pill("Always") { bot.always() }
-                Pill("Refuse") { bot.resolve(false) }
-                if bot.working {
-                    Spacer(minLength: 0)
-                    Text(bot.status ?? "working…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.faint)
-                }
-            }
-        }
-        .padding(12)
-        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        ApprovalCard(pending: pending,
+                     status: bot.working ? bot.status ?? "working…" : nil,
+                     resolve: { bot.resolve($0, pendingID: pending.id) },
+                     always: { bot.always(pendingID: pending.id) })
     }
 
     private func noticeCard(_ notice: String) -> some View {
@@ -248,7 +238,8 @@ extension Browser {
     /// as the bot over a page — the bot on, a provider chosen, a key kept
     /// — said plainly in the announcements when they aren't met.
     @discardableResult
-    func openChat() -> Tab? {
+    func openLegacyChat() -> Tab? {
+        guard Store.testing else { return nil }
         guard prefs.bot, let provider = prefs.aiProvider else {
             settingsPage = .ai
             tuning = true
@@ -390,5 +381,47 @@ extension ChatStage {
     /// as a link on any page — never by the model's words alone.
     fileprivate func openLink(_ url: URL) {
         browser.open(url, foreground: true)
+    }
+}
+
+/// An act that waits on you, as one card: what it is, what it is aimed at
+/// exactly as the Bot gave it, the whole of what it will do — never folded
+/// to a couple of lines, since a person allows what they can read all of —
+/// and the three answers. A tab, the page's panel and a Bot's conversation
+/// all draw this one, so an asking looks the same wherever it is read.
+struct ApprovalCard: View {
+    let pending: Bot.Pending
+    /// Where the run stands while it waits, when it is still working.
+    let status: String?
+    let resolve: (Bool) -> Void
+    let always: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(pending.act.verb)  \(pending.act.target)")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Palette.ink)
+                .lineLimit(2)
+            if !pending.act.text.isEmpty {
+                Text(verbatim: pending.act.text)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Pill("Allow", filled: true) { resolve(true) }
+                Pill("Always") { always() }
+                Pill("Refuse") { resolve(false) }
+                if let status {
+                    Spacer(minLength: 0)
+                    Text(status)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.faint)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(12)
+        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }

@@ -15,8 +15,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import split_view as sv  # noqa: E402
 
 
-def field(text):
-    return sv.cmd({"do": "field", "text": text})
+def field(text, tries=20):
+    """Typed into the address field. The field is put up by a change of the
+    browser's state and drawn on the next pass of SwiftUI's layout, so a box
+    that is not there yet is asked for again rather than waited on."""
+    end = time.monotonic() + 20
+    while True:
+        try:
+            return sv.cmd({"do": "field", "text": text})
+        except RuntimeError as error:
+            if "no editor" not in str(error) or time.monotonic() > end:
+                raise
+            time.sleep(0.1)
 
 
 def site(action="state", **fields):

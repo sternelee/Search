@@ -142,6 +142,15 @@ enum Metrics {
     static let side: CGFloat = 232
     static let sideMin: CGFloat = 176
     static let sideMax: CGFloat = 440
+    /// The Bots panel beside the page, pulled by its edge as the column is.
+    /// A conversation needs room to read, and a page beside it needs the
+    /// rest of the window.
+    static let botPanel: CGFloat = 420
+    static let botPanelMin: CGFloat = 300
+    static let botPanelMax: CGFloat = 900
+    /// The least a page keeps when the panel is pulled wide: the window can
+    /// be small, and the page is what the panel is drawn beside.
+    static let pageMin: CGFloat = 280
 }
 
 // One spring for anything that moves between two places, one for anything that

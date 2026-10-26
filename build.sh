@@ -48,8 +48,8 @@ CONFIG="${1:-release}"
 STEP="${2:-app}"
 ARCH="${SEARCH_ARCH:-$(uname -m)}"
 case "$ARCH" in
-  arm64) OUT="build"; SUBFOLDER="" ;;
-  x86_64) OUT="build/intel"; SUBFOLDER="/intel" ;;
+  arm64) OUT="${SEARCH_BUILD_ROOT:-build}"; SUBFOLDER="" ;;
+  x86_64) OUT="${SEARCH_BUILD_ROOT:-build}/intel"; SUBFOLDER="/intel" ;;
   *) echo "SEARCH_ARCH is arm64 or x86_64, not “$ARCH”" >&2; exit 1 ;;
 esac
 APP="$OUT/Search.app"

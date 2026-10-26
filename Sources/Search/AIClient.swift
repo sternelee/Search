@@ -18,8 +18,8 @@ import OSLog
 // the address with its query or a header. An error says what the provider
 // said, with any key it echoed taken out.
 
-struct AIMessage: Equatable {
-    enum Role: String { case user, assistant }
+struct AIMessage: Codable, Equatable {
+    enum Role: String, Codable { case user, assistant }
     let role: Role
     let text: String
 }
@@ -79,19 +79,20 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     /// same scheme, host and port. A named address may be http as well as
     /// https: it was named by hand, and a gateway of one's own may be on this
     /// Mac (see AIProvider.takesAnotherAddress).
-    static func allowed(_ url: URL, for provider: AIProvider) -> Bool {
+    static func allowed(_ url: URL, for provider: AIProvider, baseURL: URL? = nil) -> Bool {
         guard let scheme = url.scheme?.lowercased(), let host = url.host()?.lowercased(),
-              url.user == nil, url.password == nil
+              (scheme == "https" || scheme == "http"), url.user == nil, url.password == nil
         else { return false }
         let loopback = host == "127.0.0.1" || host == "::1" || host == "localhost"
+        let base = baseURL ?? provider.base
         if provider.isLocal || (Store.testing && AIProvider.mock != nil) {
-            return (scheme == "http" || scheme == "https") && loopback && host == provider.host
+            return (scheme == "http" || scheme == "https") && loopback && host == base.host()?.lowercased()
         }
-        guard scheme == provider.base.scheme?.lowercased(),
-              host == provider.base.host()?.lowercased(),
-              Self.port(url) == Self.port(provider.base)
+        guard scheme == base.scheme?.lowercased(),
+              host == base.host()?.lowercased(),
+              Self.port(url) == Self.port(base)
         else { return false }
-        return scheme == "https" || provider.named != nil
+        return scheme == "https" || provider.named != nil || baseURL != nil
     }
 
     /// The port a URL asks for, the scheme's own where it names none.
@@ -115,11 +116,12 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     /// `thinking` asks a model that can to spend more effort before it speaks;
     /// nil or `.off` leaves it at its default.
     func stream(_ provider: AIProvider, model: String, system: String, messages: [AIMessage],
-                key: String?, patience: TimeInterval? = nil, thinking: BotThinking = .off) -> AsyncThrowingStream<AIPiece, Error> {
+                key: String?, patience: TimeInterval? = nil, thinking: BotThinking = .off,
+                baseURL: URL? = nil) -> AsyncThrowingStream<AIPiece, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    var request = try Self.request(provider, model: model, system: system, messages: messages, key: key, thinking: thinking)
+                    var request = try Self.request(provider, model: model, system: system, messages: messages, key: key, thinking: thinking, baseURL: baseURL)
                     // A test says how long it will wait; everything else takes
                     // the client's own patience (the session's configuration).
                     if let patience { request.timeoutInterval = patience }
@@ -169,12 +171,13 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     /// address is known to be the provider's own. `thinking` asks a model
     /// that can to reason before it speaks; off leaves the request unchanged.
     static func request(_ provider: AIProvider, model: String, system: String, messages: [AIMessage],
-                        key: String?, thinking: BotThinking = .off) throws -> URLRequest {
+                        key: String?, thinking: BotThinking = .off, baseURL: URL? = nil) throws -> URLRequest {
+        let base = baseURL ?? provider.base
         let url: URL
         var body: [String: Any]
         switch provider.wire {
         case .openAI:
-            url = provider.base.appendingPathComponent("chat/completions")
+            url = base.appendingPathComponent("chat/completions")
             body = [
                 "model": model, "stream": true,
                 "messages": [["role": "system", "content": system]] + messages.map { ["role": $0.role.rawValue, "content": $0.text] },
@@ -188,7 +191,7 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
             // it; the rest ignore it.
             if let effort = thinking.effort { body["reasoning_effort"] = effort }
         case .anthropic:
-            url = provider.base.appendingPathComponent("messages")
+            url = base.appendingPathComponent("messages")
             body = [
                 "model": model, "stream": true, "max_tokens": 2048, "system": system,
                 "messages": messages.map { ["role": $0.role.rawValue, "content": $0.text] },
@@ -203,7 +206,7 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         case .gemini:
             // The model's name is part of the path; nothing of the key is.
             let name = model.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._"))) ?? ""
-            var parts = URLComponents(url: provider.base.appendingPathComponent("models/\(name):streamGenerateContent"), resolvingAgainstBaseURL: false)
+            var parts = URLComponents(url: base.appendingPathComponent("models/\(name):streamGenerateContent"), resolvingAgainstBaseURL: false)
             parts?.queryItems = [URLQueryItem(name: "alt", value: "sse")]
             guard let made = parts?.url else { throw AIError.refusedHost }
             url = made
@@ -213,7 +216,7 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
                 "generationConfig": thinking.budget.map { ["maxOutputTokens": 2048, "thinkingConfig": ["thinkingBudget": $0]] } ?? ["maxOutputTokens": 2048],
             ]
         }
-        guard allowed(url, for: provider) else { throw AIError.refusedHost }
+        guard allowed(url, for: provider, baseURL: baseURL) else { throw AIError.refusedHost }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

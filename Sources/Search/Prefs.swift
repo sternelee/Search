@@ -90,6 +90,12 @@ final class Preferences: ObservableObject {
     @Published var sideWidth: CGFloat {
         didSet { store.set(Double(sideWidth), forKey: "sidebar.width") }
     }
+    /// How wide the Bots panel beside the page is, in its own room down the
+    /// right. Pulled by its edge, as the column is, and remembered — one
+    /// width for every window, as the column's is.
+    @Published var botWidth: CGFloat {
+        didSet { store.set(Double(botWidth), forKey: "bots.width") }
+    }
     @Published var glyph: Glyph {
         didSet { store.set(glyph.rawValue, forKey: "glyph") }
     }
@@ -428,6 +434,8 @@ final class Preferences: ObservableObject {
         sideHides = store.bool(forKey: "sidebar.hides")
         let width = store.object(forKey: "sidebar.width") as? Double ?? Double(Metrics.side)
         sideWidth = min(Metrics.sideMax, max(Metrics.sideMin, CGFloat(width)))
+        let botRoom = store.object(forKey: "bots.width") as? Double ?? Double(Metrics.botPanel)
+        botWidth = min(Metrics.botPanelMax, max(Metrics.botPanelMin, CGFloat(botRoom)))
         glyph = store.string(forKey: "glyph").flatMap(Glyph.init) ?? .letters
         engine = store.string(forKey: "search.engine").flatMap(Engine.init) ?? .standard
         customEngine = store.string(forKey: "search.custom") ?? ""

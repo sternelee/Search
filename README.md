@@ -146,7 +146,25 @@ The same story the other way round, for Claude Code, Codex and any agent that sp
 
 `python3 Tests/mcp_bridge.py` speaks to the bridge as an agent CLI would, over pipes against a hidden run: the handshake, a page opened and snapshotted and filled and submitted and read and closed, and the browser nowhere to be found — said so, not a dead line.
 
-### A bot over the page
+### Bots and independent conversations
+
+**Bots**, at the bottom of the sidebar (or File › Bots), opens a workspace rather than a web tab. A Bot is a reusable profile: its name, standing role, provider, model, thinking depth, step budget, and explicitly granted capabilities. Create, edit, duplicate, pin, archive or delete a Bot from its roster. Deleted Bots remain under Show archived so their conversations can still be read.
+
+Each Bot can have many independent conversations. Open one from its conversation list, or use **Open beside** to display another alongside it. Up to four panes can be visible, with draggable dividers; narrow windows scroll horizontally rather than squeezing the conversations into unreadable columns. Closing a pane or returning to the browser does not stop its work. Each conversation has its own draft, transcript, streaming answer, thinking display, cards, approval and Stop.
+
+Different conversations can run concurrently, including conversations with the same Bot. A conversation runs one turn at a time; the app admits four simultaneous turns, with one slot for the built-in local model, and queues the rest. Stop cancels only the selected conversation. Late replies from a stopped turn cannot continue a tool call or write into a newer turn.
+
+Conversations do not automatically read every tab. **Pages** on a pane explicitly attaches pages from a window and Space, or opens a work page. Those pages use the Space's existing sign-ins, not an isolated computer or browser profile. Switching the front window does not change a conversation's targets. Two conversations working the same page wait for one another; snapshot references are scoped to a run, and changed targets are refused rather than clicked under an old approval.
+
+Bot instructions do not grant authority: browser work, shell commands, clipboard, history, memory, scheduling, MCP tools and Skills have runtime capability checks. Auto cannot enable a capability the Bot was not given. Closing a user's tab still asks. Unattended tasks remain restricted to their own pages. Private-page conversations require a local model, are not saved, and cannot later be switched to a cloud provider with their private history.
+
+Profiles and conversations are stored separately under the app's `Bots` folder, with owner-only permissions and atomic writes. Drafts, answers, action results and cards are restored; raw thinking and keys are not stored there. Runs left active or awaiting approval restore as interrupted, never replaying a click, command or approval. Bot memory belongs to its profile; clearing one conversation does not erase every Bot's memory.
+
+File › New Agent Chat creates a conversation in this workspace; Bot on This Page attaches the explicit page. The old tab/panel interfaces below are retained only as probe adapters for regression testing, using the same execution engine, not a second production chat system.
+
+`python3 Tests/bots_workspace.py` checks concurrent streaming, history isolation, pane lifetime, cancellation, session/run-bound approvals, independent pages, page-lease handoff and restart recovery against a local stand-in model. `swift test --filter BotsTests` covers the data model, capabilities and protected storage. To test while your usual app is running, build to another directory with `SEARCH_BUILD_ROOT=/tmp/search-bots ./build.sh` and point the Python suites at it with `SEARCH_TEST_APP=/tmp/search-bots/Search.app`.
+
+### Legacy bot probe surface
 
 The agent's socket works a page at arm's length; the bot is the same hands over the page you're on. ⌥⌘B summons it (`Bot.swift`): a small panel where you say what you want done — "sign this up with my usual email" — and the model reads the page, says what it's about to do, and does it, act by act, with the same numbers and words a snapshot gives. Every click and every filled field waits for your Allow; reads are free; Auto on the panel stops the asking until you turn it off again. While it works, the stop at the panel's foot cuts the reply where it stands — the words gone, nothing of them carried to the model, no question asked again; a command it started is stopped with it, and an act still waiting is let go, and told so. The Agent Chat's own stop cuts the same way. The Works on switch sets its reach: the page you're on, or one talk over every tab — every tab listed to it by a short name, the one you're shown marked, each act carrying the tab it's for.
 
@@ -160,7 +178,7 @@ The bot is off until asked for (Settings › AI, "The bot on pages"), and indepe
 
 `python3 Tests/bot_panel.py` checks it the same hidden way — a task carried act by act against a form of the test's own, each act held for allowing and once refused, Auto on, a card drawn and tapped, the notice a provider off this Mac is asked first, a talk set down and taken up again, a command run and its telling gone back, where you've been read for the asking, words to the clipboard, a thought kept and told in the next talk, a thinking model's thoughts shown before its answer and not read back, and a turn stopped midway with nothing of it carried after, an act let go when the turn is stopped, and a command stopped with it before it can finish.
 
-### An Agent Chat tab
+### Legacy Agent Chat probe surface
 
 **File › New Agent Chat** makes a tab that is a talk, not a page: the bot's own conversation, in the column it's read in or across the whole tab as the switch at its top right sets it, there for as long as you keep the tab. Its reach is every tab you have open — the row is listed to it (itself never among the listing), and the page in front is its page of the moment; when you're on the chat itself, none is, and every act names its tab. The rules are the bot's own, unchanged: every act waits for your Allow, an Always covers the page's own acts, everything beyond the page asks, and a close always asks. A model that thinks shows its thoughts as they come — muted, over the saying they were on the way to — and they are never read back to it. The tab is closed like any tab and its talk goes with it; it pins to nothing, splits with nothing, is scripted to nobody, and is not kept for the next time the browser opens.
 

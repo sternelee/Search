@@ -509,14 +509,15 @@ struct SideBar: View {
     }
 
     /// The foot's door and its margin beneath.
-    private static let footHeight: CGFloat = 26 + 10
+    private static let footHeight: CGFloat = 26 + 10 + 2
 
     private var newTab: some View {
         Quiet(icon: "plus", title: "New tab", height: SideBar.row) { browser.newTab() }
             .padding(.top, SideBar.gap)
     }
 
-    /// One small door at the bottom: the settings.
+    /// The row of doors at the bottom: spaces, extensions, bookmarks,
+    /// downloads, Bots.
     private var foot: some View {
         SideFoot(browser: browser, prefs: prefs, fetches: browser.fetches)
     }
@@ -525,9 +526,9 @@ struct SideBar: View {
 
 /// The row at the bottom of the column. Never wider than the column: wider,
 /// the column took its width, and centred in its own frame it slid half the
-/// overflow off each side (#535). The space's door, the puzzle, bookmarks and
-/// downloads stay put; the pinned extensions that don't fit give way, from
-/// the last, and are still in the puzzle's list.
+/// overflow off each side (#535). The space's door, the puzzle, bookmarks,
+/// downloads and Bots stay put; the pinned extensions that don't fit give
+/// way, from the last, and are still in the puzzle's list.
 private struct SideFoot: View {
     @ObservedObject var browser: Browser
     @ObservedObject var prefs: Preferences
@@ -540,6 +541,7 @@ private struct SideFoot: View {
             BookmarkDoor(browser: browser, arrowEdge: .trailing)
             // Only while a download is running, and a moment after.
             FetchDoor(browser: browser, fetches: fetches)
+            BotsDoor(browser: browser)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
@@ -550,7 +552,7 @@ private struct SideFoot: View {
     /// is 26 points, with 2 between them.
     private var room: Int {
         let door: CGFloat = 26 + 2
-        var kept = 2  // the puzzle and bookmarks
+        var kept = 3  // the puzzle, bookmarks and Bots
         if prefs.usesSpaces { kept += 1 }
         if FetchDoor.shows(fetches, prefs) { kept += 1 }
         let free = prefs.sideWidth - 2 * 10 + 2 - CGFloat(kept) * door
@@ -937,6 +939,10 @@ struct Door: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
+        // A door is a glyph and nothing else: what it says on hover is what
+        // it should say aloud, rather than the name of the symbol.
+        .accessibilityLabel(help.isEmpty ? icon : help)
+        .accessibilityAddTraits(on ? .isSelected : [])
         .animation(Motion.quick, value: hovering)
         .animation(Motion.quick, value: on)
     }
