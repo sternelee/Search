@@ -586,6 +586,16 @@ enum Agent {
             try {
               words = said(words);
               if (words.length > 300) words = words.slice(0, 300) + '…';
+              // A page in a loop says the same thing over and over, and a
+              // hundred of those is a hundred lines with one thing to say
+              // — and no room left for what went wrong before them. Said
+              // again and again, it is kept once, counted: what a person
+              // reading it wants is that it happened, and how often.
+              var last = ring[ring.length - 1];
+              if (last && last.kind === kind && last.words === words) {
+                last.n = (last.n || 1) + 1;
+                return;
+              }
               ring.push({ kind: kind, words: words });
               if (ring.length > 100) ring.splice(0, ring.length - 100);
             } catch (e) {}
@@ -638,7 +648,10 @@ enum Agent {
               return wasSend.apply(this, arguments);
             };
           } catch (e) {}
-          function word(e) { return (e.kind === 'net' ? '' : e.kind + ': ') + e.words }
+          function word(e) {
+            return (e.kind === 'net' ? '' : e.kind + ': ') + e.words
+              + (e.n > 1 ? ' (×' + e.n + ')' : '')
+          }
           return {
             text: function (list) { return list.map(word).join('\\n') },
             take: function (n) { return ring.slice(-n) },

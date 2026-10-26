@@ -112,6 +112,7 @@ document.getElementById('seen').addEventListener('click', function () {
 TALK = """<!doctype html><html><head><title>talk</title></head><body style="font:14px system-ui;margin:40px">
 <p id="said">quiet</p>
 <script>
+for (var i = 0; i < 40; i++) console.log('spinning');
 console.log('hello from the page');
 console.warn('careful with this');
 setTimeout(function () { console.error('boom') }, 100);
@@ -518,6 +519,12 @@ def case_talk(t):
     t.ok("the network is there with its answers",
          "GET /missing → 404" in words and "GET /echo → 200" in words
          and "GET /answer → 200" in words, words)
+    # A page in a loop says one thing forty times: kept once, counted — so
+    # the ring has room for what came before it, and for what went wrong.
+    t.ok("a line said again and again is kept once, counted",
+         "log: spinning (×40)" in words, words[:400])
+    t.ok("…and what came before it is still there",
+         "log: hello from the page" in words, words[:400])
 
     snap = ag("snapshot", id="p1")
     t.ok("what went badly rides along with the snapshot",
