@@ -527,6 +527,19 @@ def case_bot(t):
          any(event.get("kind", "").find("answer") >= 0 for event in bt("state").get("events", []))
          or words(seen, "Before noon") != "", bt("state").get("events", [])[-2:])
 
+    # The name as the list gave it is the name to use, but a model that
+    # writes it in another case means the same skill — and a skill right
+    # there in the list it was handed, answered as missing, wastes the turn.
+    script.clear(); seen.clear()
+    script.extend([
+        '{"skill":"market watch"}',
+        '{"answer":"Before noon, as before."}',
+    ])
+    bt("ask", text="And the market skill again?")
+    until(t, lambda s: not s.get("working") and not s.get("pending"), doing="the skill read by another case")
+    t.ok("a skill named in another case is the same skill",
+         "Always price the leeks before noon." in words(seen, "The skill Market Watch"), "")
+
 
 def case_panel(t):
     """the Ask panel calling a tool that only reads"""

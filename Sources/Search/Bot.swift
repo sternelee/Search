@@ -1445,9 +1445,18 @@ final class Loop {
                 guard self.bot?.loop != nil else { return }
                 act.outcome = said.failed ? "the tool said it failed" : "done"
                 var words = said.text.isEmpty ? "nothing" : said.text
-                if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
-                act.said = words
-                note = "Your tool \(qualified) \(said.failed ? "said it failed" : "said"): \(words)"
+                // A tool's answer longer than a reply carries is cut, and
+                // said to be cut: a server that answers with a page of JSON
+                // cut mid-object reads as a broken answer, and the model
+                // goes looking for the fault in the tool rather than in the
+                // telling of it.
+                var cut = ""
+                if words.count > Bot.pageful {
+                    words = String(words.prefix(Bot.pageful))
+                    cut = "\n(the tool's answer was longer than this — what you have is the start of it)"
+                }
+                act.said = words + cut
+                note = "Your tool \(qualified) \(said.failed ? "said it failed" : "said"): \(words)\(cut)"
             } catch {
                 guard self.bot?.loop != nil else { return }
                 act.outcome = "didn't work: \(error.localizedDescription)"
@@ -1462,14 +1471,25 @@ final class Loop {
     /// next showing (the body enters the conversation here, and only here —
     /// see Skills).
     private func readSkill(_ name: String) {
-        guard let id = Skills.listed().first(where: { $0.name == name })?.id,
-              let body = Skills.body(id) else {
+        // The name as it was listed is the name to use, but a model that
+        // writes it in another case — "market watch" for "Market Watch" —
+        // means the same skill, and being told there is no such skill when
+        // one is right there in the list it was given wastes the turn. An
+        // exact name wins; a name that differs only in case is taken too.
+        let kept = Skills.listed()
+        let met = kept.first(where: { $0.name == name })
+            ?? kept.first(where: { $0.name.lowercased() == name.lowercased() })
+        guard let met, let body = Skills.body(met.id) else {
             observe(note: "There's no skill called \(name) — the ones the person keeps are listed for you. Try another way.", full: false, first: false)
             return
         }
         var words = body
-        if words.count > Bot.pageful { words = String(words.prefix(Bot.pageful)) + "…" }
-        observe(note: "The skill \(name), the person's own words:\n\n\(words)", full: false, first: false)
+        var cut = ""
+        if words.count > Bot.pageful {
+            words = String(words.prefix(Bot.pageful))
+            cut = "\n(this skill is longer than this — what you have is the start of it)"
+        }
+        observe(note: "The skill \(met.name), the person's own words:\n\n\(words)\(cut)", full: false, first: false)
     }
 
     /// A command run on this Mac (see Bot.shell): what it printed goes
