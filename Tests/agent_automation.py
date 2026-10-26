@@ -390,6 +390,27 @@ def case_shadow(t):
     filled = ag("act", id="p1", verb="fill", target="loc=role:textbox[name='Shadow name']", text="Ada")
     t.ok("a box inside the shadow is filled by its role and name",
          filled.get("value") == "Ada", filled)
+    # A selector names what a person sees, wherever it is kept: the page's
+    # own reader can't see into a host, so a css= or an id= that finds
+    # nothing there is looked for in every place a thing can be.
+    byCss = ag("act", id="p1", verb="fill", target="css=#who", text="Grace")
+    t.ok("a css= finds a box inside the shadow", byCss.get("value") == "Grace", byCss)
+    byId = ag("read", id="p1", target="#who")
+    t.ok("an id= alone finds it too", byId.get("value") == "Grace", byId)
+    # XPath walks the document's own tree and a shadow root is no part of
+    # it: a path is not the way into a host, and says so rather than
+    # finding something else.
+    byPath = ag("act", id="p1", verb="fill", target="xpath=//input[@id='who']", text="Ada")
+    t.ok("an xpath= does not reach inside a shadow host",
+         "nothing matches" in byPath.get("error", ""), byPath)
+    again = ag("act", id="p1", verb="fill", target="css=#who", text="Ada")
+    t.ok("…and the css= that can is still there", again.get("value") == "Ada", again)
+    missing = ag("read", id="p1", target="css=#nowhere")
+    t.ok("a selector that matches nothing still says so",
+         "nothing matches" in missing.get("error", ""), missing)
+    bad = ag("read", id="p1", target="css=#a[")
+    t.ok("a selector that isn't one says so, not nothing on the page",
+         "not a selector" in bad.get("error", ""), bad)
     clicked = ag("act", id="p1", verb="click", target="text=Shadow go")
     t.ok("a button inside the shadow is clicked by its words", "at" in clicked, clicked)
     said = ag("read", id="p1", target="#said")

@@ -809,7 +809,9 @@ enum Agent {
           function deep(sel) {
             // What the page's own querySelectorAll can't see — the shadow
             // roots' own children — walked in with the rest, so what a
-            // person sees inside a host is found like anything else.
+            // person sees inside a host is found like anything else. The
+            // walk follows what the selector matched: a thing inside a host
+            // whose host answers to the selector is found in the same pass.
             var out = [], roots = [document];
             while (roots.length) {
               var r = roots.shift(), list;
@@ -818,6 +820,26 @@ enum Agent {
                 out.push(list[i]);
                 if (list[i].shadowRoot) roots.push(list[i].shadowRoot);
               }
+            }
+            return out;
+          }
+          function places() {
+            // Every place a thing can be, whatever the selector: the page,
+            // and the shadow root of every host on it, however deep. The
+            // hosts are walked, not what a selector matched — a selector
+            // like `input` or `#id` or a path matches no host at all, and a
+            // walk that only followed what matched would find nothing
+            // inside a host for exactly those. For the one lookup that must
+            // not miss: a css= or an xpath= that the page's own reader
+            // couldn't answer.
+            var out = [document], at = 0;
+            while (at < out.length) {
+              var list;
+              try { list = out[at].querySelectorAll('*') } catch (e) { at++; continue }
+              for (var i = 0; i < list.length; i++) {
+                if (list[i].shadowRoot) out.push(list[i].shadowRoot);
+              }
+              at++;
             }
             return out;
           }
@@ -887,13 +909,34 @@ enum Agent {
               return hit;
             }
             if (target.indexOf('xpath=') === 0) {
+              // A path is read where the page's own reader reads it first —
+              // the quick way, and the way a path written for the page has
+              // always meant — and then from every place a thing can be,
+              // the shadow roots included, when that finds nothing.
+              // A path is read from the document, and only the document:
+              // XPath walks the document's own tree, and a shadow root is
+              // no part of it — there is no context node to hand it that
+              // would reach inside a host. What a person sees inside one is
+              // named with css= or by its words instead (see below).
               var x = document.evaluate(target.slice(6), document, null, 9, null).singleNodeValue;
               if (!x) throw 'nothing matches ' + target;
               return x;
             }
             var css = target.indexOf('css=') === 0 ? target.slice(4) : target;
+            // The selector itself is checked where selectors are checked —
+            // a bad one said so, not answered as nothing on the page — and
+            // then looked for in every place a thing can be, so a css= or
+            // an id= finds what a person sees inside a host like the rest.
+            // The page's own reader is asked first: the cheap way, and the
+            // one that answers as it always did when the thing is there.
             var one = null;
             try { one = document.querySelector(css) } catch (e4) { throw 'not a selector: ' + target }
+            if (!one) {
+              var everywhere = places();
+              for (var q = 1; q < everywhere.length && !one; q++) {
+                try { one = everywhere[q].querySelector(css) } catch (e7) { one = null }
+              }
+            }
             if (!one) throw 'nothing matches ' + target;
             return one;
           }
