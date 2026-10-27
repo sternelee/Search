@@ -45,8 +45,9 @@ enum IslandPlace {
     /// it's in overrules this, always.
     static let openMost: CGFloat = 420
     /// The air between cards once the pile is straightened. Piled,
-    /// they're tucked one behind the next with none — a deck is cards
-    /// against each other, not a list with gaps in it.
+    /// they're tucked one behind the next — a deck is cards against
+    /// each other, not a list with gaps in it — so this is spent only
+    /// where the cards are laid out in a line, never in the pile.
     static let gap: CGFloat = 6
     /// How much smaller each card behind the front one is drawn: a
     /// pile leans away, and a thing further off is a thing smaller.
@@ -57,9 +58,9 @@ enum IslandPlace {
     /// across the room.
     static let dim: Double = 0.16
     /// How far back each card behind the front one tips, in degrees,
-    /// about its own bottom edge — the lean that turns a row of cards
-    /// into a pile of them. The front one never tips: it is the news,
-    /// and news is read square on.
+    /// about its own top edge — the lean that turns a row of cards into
+    /// a pile of them. The front one never tips: it is the news, and
+    /// news is read square on.
     static let lean: Double = 15
     /// How hard that lean is projected: what SwiftUI is told the eye's
     /// distance is, larger being nearer and the recede harder. Kept
@@ -182,7 +183,7 @@ enum IslandPlace {
     struct Deck {
         /// How much smaller it's drawn than the card in front of it.
         var scale: CGFloat
-        /// How far it tips back about its own bottom edge, in degrees.
+        /// How far it tips back about its own top edge, in degrees.
         var lean: Double
         /// How much of itself it keeps, in light.
         var light: Double
@@ -203,11 +204,26 @@ enum IslandPlace {
         )
     }
 
-    /// Where each card's top edge sits, closed: a peek apart, the
+    /// Where each card's top edge sits, closed: a slice apart, the
     /// newest at the front of the pile — which is the bottom of it,
     /// the pile receding up and back behind it. Index 0 is the newest.
     static func piled(_ cards: [CGFloat]) -> [CGFloat] {
         cards.indices.map { peek * CGFloat(cards.count - 1 - $0) }
+    }
+
+    /// How tall a card behind the front one is cut to before it's drawn
+    /// small and tipped: the slice it shows, divided back out by the two
+    /// things that would otherwise shrink it. A card is cut first and
+    /// transformed after, so a slice cut to the plain height comes out
+    /// shorter than the slice it's meant to fill — and the seam that
+    /// leaves between two cards is the one thing a pile must never have.
+    /// The slice is over-cut by a hair so the two can only overlap: the
+    /// perspective is the one part of this that isn't exact, and an
+    /// overlap is invisible while a seam reads as a bug.
+    static func cut(_ level: Int) -> CGFloat {
+        let deck = deck(level)
+        let kept = max(0.05, deck.scale * cos(deck.lean * .pi / 180))
+        return peek / kept * 1.06
     }
 
     /// Where each card's top edge sits, straightened: a whole card and
@@ -223,6 +239,18 @@ enum IslandPlace {
             down += cards[place] + gap
         }
         return out
+    }
+
+    /// Whether the straightened pile has more in it than the room will
+    /// hold, and so has to scroll. Read from the settled numbers rather
+    /// than from whatever an animation is passing through on its way
+    /// there: a spring overshoots, and a bar that decides it needs a
+    /// scroller for the two frames it overshoots in is a bar with a
+    /// scrollbar flickering through every opening. Piled, there is
+    /// never anything to scroll — the pile is three cards deep by
+    /// definition, however many the island is holding.
+    static func scrolls(_ cards: [CGFloat], room: CGFloat) -> Bool {
+        stood(cards) > open(room) + 0.5
     }
 
     /// The tallest the straightened bar is allowed to stand: the whole
@@ -361,6 +389,13 @@ struct IslandBar: View {
         IslandPlace.down(down, room: room.height, bar: barHeight)
     }
 
+    /// Whether the straightened pile has more in it than the room will
+    /// hold (IslandPlace.scrolls) — the bar's own arithmetic, asked
+    /// rather than guessed at.
+    private var scrolling: Bool {
+        over && IslandPlace.scrolls(heights, room: room.height)
+    }
+
     var body: some View {
         if !held.isEmpty {
             ScrollView(.vertical) {
@@ -391,7 +426,7 @@ struct IslandBar: View {
                 }
                 .frame(width: width, height: pileHeight, alignment: .topLeading)
             }
-            .scrollDisabled(!over)
+            .scrollDisabled(!scrolling)
             .scrollIndicators(.hidden)
             .frame(width: width, height: barHeight, alignment: .top)
             // A cursor on the pile straightens it, a cursor off it piles
@@ -438,7 +473,7 @@ struct IslandBar: View {
     /// `level` is how deep in the pile it is, 0 being the front. A card
     /// behind the front one is drawn the way IslandPlace.deck says a
     /// card that deep is drawn — smaller, dimmer, tipped back about its
-    /// own bottom edge — and shows only its own first slice, the rest
+    /// own top edge — and shows only its own first slice, the rest
     /// being behind the card in front of it. Once the pile is
     /// straightened every card is level 0 and whole, which is what
     /// opening it is for.
@@ -514,19 +549,27 @@ struct IslandBar: View {
         .onTapGesture { island.visit(session) }
         // The pile's depth, said three ways at once, because one of them
         // alone reads as a bug rather than as distance: a card behind is
-        // smaller, and dimmer, and tipped back about its own bottom edge
-        // so it leans away into the screen. The slice is cut first — a
-        // buried card shows its own first line and no more — and the
-        // size and the lean are applied to that slice, so a card's place
-        // in the pile is the slice it shows and not the card it hides.
+        // smaller, and dimmer, and tipped back so it leans away into the
+        // screen. The slice is cut first — a buried card shows its own
+        // first line and no more — and the size and the lean are applied
+        // to that slice, so a card's place in the pile is the slice it
+        // shows and not the card it hides.
+        //
+        // Both of them hold the top edge still (anchor .top). The top
+        // edge is the only part of a buried card anyone sees, and the
+        // offset above puts it exactly where the slice says it goes —
+        // so whatever the size and the lean do to the rest of the card,
+        // it happens downward, behind the card in front, where it can't
+        // open a seam. Tipping about the bottom edge instead would drag
+        // the one visible edge down with it and part the pile.
         // Straightened, every one of these is the identity, which is
         // what a deck with its depth taken away is: a list.
-        .frame(height: buried ? IslandPlace.peek : nil, alignment: .top)
+        .frame(height: buried ? IslandPlace.cut(level) : nil, alignment: .top)
         .clipped()
         .scaleEffect(deck.scale, anchor: .top)
         .rotation3DEffect(
             .degrees(deck.lean), axis: (x: 1, y: 0, z: 0),
-            anchor: .bottom, perspective: IslandPlace.perspective
+            anchor: .top, perspective: IslandPlace.perspective
         )
         .brightness(deck.light - 1)
     }

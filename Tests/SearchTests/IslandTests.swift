@@ -510,6 +510,28 @@ final class IslandTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(IslandPlace.deck(50).light, 0.35, "a very deep card is dim, not dark")
     }
 
+    /// A card behind is cut to a slice, then drawn small and tipped — and
+    /// the slice it's cut to has to survive both, or the card in front of
+    /// it shows a seam of nothing where the pile should be solid. The cut
+    /// is asked for more than the slice it means to fill, precisely
+    /// because the transforms only ever take away, and a pile whose cards
+    /// exactly met is a pile that parts on the frames the perspective is
+    /// rounded in.
+    func testTheCutOfABuriedCardSurvivesBeingDrawnSmallAndTipped() {
+        for level in 1..<IslandPlace.stack + 2 {
+            let deck = IslandPlace.deck(level)
+            let drawn = IslandPlace.cut(level) * deck.scale * cos(deck.lean * .pi / 180)
+            XCTAssertGreaterThanOrEqual(drawn, IslandPlace.peek,
+                                        "level \(level) is drawn at least the slice it stands for")
+            XCTAssertLessThan(drawn, IslandPlace.peek * 1.2,
+                              "level \(level) overlaps a little, not a lot")
+        }
+        // The front card is never cut: it's the whole card, or it isn't
+        // the front.
+        XCTAssertEqual(IslandPlace.deck(0).lean, 0, "the front card isn't tipped")
+        XCTAssertEqual(IslandPlace.deck(0).scale, 1, "the front card isn't shrunk")
+    }
+
     /// The pile's geometry: where each card's top edge sits, and that
     /// straightening the pile is the same order read flat — no card
     /// passes another on the way out, which is the whole reason the
