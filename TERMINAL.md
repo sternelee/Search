@@ -349,14 +349,21 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
    毫秒家 ×1000）。事件名在 `Island.swift` 读入时归一到横幅自己的词（BeforeTool→PreToolUse，
    afterAgentResponse→Stop，等等），小写驼峰与 PascalCase 都认。
 3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部（overlay 里的
-   `GeometryReader` 量出窗口宽与高传进来），所有标签页可见；列出全部 session，每行标题是
-   **agent 名 · 目录名**（"Claude Code · search"，目录取 cwd 最后一段，没说目录就只显名字）；
-   `asking` 的带 Approve/Deny 按钮；点一下跳到它的窗、标签、窗格。**拖动**：整条可沿窗口顶部
+   `GeometryReader` 量出窗口宽与高传进来），所有标签页可见；**一摞卡片**：最新的消息在最上面，
+   下面几张各露出 `IslandPlace.peek`（22pt）一条缝，**hover 才展开**（整摞一起开——光标从
+   最下面那张往外走不会半路把上面收起来），展开后每张整张可见、超出窗口就滚动（最高
+   `openMost` 420 或窗口高减 80）。**一个 agent 一张卡**：同一个 session 再说话是更新这张卡
+   （`Island.order` 把它放回最上面），不是再添一张——一次长跑的工具调用是一件事，不是
+   每步一条。卡片标题是 **agent 名 · 目录名**（"Claude Code · search"，目录取 cwd 最后一段，
+   没说目录就只显名字），后接一句在干什么（`is running Bash` / `wants Bash` / `finished — …`）；
+   说过的话另起一行放在下面（占满卡宽、最多两行），不在同一行里跟工具名抢地方；只露一条缝的
+   卡只显标题那一行。`asking` 的带 Allow/Deny/Ask there 三个按钮；点卡片跳到它的窗、标签、窗格。
+   **拖动**：整条可沿窗口顶部
    横向拖到任意处，也可往下拖（最深到窗口底留 14pt；`island.down` 存点数），两端各有一条 6pt
    的隐形边缘可拖宽窄（近端动、远端不动，窗口边缘同款）——位置存成窗口宽度的份额（窗口
    缩放后横幅仍在里面），宽度存点数，`IslandPlace` 的纯函数把两者夹在窗口内（最窄 220、
    最宽 720 或窗口减两侧 14pt；下不越过窗口底、上不过它出发的 notch 位），`@AppStorage`
-   记住（island.center / island.width / island.down）。**每行都有 ×**：点一下把这行收走
+   记住（island.center / island.width / island.down）。**每张卡都有 ×**：点一下把这张收走
    （`Island.putAway`）——跑完的收了就完；跑着的、等人答话的收走后搁起来（`shelved`），
    直到它再说了值得听的话（新开一轮、要人答应、跑完）才回来，中间的干活噪声不叫醒；
    收走时若它正掣着一个审批，审批连同空答交回它自己的终端去问（那里还能答），关掉
@@ -388,12 +395,14 @@ hook 永远不会再跑（进程被杀不会执行任何 hook），所以由终�
 `Island.retired(tty:)` 清掉该 tty 的全部 session，还开着的 hold 回一个空 `{}`，让等着的
 CLI 回自己终端去问。
 
-测试在 `Tests/SearchTests/IslandTests.swift`（23 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
+测试在 `Tests/SearchTests/IslandTests.swift`（28 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
 Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 session）、各形状 settings 的合并与卸载
 （Claude/Codex/Qwen/Droid/Gemini/Cursor/Grok/Copilot/Pi/OMP）、桥接脚本写出且可执行、session 状态转移、
 `Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent、
 横幅位置与宽度夹在窗口内，往下拖的深度也夹在窗口内；一行可收走，收走后只等值得
-   再听的话（IslandPlace 纯函数、shelving 语义）。
+   再听的话（IslandPlace 纯函数、shelving 语义）；卡片顺序（最新在最上、同一 session 回顶不添卡）、
+   栈形状（收起=顶张整张+每张一条缝、展开=每张整张且不越窗口），以及真用 `NSHostingView`
+   画出来量高度、与 `IslandPlace` 的算术对齐（画的和算的不许各走各的）。
 
 ## 九、Chat 视图（agent 的对话面）
 

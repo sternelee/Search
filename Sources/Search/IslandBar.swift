@@ -7,10 +7,17 @@ import SwiftUI
 // agent that has stopped to ask is answered right here — allowed,
 // denied, or left to ask in its own terminal — without leaving the tab
 // you're on. Clicking anything else about one goes to it: the window,
-// the tab, the pane. Each one is named by who it is and where it works
-// — the folder, as a person would say it — and the bar itself is
-// dragged to where it's wanted (along the top, and down from it) and
-// stretched as wide as it's read. Every row is closed by hand — put
+// the tab, the pane.
+//
+// It is a stack of cards rather than a list of rows: the newest news on
+// top, the older ones peeking out beneath it, and the whole stack
+// opening where it stands when a cursor comes to it. One agent is one
+// card, said over as the agent says more of itself — a run's tools are
+// one line of work, not one line each — so a long run never fills the
+// notch with its own noise. Each card is named by who it is and where
+// it works — the folder, as a person would say it — and the bar itself
+// is dragged to where it's wanted (along the top, and down from it) and
+// stretched as wide as it's read. Every card is closed by hand — put
 // away until it says something worth hearing again — holding all three
 // of those (IslandPlace, and Island.putAway).
 
@@ -23,6 +30,69 @@ enum IslandPlace {
     /// narrowest — a bar narrower than this isn't one anybody reads.
     static let leastWidth: CGFloat = 220
     static let mostWidth: CGFloat = 720
+
+    /// How many cards the bar holds while it's closed: the newest one
+    /// whole, and the couple under it that peek. Enough to say there is
+    /// more without becoming a list to read from across the room.
+    static let stack = 3
+    /// How much of a card shows when it is only peeking: enough for the
+    /// name and the tool it's on, not the words it said.
+    static let peek: CGFloat = 22
+    /// The tallest the open bar grows to before it scrolls: the room
+    /// it's in overrules this, always.
+    static let openMost: CGFloat = 420
+    /// The air between cards once the stack is open. Closed, they're
+    /// tucked one under the next with none — a stack is cards against
+    /// each other, not a list with gaps in it.
+    static let gap: CGFloat = 6
+    /// The breath inside a card, above and below what it says.
+    static let pad: CGFloat = 8
+    /// The height of a card's own line — who it is and what it's doing.
+    /// Pinned rather than left to the font, because the stack's height
+    /// is arithmetic on a card (below), and arithmetic needs a card
+    /// that is the height it says it is.
+    static let line: CGFloat = 16
+    /// The height of what a card says under that line: two lines of it,
+    /// pinned for the same reason. A card says either its line alone or
+    /// its line and this.
+    static let words: CGFloat = 28
+
+    /// How tall a card stands: its breath, its own line, and the two
+    /// lines of what it said when it has anything to say under it.
+    static func card(_ hasWords: Bool) -> CGFloat {
+        pad * 2 + line + (hasWords ? gap + words : 0)
+    }
+
+    /// How tall a card stands, for the session it's drawn from: the rule
+    /// of what a card says under its own line lives here rather than in
+    /// the view, so the stack's arithmetic and the cards themselves are
+    /// the same answer — the bar is exactly as tall as what it holds,
+    /// and the drawing can't drift from the sum without a test failing.
+    static func card(_ session: Island.Session) -> CGFloat {
+        card(under(session) != nil)
+    }
+
+    /// What a card says under its own line: the words an agent said,
+    /// where the line above isn't already saying them. A working one
+    /// with a tool up there has room below for what it said of itself;
+    /// a waiting or done one is saying its words in that very line, and
+    /// saying them twice on one card is a card that looks broken.
+    static func under(_ session: Island.Session) -> String? {
+        guard let words = session.words, !words.isEmpty else { return nil }
+        switch session.part {
+        case .asking, .working: return session.tool == nil ? nil : words
+        case .waiting, .done: return nil
+        }
+    }
+
+    /// How tall the open stack stands: every card whole, the air
+    /// between them, and no taller than the room's own say — past that
+    /// it scrolls, an open bar being a list, and a list may be long but
+    /// it may not be the window.
+    static func opened(_ cards: [CGFloat], room: CGFloat) -> CGFloat {
+        let whole = cards.reduce(0, +) + gap * CGFloat(max(0, cards.count - 1))
+        return min(whole, open(room))
+    }
 
     /// The width to hold, whatever the drag said: kept between the
     /// narrowest and the widest, with the room's own say the last word
@@ -58,26 +128,51 @@ enum IslandPlace {
     static func down(_ said: CGFloat, room: CGFloat, bar: CGFloat) -> CGFloat {
         min(max(said, 0), max(0, room - bar - 14))
     }
-}
 
-/// The bar's own height, said by the bar itself — measured with a
-/// GeometryReader behind it, the bar being the one thing that knows
-/// how many rows it's holding.
-private struct BarHeight: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    // MARK: The stack
+
+    /// How many cards the bar holds while it's closed: the newest, and
+    /// the couple under it that peek. A person watching is watching the
+    /// top of the stack; the rest is there to be reached for, not read
+    /// from across the room.
+    static func showing(_ all: Int) -> Int { min(max(all, 0), IslandPlace.stack) }
+
+    /// How tall the stack stands closed, given how tall one card is:
+    /// the newest whole, and a sliver (IslandPlace.peek) of each one under
+    /// it. A card is the unit because the peeking ones are held to the
+    /// sliver — the top one is the only one saying all of itself.
+    static func closed(_ card: CGFloat, all: Int) -> CGFloat {
+        card + CGFloat(showing(all) - 1) * IslandPlace.peek
+    }
+
+    /// The tallest the open stack is allowed to stand: the whole of the
+    /// room's height bar a breath over it, and never more than the bar
+    /// itself is willing to grow to — past that it scrolls, an open bar
+    /// being a list, and a list may be long but it may not be the
+    /// window.
+    static func open(_ room: CGFloat) -> CGFloat {
+        max(IslandPlace.peek, min(IslandPlace.openMost, room - 80))
+    }
 }
 
 /// One notch over everything, every tab's: the sessions not already
 /// watched (the front window's own tab, the pane that holds the keys),
-/// each with what it's doing and, when it has stopped to ask, the
-/// answer to give it.
+/// each as a card — the newest on top — with what it's doing and, when
+/// it has stopped to ask, the answer to give it. The stack opens where
+/// it stands under a cursor and closes when the cursor leaves it.
 struct IslandBar: View {
     /// The room the bar sits in: the window, given by the one who knows
     /// it (the overlay's GeometryReader, in App) — its width for the
     /// place along the top and the width of the bar, its height for how
-    /// far down the bar can be dragged.
+    /// far down the bar can be dragged and how tall it may open.
     let room: CGSize
+
+    /// Whether the stack is open, for a caller that knows better than a
+    /// cursor does: a bar drawn with no pointer in it at all — the
+    /// tests that hold the shape of the stack, one card and a sliver of
+    /// the rest against every card whole. Nil, the ordinary case, is
+    /// the cursor's to say.
+    var opened: Bool? = nil
 
     @ObservedObject private var island = Island.shared
     // The front window, and the tab that holds it: the bar hides a
@@ -92,7 +187,7 @@ struct IslandBar: View {
     // far down it was dragged. A drag says all three, and says them
     // through IslandPlace, which keeps them inside the window.
     @AppStorage("island.center") private var center = 0.5
-    @AppStorage("island.width") private var held = 360.0
+    @AppStorage("island.width") private var wide = 360.0
     @AppStorage("island.down") private var down = 0.0
 
     /// Where the drag started, taken on its first word: the left edge,
@@ -100,50 +195,101 @@ struct IslandBar: View {
     /// went rather than where it's been.
     @State private var dragFrom: (left: CGFloat, top: CGFloat, width: CGFloat)?
 
-    /// How tall the bar is right now — said by the rows it's holding,
-    /// so a drag down can be kept from carrying the bar out of the
-    /// window no matter how many rows it grew to on the way.
-    @State private var barHeight: CGFloat = 0
+    /// Whether a cursor is on the stack: open while it is, closed while
+    /// it isn't. Kept here rather than in the cards, since the whole
+    /// stack opens as one thing — reaching for the card at the bottom
+    /// must not close the stack on the way down to it.
+    @State private var cursor = false
+
+    /// Whether the stack stands open: what a cursor says, unless the
+    /// one who drew the bar said otherwise (see `opened`).
+    private var over: Bool { opened ?? cursor }
 
     /// What the bar holds: everything but the terminal being watched,
-    /// in the order it was said. A session with nowhere to be jumped to
-    /// (outside Search's terminals) reads the same as any other — it
-    /// just doesn't go anywhere when clicked.
-    private var shown: [Island.Session] {
+    /// newest first. The island keeps that order (Island.order) — it's
+    /// the order things were said in, and a card goes back to the top of
+    /// it whenever its agent says anything — so a card is never in a
+    /// place a person has to go looking for. A session with nowhere to
+    /// be jumped to (outside Search's terminals) reads the same as any
+    /// other; it just doesn't go anywhere when clicked.
+    private var held: [Island.Session] {
         let watched = Island.watched
-        return island.sessions.filter { $0.tty != watched && !island.shelved.contains($0.id) }
+        let all = island.sessions.filter { $0.tty != watched && !island.shelved.contains($0.id) }
+        // Newest first by what the island says — and anything it hasn't
+        // placed yet (a session the island took in before the bar was
+        // drawn) by when it last spoke, so the order is always a real
+        // one and never arbitrary.
+        let rank = Dictionary(island.order.enumerated().map { ($1, $0) }, uniquingKeysWith: { one, _ in one })
+        return all.sorted { a, b in
+            switch (rank[a.id], rank[b.id]) {
+            case let (one?, two?): return one < two
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return a.at > b.at
+            }
+        }
+    }
+
+    /// What's drawn: the top of the stack while it's closed, all of it
+    /// while it's open.
+    private var shown: [Island.Session] {
+        over ? held : Array(held.prefix(IslandPlace.showing(held.count)))
+    }
+
+    /// How tall each card stands, top first: the card's own arithmetic
+    /// (IslandPlace.card) over what each of them has to say — which is
+    /// the same thing the cards themselves are pinned to, so the bar is
+    /// exactly as tall as what it holds.
+    private var heights: [CGFloat] {
+        shown.map(IslandPlace.card)
+    }
+
+    /// How tall the bar stands: the closed stack's arithmetic while it's
+    /// closed — the top card whole and a sliver of each one under it —
+    /// and the cards' own heights while it's open, up to the room's own
+    /// say. That number is what a drag down is kept inside of, and what
+    /// decides whether the open stack has anything to scroll: a bar no
+    /// taller than its cards swallows no clicks meant for the page.
+    private var barHeight: CGFloat {
+        guard over else {
+            let top = shown.first.map(IslandPlace.card) ?? 0
+            return IslandPlace.closed(top, all: held.count)
+        }
+        return IslandPlace.opened(heights, room: room.height)
     }
 
     /// The width the bar holds, and the left edge it holds it at —
     /// whatever a drag said, put back inside the room it's in.
-    private var width: CGFloat { IslandPlace.width(held, room: room.width) }
+    private var width: CGFloat { IslandPlace.width(wide, room: room.width) }
     private var left: CGFloat { IslandPlace.left(center: center, width: width, room: room.width) }
     private var top: CGFloat {
         IslandPlace.down(down, room: room.height, bar: barHeight)
     }
 
     var body: some View {
-        if !shown.isEmpty {
-            VStack(spacing: 0) {
-                ForEach(Array(shown.enumerated()), id: \.element.id) { row, session in
-                    if row > 0 { Divider().overlay(Palette.hairline) }
-                    one(session)
+        if !held.isEmpty {
+            ScrollView(.vertical) {
+                // Newest first, and in a VStack that's the top: the card
+                // at the top of the stack is the last thing heard, and
+                // the ones under it go back in time. Only the first is
+                // whole while the stack is closed; the rest peek.
+                VStack(spacing: over ? IslandPlace.gap : 0) {
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { place, session in
+                        card(session, peeking: !over && place > 0)
+                    }
                 }
+                .frame(width: width)
             }
-            .frame(width: width, alignment: .leading)
-            .background(Palette.ground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.08), radius: 16, y: 5)
-            // How tall the bar is, said by the bar: the drag down is
-            // clamped against it, and against the room, in IslandPlace.
-            .background(
-                GeometryReader { room in
-                    Color.clear.preference(key: BarHeight.self, value: room.size.height)
-                }
-            )
+            .scrollDisabled(!over)
+            .scrollIndicators(.hidden)
+            .frame(width: width, height: barHeight, alignment: .top)
+            // A cursor on the stack opens it, a cursor off it closes it:
+            // the whole bar is the target, so coming off the bottom card
+            // doesn't close it on the way to something else, and going to
+            // it from anywhere on the page opens it on arrival.
+            .onHover { inside in
+                withAnimation(Motion.settle) { cursor = inside }
+            }
             // The two edges, held and stretched: a strip a cursor can
             // find at either end, dragging the near one and leaving the
             // far one where it was, the way a window's edges do.
@@ -162,52 +308,88 @@ struct IslandBar: View {
             // trusted to hold still while it's read. Its own place and
             // width are not this — a drag says where it is now, not
             // where it settles.
-            .animation(Motion.settle, value: island.sessions.count)
+            .animation(Motion.settle, value: held.count)
             .animation(Motion.settle, value: island.holds.count)
-            .onPreferenceChange(BarHeight.self) { barHeight = $0 }
         }
     }
 
-    /// One agent, one row: who it is and where it works, what it's
-    /// doing, and — when it has stopped to ask — the say-so it's
-    /// waiting on. Clicking the row goes there; the buttons answer
-    /// without the trip; the close puts it away.
-    private func one(_ session: Island.Session) -> some View {
-        HStack(spacing: 8) {
-            // The agent, its folder, and what it's doing, as a person
-            // would say it: "Claude Code in search is running Bash" —
-            // the tool it's on, or the thing it stopped to say, or
-            // what it said last. One line of it — the bar is a notch,
-            // not a page.
-            (title(session)
-                + Text(partName(session.part)).foregroundColor(Palette.muted)
-                + Text(detail(session)).foregroundColor(Palette.ink))
-                .font(.system(size: 11.5))
-                .lineLimit(1)
-                .truncationMode(.middle)
+    /// One agent, one card: who it is and where it works, what it's
+    /// doing, and — when it has stopped to ask — the say-so it's waiting
+    /// on. Clicking the card goes there; the buttons answer without the
+    /// trip; the close puts it away. A card that is only peeking says
+    /// the first line of itself and nothing else.
+    private func card(_ session: Island.Session, peeking: Bool) -> some View {
+        VStack(alignment: .leading, spacing: IslandPlace.gap) {
+            HStack(spacing: 8) {
+                // The agent, its folder, and what it's doing, as a person
+                // would say it: "Claude Code in search is running Bash" —
+                // the tool it's on, or the thing it stopped to say, or
+                // what it said last. One line of it — the card is a
+                // notch, not a page.
+                (title(session)
+                    + Text(partName(session.part)).foregroundColor(Palette.muted)
+                    + Text(detail(session)).foregroundColor(Palette.ink))
+                    .font(.system(size: 11.5))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    // The height the stack's arithmetic counts on (see
+                    // IslandPlace.line), said here so the two agree.
+                    .frame(height: IslandPlace.line, alignment: .leading)
 
-            Spacer(minLength: 4)
+                Spacer(minLength: 4)
 
-            // The asking one's answer: given here, the agent goes on
-            // without anyone going to it. A session asking in its own
-            // terminal (answered "ask there") has no buttons — its own
-            // asking is the asking now.
-            if session.part == .asking, let hold = hold(session) {
-                answerButton("Allow", Palette.safe, filled: true) { island.answer(hold, .allow) }
-                answerButton("Deny", Palette.unsafe, filled: false) { island.answer(hold, .deny) }
-                answerButton("Ask there", Palette.muted, filled: false) { island.answer(hold, .ownTerminal) }
+                // The asking one's answer: given here, the agent goes on
+                // without anyone going to it. A session asking in its own
+                // terminal (answered "ask there") has no buttons — its
+                // own asking is the asking now. Only on a card that is
+                // saying all of itself: a peek has no room for a button,
+                // and the cursor that would reach one opens the stack
+                // first.
+                if !peeking, session.part == .asking, let hold = hold(session) {
+                    answerButton("Allow", Palette.safe, filled: true) { island.answer(hold, .allow) }
+                    answerButton("Deny", Palette.unsafe, filled: false) { island.answer(hold, .deny) }
+                    answerButton("Ask there", Palette.muted, filled: false) { island.answer(hold, .ownTerminal) }
+                }
+                // Any one of them, put away by hand: read and done with
+                // for a done one, kept out of the bar until it says
+                // something worth hearing again for the rest — and an ask
+                // it was holding open goes back to its own terminal to ask
+                // there, the one place it can still be answered.
+                if !peeking { closeButton(session) }
             }
-            // Any one of them, put away by hand: read and done with
-            // for a done one, kept out of the bar until it says
-            // something worth hearing again for the rest — and an ask
-            // it was holding open goes back to its own terminal to ask
-            // there, the one place it can still be answered.
-            closeButton(session)
+            // What it said, under the line above rather than beside it:
+            // the words get the card's whole width and are cut by it. A
+            // reply is the point of a card, and half a reply beside a
+            // tool's name is no reply at all. Not while peeking — a peek
+            // is a name and a tool, not a paragraph.
+            if !peeking, let words = IslandPlace.under(session) {
+                Text(words)
+                    .font(.system(size: 11))
+                    .foregroundColor(Palette.muted)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Two lines of it, and the same two lines the stack
+                    // counts on (IslandPlace.words): a card is the height
+                    // the arithmetic says it is, whether it had a word to
+                    // wrap or not.
+                    .frame(height: IslandPlace.words, alignment: .topLeading)
+            }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 7)
+        .padding(.vertical, IslandPlace.pad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.ground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.08), radius: 16, y: 5)
         .contentShape(Rectangle())
         .onTapGesture { island.visit(session) }
+        // A peek is the top of the card and no more: the rest is still
+        // there, under the card above it, waiting for the stack to open.
+        .frame(height: peeking ? IslandPlace.peek : nil, alignment: .top)
+        .clipped()
     }
 
     /// One agent's title: who it is, and where it works — "Pi · search",
@@ -268,7 +450,7 @@ struct IslandBar: View {
                             : from.width + drag.translation.width
                         let went = IslandPlace.width(said, room: room.width)
                         let put = side == .leading ? from.left + (from.width - went) : from.left
-                        held = went
+                        wide = went
                         center = IslandPlace.center(left: put, width: went, room: room.width)
                     }
                     .onEnded { _ in dragFrom = nil }
@@ -305,7 +487,7 @@ struct IslandBar: View {
         }
     }
 
-    /// The close, as an × the size of a word: a click puts the row
+    /// The close, as an × the size of a word: a click puts the card
     /// away, whatever it's doing — Island.putAway keeps the rest.
     private func closeButton(_ session: Island.Session) -> some View {
         Button {

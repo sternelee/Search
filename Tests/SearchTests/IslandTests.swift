@@ -1,5 +1,7 @@
 import XCTest
 import Network
+import SwiftUI
+import AppKit
 @testable import Search
 
 // The island is told by hooks the CLIs run (see IslandHooks for the
@@ -389,6 +391,178 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(IslandPlace.down(-40, room: 800, bar: 30), 0, "up from the notch is the tabs' place, not the bar's")
         XCTAssertEqual(IslandPlace.down(2000, room: 800, bar: 30), 756, "too far down keeps a breath of the window under it")
         XCTAssertEqual(IslandPlace.down(50, room: 40, bar: 30), 0, "a room with no room below the bar holds it at the notch")
+    }
+
+    // MARK: - the stack
+
+    /// The bar is a stack of cards, newest first, and one agent is one
+    /// card. What to hold it to here is the order the island keeps —
+    /// the bar draws what it's told, so the telling is where a card's
+    /// place is decided — and the shape of the stack: a few cards while
+    /// it's closed, all of them while it's open.
+    @MainActor
+    func testTheNewestSayingIsTheTopOfTheStack() {
+        let island = Island.shared
+        let said = { (name: String, run: String, tool: String) in
+            IslandEvent(
+                source: "claude", name: name, session: run, tty: "/dev/ttys004",
+                cwd: nil, tool: tool, call: nil, prompt: nil, words: nil
+            )
+        }
+        func place(_ run: String) -> Int? { island.order.firstIndex(of: "claude/\(run)") }
+
+        island.heard(said("PreToolUse", "run-a", "Bash"))
+        island.heard(said("PreToolUse", "run-b", "Read"))
+        island.heard(said("PreToolUse", "run-c", "Grep"))
+        XCTAssertEqual(island.order.prefix(3).map { $0 }, ["claude/run-c", "claude/run-b", "claude/run-a"],
+                       "the last thing heard is the first card")
+
+        // One agent says something else: its card goes back to the top
+        // rather than a second card appearing for it — the same run, the
+        // same card, said over.
+        island.heard(said("PreToolUse", "run-a", "Edit"))
+        XCTAssertEqual(island.order.prefix(3).map { $0 }, ["claude/run-a", "claude/run-c", "claude/run-b"],
+                       "an agent that says more of itself comes back to the top")
+        XCTAssertEqual(island.sessions.filter { $0.id == "claude/run-a" }.count, 1,
+                       "one agent is one card, however much it says")
+        XCTAssertEqual(island.sessions.first { $0.id == "claude/run-a" }?.tool, "Edit",
+                       "the card says the newest thing it's doing")
+
+        // A run over is a card gone, and its place with it.
+        island.heard(IslandEvent(
+            source: "claude", name: "SessionEnd", session: "run-b", tty: "/dev/ttys004",
+            cwd: nil, tool: nil, call: nil, prompt: nil, words: nil
+        ))
+        XCTAssertNil(place("run-b"), "the run over, its place goes with its card")
+
+        for run in ["run-a", "run-c"] {
+            island.heard(IslandEvent(
+                source: "claude", name: "SessionEnd", session: run, tty: "/dev/ttys004",
+                cwd: nil, tool: nil, call: nil, prompt: nil, words: nil
+            ))
+        }
+        // The island is the app's one, shared with every other test in
+        // this file: what's held to is this run's own cards being gone,
+        // not the bar being empty of everybody's.
+        XCTAssertFalse(island.order.contains { $0.hasPrefix("claude/run-") },
+                       "the runs over, their places go with their cards")
+    }
+
+    /// The shape of the stack, without a window: a few cards closed,
+    /// every card open, the closed one a card and a sliver each under
+    /// it, and the open one held inside the room it's in.
+    func testTheStackIsAFewCardsClosedAndAllOfThemOpen() {
+        XCTAssertEqual(IslandPlace.showing(0), 0, "nothing to show, nothing shown")
+        XCTAssertEqual(IslandPlace.showing(2), 2, "a stack of two is two")
+        XCTAssertEqual(IslandPlace.showing(9), IslandPlace.stack, "a long stack is held to the few it peeks")
+
+        // Closed: the top card whole, a sliver of each one under it.
+        let card: CGFloat = 40
+        XCTAssertEqual(IslandPlace.closed(card, all: 1), card, accuracy: 0.001, "a stack of one is the card")
+        XCTAssertEqual(IslandPlace.closed(card, all: 3), card + 2 * IslandPlace.peek, accuracy: 0.001,
+                       "three cards closed are the top one and two peeks")
+        XCTAssertEqual(IslandPlace.closed(card, all: 9), card + 2 * IslandPlace.peek, accuracy: 0.001,
+                       "nine cards closed are still the few that peek")
+
+        // Open: as tall as the room can be told, never taller than the
+        // bar grows to, and never nothing.
+        XCTAssertEqual(IslandPlace.open(1000), IslandPlace.openMost, accuracy: 0.001,
+                       "a tall window is the bar's own most")
+        XCTAssertEqual(IslandPlace.open(300), 220, accuracy: 0.001,
+                       "a short window keeps a breath over the bar")
+        XCTAssertEqual(IslandPlace.open(40), IslandPlace.peek, accuracy: 0.001,
+                       "a window with no room is a sliver, not nothing")
+    }
+
+    /// The bar as it's drawn, with no window and no cursor: the closed
+    /// stack is one card and a sliver of each one under it, the open one
+    /// is every card whole, and both are the same numbers the shape is
+    /// worked out in (IslandPlace) — so the drawing and the arithmetic
+    /// can't drift apart without this failing.
+    @MainActor
+    func testTheBarDrawsAStackOfCardsAndOpensThem() throws {
+        let island = Island.shared
+        let run = UUID().uuidString.prefix(8)
+        func said(_ name: String, _ id: String, tool: String? = nil) -> IslandEvent {
+            IslandEvent(
+                source: "claude", name: name, session: id, tty: "/dev/ttys004",
+                cwd: "/Users/someone/www/github/search", tool: tool, call: nil,
+                prompt: nil, words: nil
+            )
+        }
+        let ids = (0..<3).map { "card-\(run)-\($0)" }
+        // Three agents, each on a tool: three cards of the same height,
+        // which is what makes the drawing's numbers checkable — the top
+        // one is a card, and so are the ones under it.
+        for id in ids { island.heard(said("PreToolUse", id, tool: "Bash")) }
+        defer { for id in ids { island.heard(said("SessionEnd", id)) } }
+        XCTAssertEqual(island.sessions.filter { ids.contains($0.id.replacingOccurrences(of: "claude/", with: "")) }.count, 3,
+                       "three agents, three cards")
+
+        // The width, the place and how far down are the bar's own kept
+        // say-so: pinned here so the drawing is the same on anybody's
+        // Mac as it is in this run.
+        let kept = UserDefaults.standard
+        let was = (kept.object(forKey: "island.center"), kept.object(forKey: "island.width"), kept.object(forKey: "island.down"))
+        kept.set(0.5, forKey: "island.center")
+        kept.set(360.0, forKey: "island.width")
+        kept.set(0.0, forKey: "island.down")
+        defer {
+            kept.set(was.0, forKey: "island.center")
+            kept.set(was.1, forKey: "island.width")
+            kept.set(was.2, forKey: "island.down")
+        }
+
+        func height(_ open: Bool) throws -> CGFloat {
+            let host = NSHostingView(rootView: IslandBar(room: CGSize(width: 1200, height: 800), opened: open))
+            host.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
+            let window = NSWindow(
+                contentRect: NSRect(x: -20000, y: -20000, width: 1200, height: 800),
+                styleMask: [.borderless], backing: .buffered, defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            window.displayIfNeeded()
+            host.layoutSubtreeIfNeeded()
+            // Laid out, then laid out again after the run loop has had
+            // a turn — the way a window gets it — so what's measured is
+            // the bar settled rather than the bar mid-draw.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            window.displayIfNeeded()
+            host.layoutSubtreeIfNeeded()
+            let size = host.fittingSize
+            window.close()
+            XCTAssertTrue(size.height > 0, "the bar drew something to measure")
+            return size.height
+        }
+
+        // What the bar is holding, read through the same rule the bar
+        // itself reads it by (Island.held's filter and order, then the
+        // stack's own shape): so this holds whatever else the run left in
+        // the island, and what's being checked is the numbers rather than
+        // the state. Open is every card; closed is the few that peek.
+        let watching = Island.watched
+        let rank = Dictionary(island.order.enumerated().map { ($1, $0) }, uniquingKeysWith: { one, _ in one })
+        let all = island.sessions
+            .filter { $0.tty != watching && !island.shelved.contains($0.id) }
+            .sorted { a, b in
+                switch (rank[a.id], rank[b.id]) {
+                case let (one?, two?): return one < two
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil): return a.at > b.at
+                }
+            }
+        XCTAssertGreaterThanOrEqual(all.count, 3, "this test's own cards are held")
+
+        let open = try height(true)
+        XCTAssertEqual(open, IslandPlace.opened(all.map(IslandPlace.card), room: 800), accuracy: 1,
+                       "open, the bar is every card whole with the air between them")
+
+        let closed = try height(false)
+        let peeking = Array(all.prefix(IslandPlace.showing(all.count)))
+        XCTAssertEqual(closed, IslandPlace.closed(peeking.first.map(IslandPlace.card) ?? 0, all: all.count),
+                       accuracy: 1, "closed, the bar is the top card and a sliver of each one under it")
     }
 
     // MARK: - the socket

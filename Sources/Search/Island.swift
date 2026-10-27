@@ -181,10 +181,26 @@ final class Island: ObservableObject {
     @Published private(set) var sessions: [Island.Session] = []
     @Published private(set) var holds: [Island.Hold] = []
 
+    /// The bar's own order, newest first: an agent's card is put at the
+    /// top the moment it says anything — the one a person is most
+    /// likely to want is the one that just spoke — so the bar reads
+    /// downwards into older news rather than the other way about. A
+    /// session's card never moves for being re-read, only for saying
+    /// something.
+    @Published private(set) var order: [String] = []
+
     /// Sessions put away by hand, kept out of the bar until they say
     /// something worth hearing again — a new turn, an ask, a finish —
     /// not the running noise between them.
     @Published private(set) var shelved: Set<String> = []
+
+    /// Says a session is the newest thing heard, the top of the bar.
+    /// Called on every saying that is worth hearing again, which is
+    /// every saying that reaches the bar at all.
+    private func freshen(_ id: String) {
+        order.removeAll { $0 == id }
+        order.insert(id, at: 0)
+    }
 
     private var server: IslandServer?
 
@@ -233,6 +249,7 @@ final class Island: ObservableObject {
             )
             if let i = sessions.firstIndex(where: { $0.id == id }) { sessions[i] = fresh }
             else { sessions.append(fresh) }
+            freshen(id)
         case "PreToolUse":
             // The tool it's about to use, which is what the bar says of
             // the work. A session that starts mid-run (its start was
@@ -263,6 +280,7 @@ final class Island: ObservableObject {
             holds.removeAll { hold in go.contains { $0.id == hold.id } }
             shelved.remove(id)
             sessions.removeAll { $0.id == id }
+            order.removeAll { $0 == id }
         default:
             break
         }
@@ -331,6 +349,7 @@ final class Island: ObservableObject {
         for hold in holds where hold.event.tty == tty { hold.answer(Data("{}".utf8)) }
         holds.removeAll { $0.event.tty == tty }
         sessions.removeAll { $0.tty == tty }
+        order.removeAll { id in !sessions.contains { $0.id == id } }
     }
 
     /// Puts a session away by hand, whatever it's doing: kept out of
@@ -344,6 +363,7 @@ final class Island: ObservableObject {
         }
         shelved.insert(session.id)
         sessions.removeAll { $0.id == session.id }
+        order.removeAll { $0 == session.id }
     }
 
     // MARK: Going to it
@@ -412,6 +432,8 @@ final class Island: ObservableObject {
         then(&session)
         session.at = Date()
         if let i { sessions[i] = session } else { sessions.append(session) }
+        // Whatever it just said, it is the newest news there is.
+        freshen(id)
     }
 }
 
