@@ -482,7 +482,7 @@ final class IslandTests: XCTestCase {
     /// The deck's own rule: what a card at a depth is drawn as, and
     /// where each card's top edge sits — piled and straightened. This is
     /// the whole of the "3D": a card behind the front one is smaller,
-    /// dimmer and tipped back about its own bottom edge, and the front
+    /// dimmer and tipped back about its own top edge, and the front
     /// card is none of those things, so a pile straightened is a list.
     func testACardBehindIsSmallerDimmerAndTippedBack() {
         // The front card is the identity — news is read square on.
