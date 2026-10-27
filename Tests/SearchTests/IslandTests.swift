@@ -448,30 +448,88 @@ final class IslandTests: XCTestCase {
                        "the runs over, their places go with their cards")
     }
 
-    /// The shape of the stack, without a window: a few cards closed,
-    /// every card open, the closed one a card and a sliver each under
-    /// it, and the open one held inside the room it's in.
-    func testTheStackIsAFewCardsClosedAndAllOfThemOpen() {
+    /// The shape of the pile, without a window: a few cards piled,
+    /// every card straightened, the piled one a front card and a slice
+    /// of each one behind it, and the straightened one held inside the
+    /// room it's in.
+    func testThePileIsAFewCardsDeepAndAllOfThemLaidOut() {
         XCTAssertEqual(IslandPlace.showing(0), 0, "nothing to show, nothing shown")
-        XCTAssertEqual(IslandPlace.showing(2), 2, "a stack of two is two")
-        XCTAssertEqual(IslandPlace.showing(9), IslandPlace.stack, "a long stack is held to the few it peeks")
+        XCTAssertEqual(IslandPlace.showing(2), 2, "a pile of two is two")
+        XCTAssertEqual(IslandPlace.showing(9), IslandPlace.stack, "a deep pile is held to the few it draws")
 
-        // Closed: the top card whole, a sliver of each one under it.
+        // Piled: the front card whole, a slice of each one behind it —
+        // and as tall as the tallest of them, since a slice of a card
+        // that says more than the front one is still drawn above it.
         let card: CGFloat = 40
-        XCTAssertEqual(IslandPlace.closed(card, all: 1), card, accuracy: 0.001, "a stack of one is the card")
-        XCTAssertEqual(IslandPlace.closed(card, all: 3), card + 2 * IslandPlace.peek, accuracy: 0.001,
-                       "three cards closed are the top one and two peeks")
-        XCTAssertEqual(IslandPlace.closed(card, all: 9), card + 2 * IslandPlace.peek, accuracy: 0.001,
-                       "nine cards closed are still the few that peek")
+        XCTAssertEqual(IslandPlace.closed([card]), card, accuracy: 0.001, "a pile of one is the card")
+        XCTAssertEqual(IslandPlace.closed([card, card, card]), card + 2 * IslandPlace.peek, accuracy: 0.001,
+                       "three cards piled are the front one and two slices")
+        XCTAssertEqual(IslandPlace.closed(Array(repeating: card, count: 9)), card + 2 * IslandPlace.peek,
+                       accuracy: 0.001, "nine cards piled are still the few that draw")
+        XCTAssertEqual(IslandPlace.closed([20, 60, 30]), 60 + 2 * IslandPlace.peek, accuracy: 0.001,
+                       "a slice of a card taller than the front one still has to fit")
 
-        // Open: as tall as the room can be told, never taller than the
-        // bar grows to, and never nothing.
+        // Straightened: as tall as the room can be told, never taller
+        // than the bar grows to, and never nothing.
         XCTAssertEqual(IslandPlace.open(1000), IslandPlace.openMost, accuracy: 0.001,
                        "a tall window is the bar's own most")
         XCTAssertEqual(IslandPlace.open(300), 220, accuracy: 0.001,
                        "a short window keeps a breath over the bar")
         XCTAssertEqual(IslandPlace.open(40), IslandPlace.peek, accuracy: 0.001,
                        "a window with no room is a sliver, not nothing")
+    }
+
+    /// The deck's own rule: what a card at a depth is drawn as, and
+    /// where each card's top edge sits — piled and straightened. This is
+    /// the whole of the "3D": a card behind the front one is smaller,
+    /// dimmer and tipped back about its own bottom edge, and the front
+    /// card is none of those things, so a pile straightened is a list.
+    func testACardBehindIsSmallerDimmerAndTippedBack() {
+        // The front card is the identity — news is read square on.
+        let front = IslandPlace.deck(0)
+        XCTAssertEqual(front.scale, 1, accuracy: 0.0001, "the front card is drawn its own size")
+        XCTAssertEqual(front.lean, 0, accuracy: 0.0001, "the front card isn't tipped at all")
+        XCTAssertEqual(front.light, 1, accuracy: 0.0001, "the front card is drawn in full light")
+
+        // Each one behind is all three, and more so the further back.
+        for level in 1..<5 {
+            let card = IslandPlace.deck(level)
+            let nearer = IslandPlace.deck(level - 1)
+            XCTAssertLessThan(card.scale, nearer.scale, "a card further back is smaller")
+            XCTAssertGreaterThan(card.lean, nearer.lean, "a card further back is tipped further")
+            XCTAssertLessThan(card.light, nearer.light, "a card further back is dimmer")
+        }
+        XCTAssertEqual(IslandPlace.deck(1).lean, IslandPlace.lean, accuracy: 0.0001,
+                       "one back is one lean")
+        XCTAssertEqual(IslandPlace.deck(1).scale, 1 - IslandPlace.shrink, accuracy: 0.0001,
+                       "one back is one shrink")
+
+        // A pile deeper than it's meant to be stays visible rather than
+        // vanishing: the floors are floors, not a suggestion.
+        XCTAssertGreaterThanOrEqual(IslandPlace.deck(50).scale, 0.6, "a very deep card is small, not nothing")
+        XCTAssertGreaterThanOrEqual(IslandPlace.deck(50).light, 0.35, "a very deep card is dim, not dark")
+    }
+
+    /// The pile's geometry: where each card's top edge sits, and that
+    /// straightening the pile is the same order read flat — no card
+    /// passes another on the way out, which is the whole reason the
+    /// newest is at the front of the pile and the last of the list.
+    func testThePileRecedesUpAndStraightensIntoTheSameOrder() {
+        let cards: [CGFloat] = [40, 40, 40]
+        XCTAssertEqual(IslandPlace.piled(cards), [2 * IslandPlace.peek, IslandPlace.peek, 0],
+                       "the newest is at the front of the pile, the rest above it")
+        XCTAssertEqual(IslandPlace.laid(cards), [2 * (40 + IslandPlace.gap), 40 + IslandPlace.gap, 0],
+                       "straightened, the newest is the last of the list")
+
+        // Whatever the cards' heights, both are read newest-last.
+        let ragged: [CGFloat] = [20, 60, 30, 50]
+        let piled = IslandPlace.piled(ragged)
+        let laid = IslandPlace.laid(ragged)
+        XCTAssertEqual(piled, piled.sorted(by: >), "a pile recedes: the newest is the lowest")
+        XCTAssertEqual(laid, laid.sorted(by: >), "a list reads down: the newest is the lowest")
+        XCTAssertEqual(piled.count, laid.count, "every card is in both")
+        XCTAssertEqual(piled.last, 0, "the front of the pile is the front card")
+        XCTAssertEqual(laid.last, 0, "the bottom of the list is the newest card")
     }
 
     /// The bar as it's drawn, with no window and no cursor: the closed
@@ -560,9 +618,9 @@ final class IslandTests: XCTestCase {
                        "open, the bar is every card whole with the air between them")
 
         let closed = try height(false)
-        let peeking = Array(all.prefix(IslandPlace.showing(all.count)))
-        XCTAssertEqual(closed, IslandPlace.closed(peeking.first.map(IslandPlace.card) ?? 0, all: all.count),
-                       accuracy: 1, "closed, the bar is the top card and a sliver of each one under it")
+        let deep = Array(all.prefix(IslandPlace.showing(all.count)))
+        XCTAssertEqual(closed, IslandPlace.closed(deep.map(IslandPlace.card)),
+                       accuracy: 1, "closed, the bar is the front card and a slice of each one behind it")
     }
 
     // MARK: - the socket

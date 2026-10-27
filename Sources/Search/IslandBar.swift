@@ -9,17 +9,20 @@ import SwiftUI
 // you're on. Clicking anything else about one goes to it: the window,
 // the tab, the pane.
 //
-// It is a stack of cards rather than a list of rows: the newest news on
-// top, the older ones peeking out beneath it, and the whole stack
-// opening where it stands when a cursor comes to it. One agent is one
-// card, said over as the agent says more of itself — a run's tools are
-// one line of work, not one line each — so a long run never fills the
-// notch with its own noise. Each card is named by who it is and where
-// it works — the folder, as a person would say it — and the bar itself
-// is dragged to where it's wanted (along the top, and down from it) and
-// stretched as wide as it's read. Every card is closed by hand — put
-// away until it says something worth hearing again — holding all three
-// of those (IslandPlace, and Island.putAway).
+// It is a deck of cards rather than a list of rows: the newest news is
+// the card facing you, at the front of the pile, and the ones behind it
+// are lifted above it and tipped back into the screen — a real
+// projection, one vanishing point, so a glance says there is a pile
+// here and how deep it is. Hovering straightens the whole thing into a
+// list where every card is read square on. One agent is one card, said
+// over as the agent says more of itself — a run's tools are one line of
+// work, not one line each — so a long run never fills the notch with
+// its own noise. Each card is named by who it is and where it works —
+// the folder, as a person would say it — and the bar itself is dragged
+// to where it's wanted (along the top, and down from it) and stretched
+// as wide as it's read. Every card is closed by hand — put away until
+// it says something worth hearing again — holding all three of those
+// (IslandPlace, and Island.putAway).
 
 /// Where the bar sits and how wide it is, kept as fractions and edges
 /// a drag can say: the math of it, here so it can be held to (and
@@ -31,26 +34,44 @@ enum IslandPlace {
     static let leastWidth: CGFloat = 220
     static let mostWidth: CGFloat = 720
 
-    /// How many cards the bar holds while it's closed: the newest one
-    /// whole, and the couple under it that peek. Enough to say there is
-    /// more without becoming a list to read from across the room.
+    /// The deepest the pile is drawn: the front card and the couple
+    /// behind it that show. Enough to say there is more without
+    /// becoming a list to read from across the room.
     static let stack = 3
-    /// How much of a card shows when it is only peeking: enough for the
-    /// name and the tool it's on, not the words it said.
+    /// How much of a card shows when it is behind the front one: enough
+    /// for the name and the tool it's on, not the words it said.
     static let peek: CGFloat = 22
     /// The tallest the open bar grows to before it scrolls: the room
     /// it's in overrules this, always.
     static let openMost: CGFloat = 420
-    /// The air between cards once the stack is open. Closed, they're
-    /// tucked one under the next with none — a stack is cards against
-    /// each other, not a list with gaps in it.
+    /// The air between cards once the pile is straightened. Piled,
+    /// they're tucked one behind the next with none — a deck is cards
+    /// against each other, not a list with gaps in it.
     static let gap: CGFloat = 6
+    /// How much smaller each card behind the front one is drawn: a
+    /// pile leans away, and a thing further off is a thing smaller.
+    /// Never enough to make a card nothing — the pile is three deep.
+    static let shrink: CGFloat = 0.055
+    /// How much dimmer each one behind is: depth said in light as well
+    /// as in size, which is what makes a pile read as a pile from
+    /// across the room.
+    static let dim: Double = 0.16
+    /// How far back each card behind the front one tips, in degrees,
+    /// about its own bottom edge — the lean that turns a row of cards
+    /// into a pile of them. The front one never tips: it is the news,
+    /// and news is read square on.
+    static let lean: Double = 15
+    /// How hard that lean is projected: what SwiftUI is told the eye's
+    /// distance is, larger being nearer and the recede harder. Kept
+    /// mild, so a card two deep is still read as a card rather than as
+    /// a sliver of one.
+    static let perspective: CGFloat = 0.55
     /// The breath inside a card, above and below what it says.
     static let pad: CGFloat = 8
-    /// The height of a card's own line — who it is and what it's doing.
-    /// Pinned rather than left to the font, because the stack's height
-    /// is arithmetic on a card (below), and arithmetic needs a card
-    /// that is the height it says it is.
+    /// How tall a card's own line stands — who it is and what it's
+    /// doing. Pinned rather than left to the font, because the pile's
+    /// height is arithmetic on a card (below), and arithmetic needs a
+    /// card that is the height it says it is.
     static let line: CGFloat = 16
     /// The height of what a card says under that line: two lines of it,
     /// pinned for the same reason. A card says either its line alone or
@@ -65,7 +86,7 @@ enum IslandPlace {
 
     /// How tall a card stands, for the session it's drawn from: the rule
     /// of what a card says under its own line lives here rather than in
-    /// the view, so the stack's arithmetic and the cards themselves are
+    /// the view, so the pile's arithmetic and the cards themselves are
     /// the same answer — the bar is exactly as tall as what it holds,
     /// and the drawing can't drift from the sum without a test failing.
     static func card(_ session: Island.Session) -> CGFloat {
@@ -85,13 +106,18 @@ enum IslandPlace {
         }
     }
 
-    /// How tall the open stack stands: every card whole, the air
+    /// How tall the straightened bar stands, before the room has its
+    /// say: every card whole with the air between them.
+    static func stood(_ cards: [CGFloat]) -> CGFloat {
+        cards.reduce(0, +) + gap * CGFloat(max(0, cards.count - 1))
+    }
+
+    /// How tall the straightened bar stands: every card whole, the air
     /// between them, and no taller than the room's own say — past that
-    /// it scrolls, an open bar being a list, and a list may be long but
-    /// it may not be the window.
+    /// it scrolls, a straightened bar being a list, and a list may be
+    /// long but it may not be the window.
     static func opened(_ cards: [CGFloat], room: CGFloat) -> CGFloat {
-        let whole = cards.reduce(0, +) + gap * CGFloat(max(0, cards.count - 1))
-        return min(whole, open(room))
+        min(stood(cards), open(room))
     }
 
     /// The width to hold, whatever the drag said: kept between the
@@ -129,27 +155,81 @@ enum IslandPlace {
         min(max(said, 0), max(0, room - bar - 14))
     }
 
-    // MARK: The stack
+    // MARK: The pile
 
-    /// How many cards the bar holds while it's closed: the newest, and
-    /// the couple under it that peek. A person watching is watching the
-    /// top of the stack; the rest is there to be reached for, not read
+    /// How many cards the pile draws while it's piled: the front one and
+    /// the couple behind it that show. A person watching is watching the
+    /// front of the pile; the rest is there to be reached for, not read
     /// from across the room.
     static func showing(_ all: Int) -> Int { min(max(all, 0), IslandPlace.stack) }
 
-    /// How tall the stack stands closed, given how tall one card is:
-    /// the newest whole, and a sliver (IslandPlace.peek) of each one under
-    /// it. A card is the unit because the peeking ones are held to the
-    /// sliver — the top one is the only one saying all of itself.
-    static func closed(_ card: CGFloat, all: Int) -> CGFloat {
-        card + CGFloat(showing(all) - 1) * IslandPlace.peek
+    /// How tall the pile stands closed, given how tall each card is:
+    /// the tallest of the ones on show, and a sliver (IslandPlace.peek)
+    /// of each one behind it. The tallest, not the front one: the cards
+    /// behind are only slivers, but a sliver of a card that says more
+    /// than the front one says is still drawn above it, and the bar has
+    /// to hold what it draws.
+    static func closed(_ cards: [CGFloat]) -> CGFloat {
+        let deep = showing(cards.count)
+        let tall = cards.prefix(deep).max() ?? 0
+        return tall + CGFloat(deep - 1) * peek
     }
 
-    /// The tallest the open stack is allowed to stand: the whole of the
-    /// room's height bar a breath over it, and never more than the bar
-    /// itself is willing to grow to — past that it scrolls, an open bar
-    /// being a list, and a list may be long but it may not be the
-    /// window.
+    /// What one card of the pile is drawn as, level 0 being the front —
+    /// the newest news, drawn square on and whole. The rest of it is
+    /// the pile's own rule, here rather than in the view so the shape
+    /// can be held to without a window in the way.
+    struct Deck {
+        /// How much smaller it's drawn than the card in front of it.
+        var scale: CGFloat
+        /// How far it tips back about its own bottom edge, in degrees.
+        var lean: Double
+        /// How much of itself it keeps, in light.
+        var light: Double
+    }
+
+    /// The pile's rule: what a card at a level is drawn as. Each one
+    /// behind the front is a little smaller, a little dimmer and a
+    /// little further back than the one before it — a deck read as a
+    /// deck rather than a row of cards pretending to be far away. The
+    /// floors are only there so a pile grown past what it's meant to be
+    /// stays visible instead of vanishing.
+    static func deck(_ level: Int) -> Deck {
+        let behind = CGFloat(max(0, level))
+        return Deck(
+            scale: max(0.6, 1 - shrink * behind),
+            lean: lean * Double(behind),
+            light: max(0.35, 1 - dim * Double(behind))
+        )
+    }
+
+    /// Where each card's top edge sits, closed: a peek apart, the
+    /// newest at the front of the pile — which is the bottom of it,
+    /// the pile receding up and back behind it. Index 0 is the newest.
+    static func piled(_ cards: [CGFloat]) -> [CGFloat] {
+        cards.indices.map { peek * CGFloat(cards.count - 1 - $0) }
+    }
+
+    /// Where each card's top edge sits, straightened: a whole card and
+    /// the air between apart, oldest first — so the newest is still the
+    /// last of them and straightening the pile moves no card past
+    /// another. The order the pile is read in is the order the list is
+    /// read in; only the depth goes.
+    static func laid(_ cards: [CGFloat]) -> [CGFloat] {
+        var out = [CGFloat](repeating: 0, count: cards.count)
+        var down: CGFloat = 0
+        for place in stride(from: cards.count - 1, through: 0, by: -1) {
+            out[place] = down
+            down += cards[place] + gap
+        }
+        return out
+    }
+
+    /// The tallest the straightened bar is allowed to stand: the whole
+    /// of the room's height bar a breath over it, and never more than
+    /// the bar itself is willing to grow to — past that it scrolls, a
+    /// straightened bar being a list, and a list may be long but it may
+    /// not be the window.
     static func open(_ room: CGFloat) -> CGFloat {
         max(IslandPlace.peek, min(IslandPlace.openMost, room - 80))
     }
@@ -157,9 +237,10 @@ enum IslandPlace {
 
 /// One notch over everything, every tab's: the sessions not already
 /// watched (the front window's own tab, the pane that holds the keys),
-/// each as a card — the newest on top — with what it's doing and, when
-/// it has stopped to ask, the answer to give it. The stack opens where
-/// it stands under a cursor and closes when the cursor leaves it.
+/// each as a card — the newest at the front of the pile — with what
+/// it's doing and, when it has stopped to ask, the answer to give it.
+/// The pile straightens where it stands under a cursor and closes when
+/// the cursor leaves it.
 struct IslandBar: View {
     /// The room the bar sits in: the window, given by the one who knows
     /// it (the overlay's GeometryReader, in App) — its width for the
@@ -167,11 +248,11 @@ struct IslandBar: View {
     /// far down the bar can be dragged and how tall it may open.
     let room: CGSize
 
-    /// Whether the stack is open, for a caller that knows better than a
-    /// cursor does: a bar drawn with no pointer in it at all — the
-    /// tests that hold the shape of the stack, one card and a sliver of
-    /// the rest against every card whole. Nil, the ordinary case, is
-    /// the cursor's to say.
+    /// Whether the pile is straightened, for a caller that knows better
+    /// than a cursor does: a bar drawn with no pointer in it at all —
+    /// the tests that hold the shape of the pile, the front card and a
+    /// slice of the rest against every card whole. Nil, the ordinary
+    /// case, is the cursor's to say.
     var opened: Bool? = nil
 
     @ObservedObject private var island = Island.shared
@@ -195,14 +276,14 @@ struct IslandBar: View {
     /// went rather than where it's been.
     @State private var dragFrom: (left: CGFloat, top: CGFloat, width: CGFloat)?
 
-    /// Whether a cursor is on the stack: open while it is, closed while
-    /// it isn't. Kept here rather than in the cards, since the whole
-    /// stack opens as one thing — reaching for the card at the bottom
-    /// must not close the stack on the way down to it.
+    /// Whether a cursor is on the pile: straightened while it is, piled
+    /// while it isn't. Kept here rather than in the cards, since the
+    /// whole pile moves as one thing — reaching for the card at the
+    /// back must not close it on the way in.
     @State private var cursor = false
 
-    /// Whether the stack stands open: what a cursor says, unless the
-    /// one who drew the bar said otherwise (see `opened`).
+    /// Whether the pile stands straightened: what a cursor says, unless
+    /// the one who drew the bar said otherwise (see `opened`).
     private var over: Bool { opened ?? cursor }
 
     /// What the bar holds: everything but the terminal being watched,
@@ -230,8 +311,8 @@ struct IslandBar: View {
         }
     }
 
-    /// What's drawn: the top of the stack while it's closed, all of it
-    /// while it's open.
+    /// What's drawn: the top of the pile while it's piled, all of it
+    /// while it's straightened.
     private var shown: [Island.Session] {
         over ? held : Array(held.prefix(IslandPlace.showing(held.count)))
     }
@@ -244,18 +325,32 @@ struct IslandBar: View {
         shown.map(IslandPlace.card)
     }
 
-    /// How tall the bar stands: the closed stack's arithmetic while it's
-    /// closed — the top card whole and a sliver of each one under it —
-    /// and the cards' own heights while it's open, up to the room's own
-    /// say. That number is what a drag down is kept inside of, and what
-    /// decides whether the open stack has anything to scroll: a bar no
-    /// taller than its cards swallows no clicks meant for the page.
+    /// How tall the bar stands: the pile's own arithmetic while it's
+    /// piled — the front card whole and a slice of each one behind it —
+    /// and the cards' own heights while it's straightened, up to the
+    /// room's own say. That number is what a drag down is kept inside
+    /// of, and what decides whether the open pile has anything to
+    /// scroll: a bar no taller than its cards swallows no clicks meant
+    /// for the page.
     private var barHeight: CGFloat {
-        guard over else {
-            let top = shown.first.map(IslandPlace.card) ?? 0
-            return IslandPlace.closed(top, all: held.count)
-        }
-        return IslandPlace.opened(heights, room: room.height)
+        over ? IslandPlace.opened(heights, room: room.height) : IslandPlace.closed(heights)
+    }
+
+    /// How tall the pile's own drawing is, whether that's the depth of
+    /// the pile or the whole length of the straightened list. Taller
+    /// than the bar only when the list is longer than the room allows —
+    /// which is the case the bar scrolls in.
+    private var pileHeight: CGFloat {
+        over ? IslandPlace.stood(heights) : IslandPlace.closed(heights)
+    }
+
+    /// Where each card's top edge sits: a slice apart and receding up
+    /// into the screen while the pile is piled, a whole card and the
+    /// air between apart once it's straightened. The two are the same
+    /// order — the newest last in the list and nearest in the pile — so
+    /// straightening moves no card past another.
+    private var tops: [CGFloat] {
+        over ? IslandPlace.laid(heights) : IslandPlace.piled(heights)
     }
 
     /// The width the bar holds, and the left edge it holds it at —
@@ -269,24 +364,41 @@ struct IslandBar: View {
     var body: some View {
         if !held.isEmpty {
             ScrollView(.vertical) {
-                // Newest first, and in a VStack that's the top: the card
-                // at the top of the stack is the last thing heard, and
-                // the ones under it go back in time. Only the first is
-                // whole while the stack is closed; the rest peek.
-                VStack(spacing: over ? IslandPlace.gap : 0) {
-                    ForEach(Array(shown.enumerated()), id: \.element.id) { place, session in
-                        card(session, peeking: !over && place > 0)
+                // A pile rather than a list: the newest card is the one
+                // facing you, at the front of it, and each one behind is
+                // lifted a slice higher and tipped back into the screen.
+                // The cards are placed by hand (IslandPlace.piled, .laid)
+                // because a pile's cards overlap — the ones behind are
+                // mostly covered, and a place in the pile is a depth
+                // rather than a row — so they're drawn one on top of the
+                // next in a ZStack instead of laid out in a line.
+                ZStack(alignment: .topLeading) {
+                    // Deepest first, so the front card is drawn last and
+                    // over the rest: in a pile the newest news is the
+                    // one nothing is covering.
+                    ForEach(Array(shown.enumerated()).reversed(), id: \.element.id) { place, session in
+                        card(session, level: place)
+                            .offset(y: tops[place])
+                            // A card arriving comes from in front of the
+                            // pile, which is where the newest news comes
+                            // from; one leaving goes back into it. The
+                            // cards that stay are pushed a place further
+                            // back by the offsets above, and those move.
+                            .transition(
+                                .opacity.combined(with: .scale(scale: 1.06, anchor: .bottom))
+                            )
                     }
                 }
-                .frame(width: width)
+                .frame(width: width, height: pileHeight, alignment: .topLeading)
             }
             .scrollDisabled(!over)
             .scrollIndicators(.hidden)
             .frame(width: width, height: barHeight, alignment: .top)
-            // A cursor on the stack opens it, a cursor off it closes it:
-            // the whole bar is the target, so coming off the bottom card
-            // doesn't close it on the way to something else, and going to
-            // it from anywhere on the page opens it on arrival.
+            // A cursor on the pile straightens it, a cursor off it piles
+            // it again: the whole bar is the target, so coming off the
+            // front card doesn't close it on the way to something else,
+            // and going to it from anywhere on the page straightens it on
+            // arrival.
             .onHover { inside in
                 withAnimation(Motion.settle) { cursor = inside }
             }
@@ -310,16 +422,30 @@ struct IslandBar: View {
             // where it settles.
             .animation(Motion.settle, value: held.count)
             .animation(Motion.settle, value: island.holds.count)
+            // The pile says where a card is, so a card that changes
+            // place — a new one on top, the rest pushed back — is
+            // followed there rather than jumping: the news is a
+            // sequence, and a sequence is read by seeing it move.
+            .animation(Motion.settle, value: shown.map(\.id))
         }
     }
 
     /// One agent, one card: who it is and where it works, what it's
     /// doing, and — when it has stopped to ask — the say-so it's waiting
     /// on. Clicking the card goes there; the buttons answer without the
-    /// trip; the close puts it away. A card that is only peeking says
-    /// the first line of itself and nothing else.
-    private func card(_ session: Island.Session, peeking: Bool) -> some View {
-        VStack(alignment: .leading, spacing: IslandPlace.gap) {
+    /// trip; the close puts it away.
+    ///
+    /// `level` is how deep in the pile it is, 0 being the front. A card
+    /// behind the front one is drawn the way IslandPlace.deck says a
+    /// card that deep is drawn — smaller, dimmer, tipped back about its
+    /// own bottom edge — and shows only its own first slice, the rest
+    /// being behind the card in front of it. Once the pile is
+    /// straightened every card is level 0 and whole, which is what
+    /// opening it is for.
+    private func card(_ session: Island.Session, level: Int) -> some View {
+        let deck = IslandPlace.deck(over ? 0 : level)
+        let buried = !over && level > 0
+        return VStack(alignment: .leading, spacing: IslandPlace.gap) {
             HStack(spacing: 8) {
                 // The agent, its folder, and what it's doing, as a person
                 // would say it: "Claude Code in search is running Bash" —
@@ -332,7 +458,7 @@ struct IslandBar: View {
                     .font(.system(size: 11.5))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    // The height the stack's arithmetic counts on (see
+                    // The height the pile's arithmetic counts on (see
                     // IslandPlace.line), said here so the two agree.
                     .frame(height: IslandPlace.line, alignment: .leading)
 
@@ -341,11 +467,11 @@ struct IslandBar: View {
                 // The asking one's answer: given here, the agent goes on
                 // without anyone going to it. A session asking in its own
                 // terminal (answered "ask there") has no buttons — its
-                // own asking is the asking now. Only on a card that is
-                // saying all of itself: a peek has no room for a button,
-                // and the cursor that would reach one opens the stack
-                // first.
-                if !peeking, session.part == .asking, let hold = hold(session) {
+                // own asking is the asking now. Only on the front card:
+                // a card buried in the pile has no room for a button,
+                // and the cursor that would reach one straightens the
+                // pile first.
+                if !buried, session.part == .asking, let hold = hold(session) {
                     answerButton("Allow", Palette.safe, filled: true) { island.answer(hold, .allow) }
                     answerButton("Deny", Palette.unsafe, filled: false) { island.answer(hold, .deny) }
                     answerButton("Ask there", Palette.muted, filled: false) { island.answer(hold, .ownTerminal) }
@@ -355,20 +481,20 @@ struct IslandBar: View {
                 // something worth hearing again for the rest — and an ask
                 // it was holding open goes back to its own terminal to ask
                 // there, the one place it can still be answered.
-                if !peeking { closeButton(session) }
+                if !buried { closeButton(session) }
             }
             // What it said, under the line above rather than beside it:
             // the words get the card's whole width and are cut by it. A
             // reply is the point of a card, and half a reply beside a
-            // tool's name is no reply at all. Not while peeking — a peek
-            // is a name and a tool, not a paragraph.
-            if !peeking, let words = IslandPlace.under(session) {
+            // tool's name is no reply at all. Not on a card buried in
+            // the pile — a slice is a name and a tool, not a paragraph.
+            if !buried, let words = IslandPlace.under(session) {
                 Text(words)
                     .font(.system(size: 11))
                     .foregroundColor(Palette.muted)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    // Two lines of it, and the same two lines the stack
+                    // Two lines of it, and the same two lines the pile
                     // counts on (IslandPlace.words): a card is the height
                     // the arithmetic says it is, whether it had a word to
                     // wrap or not.
@@ -386,10 +512,23 @@ struct IslandBar: View {
         .shadow(color: .black.opacity(0.08), radius: 16, y: 5)
         .contentShape(Rectangle())
         .onTapGesture { island.visit(session) }
-        // A peek is the top of the card and no more: the rest is still
-        // there, under the card above it, waiting for the stack to open.
-        .frame(height: peeking ? IslandPlace.peek : nil, alignment: .top)
+        // The pile's depth, said three ways at once, because one of them
+        // alone reads as a bug rather than as distance: a card behind is
+        // smaller, and dimmer, and tipped back about its own bottom edge
+        // so it leans away into the screen. The slice is cut first — a
+        // buried card shows its own first line and no more — and the
+        // size and the lean are applied to that slice, so a card's place
+        // in the pile is the slice it shows and not the card it hides.
+        // Straightened, every one of these is the identity, which is
+        // what a deck with its depth taken away is: a list.
+        .frame(height: buried ? IslandPlace.peek : nil, alignment: .top)
         .clipped()
+        .scaleEffect(deck.scale, anchor: .top)
+        .rotation3DEffect(
+            .degrees(deck.lean), axis: (x: 1, y: 0, z: 0),
+            anchor: .bottom, perspective: IslandPlace.perspective
+        )
+        .brightness(deck.light - 1)
     }
 
     /// One agent's title: who it is, and where it works — "Pi · search",

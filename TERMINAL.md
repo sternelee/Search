@@ -349,10 +349,13 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
    毫秒家 ×1000）。事件名在 `Island.swift` 读入时归一到横幅自己的词（BeforeTool→PreToolUse，
    afterAgentResponse→Stop，等等），小写驼峰与 PascalCase 都认。
 3. **`IslandBar.swift`** —— notch 式横幅，挂在 `ContentView.window_` 的顶部（overlay 里的
-   `GeometryReader` 量出窗口宽与高传进来），所有标签页可见；**一摞卡片**：最新的消息在最上面，
-   下面几张各露出 `IslandPlace.peek`（22pt）一条缝，**hover 才展开**（整摞一起开——光标从
-   最下面那张往外走不会半路把上面收起来），展开后每张整张可见、超出窗口就滚动（最高
-   `openMost` 420 或窗口高减 80）。**一个 agent 一张卡**：同一个 session 再说话是更新这张卡
+   `GeometryReader` 量出窗口宽与高传进来），所有标签页可见；**一叠卡片（3D 透视堆叠）**：最新的一张在最前面、正视整张，
+   后面几张各向上抬 `IslandPlace.peek`（22pt）、向屏幕里倾斜（`deck`：每退一层小
+   `shrink` 5.5%、暗 `dim` 16%、沿自身底边后仰 `lean` 15°，`perspective` 0.55），
+   所以一眼能看出这叠有多深；**hover 时整叠摊平成正视列表**（透视归零，每张整张可读、
+   超出窗口就滚动，最高 `openMost` 420 或窗口高减 80），离开才收回去（整叠一起动——
+   光标从最前面那张往外走不会半路把后面收起来）。**新消息是序列动画**：前一张被推后
+   一格、新的从前方滑入（`Motion.settle` 跟 `shown.map(\.id)`），旧卡不是原地换内容。**一个 agent 一张卡**：同一个 session 再说话是更新这张卡
    （`Island.order` 把它放回最上面），不是再添一张——一次长跑的工具调用是一件事，不是
    每步一条。卡片标题是 **agent 名 · 目录名**（"Claude Code · search"，目录取 cwd 最后一段，
    没说目录就只显名字），后接一句在干什么（`is running Bash` / `wants Bash` / `finished — …`）；
