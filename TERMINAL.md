@@ -366,8 +366,9 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
    一格、新的从前方滑入（`Motion.settle` 跟 `shown.map(\.id)`），旧卡不是原地换内容。**一个 agent 一张卡**：同一个 session 再说话是更新这张卡
    （`Island.order` 把它放回最上面），不是再添一张——一次长跑的工具调用是一件事，不是
    每步一条。卡片标题是 **agent 名 · 目录名**（"Claude Code · search"，目录取 cwd 最后一段，
-   没说目录就只显名字），后接一句在干什么（`is running Bash` / `wants Bash` / `finished — …`）；
-   说过的话另起一行放在下面（占满卡宽、最多两行），不在同一行里跟工具名抢地方；只露一条缝的
+   没说目录就只显名字），后接一句在干什么（`is running Bash` / `wants Bash` / `finished — …`）——
+   这一行只说工具名；说过的话另起一行放在下面（占满卡宽、最多两行），不在同一行里跟工具名抢地方，
+   也不在这一行里再说一遍（`IslandPlace.doing` / `under` 是这同一条规则的两半）；只露一条缝的
    卡只显标题那一行。`asking` 的带 Allow/Deny/Ask there 三个按钮；点卡片跳到它的窗、标签、窗格。
    **拖动**：整条可沿窗口顶部
    横向拖到任意处，也可往下拖（最深到窗口底留 14pt；`island.down` 存点数），两端各有一条 6pt
@@ -378,8 +379,10 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
    （`Island.putAway`）——跑完的收了就完；跑着的、等人答话的收走后搁起来（`shelved`），
    直到它再说了值得听的话（新开一轮、要人答应、跑完）才回来，中间的干活噪声不叫醒；
    收走时若它正掣着一个审批，审批连同空答交回它自己的终端去问（那里还能答），关掉
-   这一行不是把问题关掉。**抑制规则**：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
-   时不显示——屏幕上正看着它，横幅只会说得比屏幕差。同理，agent 在跑的终端自己发的
+   这一行不是把问题关掉。**抑制规则**：栏上有什么由 `Island.cards(watched:)` 一个规则说了算
+   （视图和测试读同一个答案）：session 的 tty 就是前台窗口当前标签的聚焦窗格（`Island.watched`）
+   时不显示——屏幕上正看着它，横幅只会说得比屏幕差；没有 tty 的 session（hook 沿进程树找不到
+   终端——无头跑的、`ps` 被拒的）不在任何终端里，谈不上被看着，永远显示。同理，agent 在跑的终端自己发的
    OSC 9 / 777（`.note`）不再转成 macOS 系统通知（`Browser` 的 onNotice 检查
    `Island.atWork(tty:)`）：横幅说得更好，桌面不该再重复一遍。
 
@@ -406,14 +409,15 @@ hook 永远不会再跑（进程被杀不会执行任何 hook），所以由终�
 `Island.retired(tty:)` 清掉该 tty 的全部 session，还开着的 hold 回一个空 `{}`，让等着的
 CLI 回自己终端去问。
 
-测试在 `Tests/SearchTests/IslandTests.swift`（28 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
+测试在 `Tests/SearchTests/IslandTests.swift`（33 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
 Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 session）、各形状 settings 的合并与卸载
 （Claude/Codex/Qwen/Droid/Gemini/Cursor/Grok/Copilot/Pi/OMP）、桥接脚本写出且可执行、session 状态转移、
 `Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent、
 横幅位置与宽度夹在窗口内，往下拖的深度也夹在窗口内；一行可收走，收走后只等值得
    再听的话（IslandPlace 纯函数、shelving 语义）；卡片顺序（最新在最上、同一 session 回顶不添卡）、
-   栈形状（收起=顶张整张+每张一条缝、展开=每张整张且不越窗口），以及真用 `NSHostingView`
-   画出来量高度、与 `IslandPlace` 的算术对齐（画的和算的不许各走各的）。
+   栈形状（收起=顶张整张+每张一条缝、展开=每张整张且不越窗口）、没有 tty 的 agent 永远在栏上
+   而 watched 只藏自己终端里的那一只、一句话在卡上只说一遍（doing/under 各说各的半边），以及
+   真用 `NSHostingView` 画出来量高度、与 `IslandPlace` 的算术对齐（画的和算的不许各走各的）。
 
 ## 九、Chat 视图（agent 的对话面）
 

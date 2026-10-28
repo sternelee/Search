@@ -94,10 +94,26 @@ enum IslandPlace {
         card(under(session) != nil)
     }
 
+    /// What a card's own line says it is doing: the tool it's on when
+    /// there is one, the words it stopped to say when there isn't —
+    /// the one line of it. The words go in the line only when there is
+    /// nothing under the line to say them (see `under`): a card that
+    /// said them in both places — squeezed in beside the tool's name
+    /// and repeated below — is a card that looks broken.
+    static func doing(_ session: Island.Session) -> String {
+        switch session.part {
+        case .asking, .working:
+            return session.tool ?? session.words ?? ""
+        case .waiting, .done:
+            return session.words ?? ""
+        }
+    }
+
     /// What a card says under its own line: the words an agent said,
-    /// where the line above isn't already saying them. A working one
-    /// with a tool up there has room below for what it said of itself;
-    /// a waiting or done one is saying its words in that very line, and
+    /// where the line above isn't already saying them (`doing` says
+    /// them there when there's no tool). A working or asking one with
+    /// a tool up there has room below for what it said of itself; a
+    /// waiting or done one is saying its words in that very line, and
     /// saying them twice on one card is a card that looks broken.
     static func under(_ session: Island.Session) -> String? {
         guard let words = session.words, !words.isEmpty else { return nil }
@@ -314,29 +330,14 @@ struct IslandBar: View {
     /// the one who drew the bar said otherwise (see `opened`).
     private var over: Bool { opened ?? cursor }
 
-    /// What the bar holds: everything but the terminal being watched,
-    /// newest first. The island keeps that order (Island.order) — it's
-    /// the order things were said in, and a card goes back to the top of
-    /// it whenever its agent says anything — so a card is never in a
-    /// place a person has to go looking for. A session with nowhere to
-    /// be jumped to (outside Search's terminals) reads the same as any
-    /// other; it just doesn't go anywhere when clicked.
+    /// What the bar holds: everything but the terminal being watched
+    /// and the ones put away by hand, newest first — the island's own
+    /// rule (Island.cards), so the bar and the tests that hold it read
+    /// the same answer and can't drift apart. A session with nowhere
+    /// to be jumped to (outside Search's terminals) reads the same as
+    /// any other; it just doesn't go anywhere when clicked.
     private var held: [Island.Session] {
-        let watched = Island.watched
-        let all = island.sessions.filter { $0.tty != watched && !island.shelved.contains($0.id) }
-        // Newest first by what the island says — and anything it hasn't
-        // placed yet (a session the island took in before the bar was
-        // drawn) by when it last spoke, so the order is always a real
-        // one and never arbitrary.
-        let rank = Dictionary(island.order.enumerated().map { ($1, $0) }, uniquingKeysWith: { one, _ in one })
-        return all.sorted { a, b in
-            switch (rank[a.id], rank[b.id]) {
-            case let (one?, two?): return one < two
-            case (_?, nil): return true
-            case (nil, _?): return false
-            case (nil, nil): return a.at > b.at
-            }
-        }
+        island.cards(watched: Island.watched)
     }
 
     /// What's drawn: the top of the pile while it's piled, all of it
@@ -489,7 +490,7 @@ struct IslandBar: View {
                 // notch, not a page.
                 (title(session)
                     + Text(partName(session.part)).foregroundColor(Palette.muted)
-                    + Text(detail(session)).foregroundColor(Palette.ink))
+                    + Text(IslandPlace.doing(session)).foregroundColor(Palette.ink))
                     .font(.system(size: 11.5))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -653,19 +654,6 @@ struct IslandBar: View {
         case .waiting: return " is waiting — "
         case .working: return " is running "
         case .done: return " finished — "
-        }
-    }
-
-    /// What the part's doing says, the one line of it. An asking one
-    /// says the thing it wants to do; a working one, the tool it's on;
-    /// a waiting or done one, the words it stopped to say.
-    private func detail(_ session: Island.Session) -> String {
-        switch session.part {
-        case .asking, .working:
-            if let tool = session.tool { return tool + (session.words.map { " \($0)" } ?? "") }
-            return session.words ?? ""
-        case .waiting, .done:
-            return session.words ?? ""
         }
     }
 

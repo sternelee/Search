@@ -358,6 +358,39 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(bytes[0], Data("{}".utf8), "answered with nothing, the cue to ask in person")
     }
 
+    /// A session with no terminal of its own — the hook walked up
+    /// the process tree and found none, the way a headless run under
+    /// another agent does — is never the watched one: there is nothing
+    /// of it on the screen to be watching, so its card is held whatever
+    /// tab is in front. The watched terminal's own agent is the only
+    /// one hidden, and only while its terminal is the one watched.
+    @MainActor
+    func testAnAgentWithNoTerminalOfItsOwnIsNeverTheWatchedOne() {
+        let island = Island.shared
+        let run = UUID().uuidString.prefix(8)
+        func said(_ name: String, _ id: String, tty: String?) -> IslandEvent {
+            IslandEvent(
+                source: "claude", name: name, session: id, tty: tty,
+                cwd: nil, tool: "Bash", call: nil, prompt: nil, words: nil
+            )
+        }
+        let outside = "claude/outside-\(run)", inside = "claude/inside-\(run)"
+        island.heard(said("PreToolUse", "outside-\(run)", tty: nil))
+        island.heard(said("PreToolUse", "inside-\(run)", tty: "/dev/ttys004"))
+        defer {
+            island.heard(said("SessionEnd", "outside-\(run)", tty: nil))
+            island.heard(said("SessionEnd", "inside-\(run)", tty: "/dev/ttys004"))
+        }
+        func holds(_ id: String, watched: String?) -> Bool {
+            island.cards(watched: watched).contains { $0.id == id }
+        }
+        XCTAssertTrue(holds(outside, watched: nil), "a web tab in front, and the outside agent is still held")
+        XCTAssertTrue(holds(outside, watched: "/dev/ttys009"), "a terminal watched, and the outside agent is held — it isn't in any")
+        XCTAssertTrue(holds(inside, watched: nil), "a terminal's agent is held while its terminal isn't the watched one")
+        XCTAssertTrue(holds(inside, watched: "/dev/ttys009"), "another terminal watched, and this one is held")
+        XCTAssertFalse(holds(inside, watched: "/dev/ttys004"), "the watched terminal's own agent is the one hidden")
+    }
+
     // MARK: - the bar's place
 
     /// The bar sits where it's dragged and holds the width it's given:
@@ -554,6 +587,45 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(laid.last, 0, "the bottom of the list is the newest card")
     }
 
+    /// A card says its words once: in its own line when there is nothing
+    /// under the line to say them, under the line when the line is
+    /// already naming the tool. Saying them in both places — squeezed in
+    /// beside the tool's name and repeated below — is a card that looks
+    /// broken, and the two halves of the rule (doing and under) are one
+    /// rule for exactly that reason.
+    func testACardSaysItsWordsOnce() {
+        func session(_ part: Island.Session.Part, tool: String?, words: String?) -> Island.Session {
+            Island.Session(
+                id: "claude/once", source: "claude", part: part, tool: tool,
+                words: words, tty: nil, cwd: nil, at: Date()
+            )
+        }
+        let said = "rm -rf /tmp/build"
+        let shapes = [
+            (session(.asking, tool: "Bash", words: said), "the ask with a tool to name"),
+            (session(.asking, tool: nil, words: said), "the ask with only words"),
+            (session(.working, tool: "Bash", words: said), "the work with a tool"),
+            (session(.working, tool: nil, words: said), "the work with only words"),
+            (session(.waiting, tool: "Bash", words: said), "the waiting"),
+            (session(.done, tool: nil, words: said), "the done"),
+        ]
+        for shape in shapes {
+            let inLine = IslandPlace.doing(shape.0).contains(said)
+            let under = IslandPlace.under(shape.0) == said
+            XCTAssertTrue(inLine || under, "\(shape.1): the words are said somewhere on the card")
+            XCTAssertFalse(inLine && under, "\(shape.1): the words are said once, not twice")
+        }
+        // The asking one with a tool is the shape the bug wore: the
+        // line names the tool, and the words go under it, whole.
+        XCTAssertEqual(IslandPlace.doing(shapes[0].0), "Bash", "the line names the tool")
+        XCTAssertEqual(IslandPlace.under(shapes[0].0), said, "the words go under the line")
+        // An empty saying is no saying: nothing under, and nothing to
+        // find in the line either.
+        let silent = session(.done, tool: nil, words: "")
+        XCTAssertNil(IslandPlace.under(silent), "an empty saying says nothing under the line")
+        XCTAssertTrue(IslandPlace.doing(silent).isEmpty, "an empty saying leaves the line to the name alone")
+    }
+
     /// The bar as it's drawn, with no window and no cursor: the closed
     /// stack is one card and a sliver of each one under it, the open one
     /// is every card whole, and both are the same numbers the shape is
@@ -617,22 +689,12 @@ final class IslandTests: XCTestCase {
         }
 
         // What the bar is holding, read through the same rule the bar
-        // itself reads it by (Island.held's filter and order, then the
-        // stack's own shape): so this holds whatever else the run left in
-        // the island, and what's being checked is the numbers rather than
-        // the state. Open is every card; closed is the few that peek.
-        let watching = Island.watched
-        let rank = Dictionary(island.order.enumerated().map { ($1, $0) }, uniquingKeysWith: { one, _ in one })
-        let all = island.sessions
-            .filter { $0.tty != watching && !island.shelved.contains($0.id) }
-            .sorted { a, b in
-                switch (rank[a.id], rank[b.id]) {
-                case let (one?, two?): return one < two
-                case (_?, nil): return true
-                case (nil, _?): return false
-                case (nil, nil): return a.at > b.at
-                }
-            }
+        // itself reads it by (Island.cards — the island's own filter and
+        // order, then the stack's own shape): so this holds whatever
+        // else the run left in the island, and what's being checked is
+        // the numbers rather than the state. Open is every card; closed
+        // is the few that peek.
+        let all = island.cards(watched: Island.watched)
         XCTAssertGreaterThanOrEqual(all.count, 3, "this test's own cards are held")
 
         let open = try height(true)

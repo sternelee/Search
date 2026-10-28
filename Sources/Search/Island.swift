@@ -366,6 +366,36 @@ final class Island: ObservableObject {
         order.removeAll { $0 == session.id }
     }
 
+    /// What the bar holds, newest first: everything but the terminal
+    /// being watched — the front window's own tab, the pane with the
+    /// keys (Island.watched), whose card would say what the screen in
+    /// front of you says better — and the ones put away by hand. A
+    /// session with no terminal of its own (a hook that walked up the
+    /// process tree and found none) is never the watched one — there
+    /// is nothing of it on the screen to be watching — so it is held
+    /// whatever tab is in front. The order is what was said when
+    /// (Island.order), a card going back to the top whenever its agent
+    /// says anything; anything the island hasn't placed yet by when it
+    /// last spoke, so the order is always a real one and never
+    /// arbitrary. The rule lives here rather than in the bar, so the
+    /// bar and the tests that hold it read the same answer and can't
+    /// drift apart.
+    func cards(watched: String?) -> [Session] {
+        let kept = sessions.filter { session in
+            (session.tty == nil || session.tty != watched)
+                && !shelved.contains(session.id)
+        }
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { one, _ in one })
+        return kept.sorted { a, b in
+            switch (rank[a.id], rank[b.id]) {
+            case let (one?, two?): return one < two
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return a.at > b.at
+            }
+        }
+    }
+
     // MARK: Going to it
 
     /// Brings the agent's terminal to the front: the window, the tab,
