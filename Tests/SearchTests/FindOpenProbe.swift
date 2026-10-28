@@ -42,6 +42,21 @@ final class FindOpenProbe: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         XCTAssertNil(view.findPanel, "the keyboard back in the grid closes the find")
     }
+
+    func testALayoutWhileThePanelIsLeavingDoesNotBringItBack() {
+        let (view, _) = pane()
+        view.openFind()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertNotNil(view.findPanel)
+        view.closeFind()
+        // A layout lands while the plate is on its way out — a resize,
+        // output arriving, the dock taking its rows. The home edge is
+        // re-read; the close holds.
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertNil(view.findPanel, "a layout mid-leg does not walk the panel back home")
+    }
 }
 
 /// The panel's other half: what it finds, and what it says about it.

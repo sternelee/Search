@@ -199,6 +199,7 @@ Metalterm 的输入坞（底部 dock）当时按 3.1 的旧边界**不学**，�
 - **网页那个胶囊本身也走 Metalterm 的腿**，不是 SwiftUI 自带的滑入：`FindBar` 常驻在 overlay 里（`App.swift`），一条 `leg` 状态被 `withAnimation(.linear(FieldMotion.arrive))` 线性走完，每一帧在 `OutOfTheCorner` 里读 `FieldCurve.tail/head/fade`——尾定蒙版（胶囊从它靠角的那一端被拉出来）、头是那根亮条、缝是 smear 光带、不透明度是 fade，敲键亮条 bleed 一下。离开反过来收回去（`FieldMotion.leave`）。之所以常驻：SwiftUI 的视图从层级里拿掉是瞬间消失的，腿没走完就被截断；分栏那条同样为此把 `findBar` 的拆宿主推迟到腿走完之后（`PaneStage.showFind`），窗口里再开一次 find 会取消拆除、腿掉头。`Motion.reduced` 时腿直接就位，位置照旧。
 - 计数（`1 of 9` / `none`）挂在面板右端，**增长会把左缘推出去**——那是 `place()` 的一条新腿，与进场同形但不淡入。宽度在计数变化时 `remeasure()` 量一次，不在 8.3 ms 的帧里量字符串。
 - 关窗不再是**截断**：`closeFind()` 只清 findings 并起一条离场腿，视图由走完腿的那一帧拆掉。
+- **离场腿不被 `place()` 重新定向**：`place()` 在 `.moving` 态的再定向（从头部重启一条回 home 的 settle 腿）对**来向**腿是对的——板还属于屏幕；对**离开**腿是灾难——离开腿的目的地在屏外（`rest + wide`），而 leave 的行程只有 90 ms（0.36 窗口 × 0.25 行程），任何落在这 90 ms 里的 layout（输出到达、dock 占行、改窗口尺寸、改设置）都会把腿改写成回 home 的腿，**关闭被无声取消、面板永久滞留**——测试里它以 flake 面目出现（layout 是否恰好落在窗口里取决于 zsh 启动时序）。`place()` 现在见 `fading` 即返回：正在离开的板没有值得走回去的家。单测钉住：layout 落在腿中间，面板照样拆掉（`testALayoutWhileThePanelIsLeavingDoesNotBringItBack`）。
 
 两处**刻意的偏离**，都写在 `TerminalField.swift` 的注释里，因为不说就会被当成抄错：
 

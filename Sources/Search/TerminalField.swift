@@ -269,6 +269,12 @@ final class TerminalField {
             from = leading
             to = leading
         case .resting, .moving:
+            // A plate on its way out is not retargeted: its leg ends in
+            // the teardown, and a layout that lands while it is leaving —
+            // output arriving, a resize, the dock taking its rows — would
+            // otherwise walk it back to the home it has already left,
+            // cancelling a close nobody could see.
+            guard !fading else { return }
             // Retargeted mid-flight — a resize, or an edge that moved while
             // the plate was still coming in. The leg restarts from wherever
             // the head is, which is where a thrown thing actually is.
