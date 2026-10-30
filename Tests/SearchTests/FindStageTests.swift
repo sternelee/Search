@@ -13,6 +13,12 @@ final class FindStageTests: XCTestCase {
 
     func testFindBarFollowsFocusedPaneAndStageLayout() async throws {
         _ = NSApplication.shared
+        // Where the bar hangs is a setting, and the look is shared by
+        // every test in this process: a test that asserts a place says
+        // which place it is looking at.
+        let was = TerminalLook.findPlace
+        defer { TerminalLook.findPlace = was }
+        TerminalLook.findPlace = .top
         let browser = Browser(record: WindowRecord())
         let left = Tab(bench: true)
         let right = Tab(bench: true)
@@ -45,6 +51,14 @@ final class FindStageTests: XCTestCase {
         XCTAssertFalse(bar.isHidden)
         try await assertControlsHit(in: bar, stage: stage)
         stage.showFind(nil)
+        // The pill leaves on a leg of its own, so the host stays mounted
+        // while the leg runs — taken out mid-leg the pill would vanish
+        // instead of going back into its corner (see PaneStage.showFind).
+        XCTAssertNotNil(bar.superview)
+        // Awaited, not waited for: the leg is walked by a main-queue
+        // timer, and `wait(for:)` blocks the main actor the async test is
+        // running on, so the timer never fires.
+        try await Task.sleep(for: .seconds(0.6))
         XCTAssertNil(bar.superview)
     }
 
@@ -114,6 +128,10 @@ final class FindStageTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = stage
         window.orderFrontRegardless()
+        // Out of sight when the test ends, not closed: a window a probe put
+        // on screen is still visible to every other suite's teardown,
+        // which asserts that nothing is.
+        addTeardownBlock { window.orderOut(nil) }
         return window
     }
 

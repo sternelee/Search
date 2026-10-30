@@ -674,6 +674,91 @@ final class Preferences: ObservableObject {
         didSet { store.set(floatingNewTab, forKey: "newtab.floating") }
     }
 
+    // The terminal's own settings: the face it is set in, the colours it
+    // paints with, the shape of its cursor, the room it leaves at its
+    // edges, and the shell and folder a new one starts with. Kept here
+    // with every other setting, and copied into TerminalLook, where the
+    // terminal reads them without a Preferences in hand — and said out
+    // loud, so a terminal already on screen takes a change as it is made.
+    @Published var terminalFont: String {
+        didSet { store.set(terminalFont, forKey: "terminal.font"); terminalLookChanged() }
+    }
+    @Published var terminalSize: Double {
+        didSet { store.set(terminalSize, forKey: "terminal.size"); terminalLookChanged() }
+    }
+    @Published var terminalTheme: TerminalTheme {
+        didSet { store.set(terminalTheme.rawValue, forKey: "terminal.theme"); terminalLookChanged() }
+    }
+    @Published var terminalCursor: TerminalCursor {
+        didSet { store.set(terminalCursor.rawValue, forKey: "terminal.cursor"); terminalLookChanged() }
+    }
+    @Published var terminalBlinks: Bool {
+        didSet { store.set(terminalBlinks, forKey: "terminal.blinks"); terminalLookChanged() }
+    }
+    /// Where the ⌘F panel sits in a terminal. See TerminalLook.findPlace.
+    @Published var terminalFindPlace: TerminalFindPlace {
+        didSet { store.set(terminalFindPlace.rawValue, forKey: "terminal.findPlace"); terminalLookChanged() }
+    }
+    /// Where typing lands in a terminal. See TerminalLook.inputBar.
+    @Published var terminalInputBar: TerminalInputBar {
+        didSet { store.set(terminalInputBar.rawValue, forKey: "terminal.inputBar"); terminalLookChanged() }
+    }
+    @Published var terminalPadding: Double {
+        didSet { store.set(terminalPadding, forKey: "terminal.padding"); terminalLookChanged() }
+    }
+    /// The program a new terminal runs, as a path. Empty is the Mac's own
+    /// shell — a shell that has been moved or removed must not leave
+    /// anyone without one (see TerminalLook.shellPath).
+    @Published var terminalShell: String {
+        didSet { store.set(terminalShell, forKey: "terminal.shell"); terminalLookChanged() }
+    }
+    /// Where a new terminal starts, as a path. Empty is wherever Search
+    /// itself was started.
+    @Published var terminalDirectory: String {
+        didSet { store.set(terminalDirectory, forKey: "terminal.directory"); terminalLookChanged() }
+    }
+    /// How many rows of scrollback a terminal keeps above its screen.
+    @Published var terminalScrollback: Int {
+        didSet { store.set(terminalScrollback, forKey: "terminal.scrollback"); terminalLookChanged() }
+    }
+    /// Whether a program may take the mouse, set the clipboard or have its
+    /// synchronized output waited for (see TerminalLook for each).
+    @Published var terminalMouse: Bool {
+        didSet { store.set(terminalMouse, forKey: "terminal.mouse"); terminalLookChanged() }
+    }
+    @Published var terminalClipboard: Bool {
+        didSet { store.set(terminalClipboard, forKey: "terminal.clipboard"); terminalLookChanged() }
+    }
+    @Published var terminalLinks: Bool {
+        didSet { store.set(terminalLinks, forKey: "terminal.links"); terminalLookChanged() }
+    }
+    @Published var terminalSync: Bool {
+        didSet { store.set(terminalSync, forKey: "terminal.sync"); terminalLookChanged() }
+    }
+
+    /// The terminal's look, handed over to the terminals already open: they
+    /// read it from TerminalLook and not from here, so every change has to
+    /// be put there and said out loud. Called from each of the fourteen
+    /// above, and once at the end of init, where no property observer runs.
+    private func terminalLookChanged() {
+        TerminalLook.family = terminalFont
+        TerminalLook.size = terminalSize
+        TerminalLook.theme = terminalTheme
+        TerminalLook.cursor = terminalCursor
+        TerminalLook.blinks = terminalBlinks
+        TerminalLook.findPlace = terminalFindPlace
+        TerminalLook.inputBar = terminalInputBar
+        TerminalLook.padding = terminalPadding
+        TerminalLook.shell = terminalShell
+        TerminalLook.directory = terminalDirectory
+        TerminalLook.scrollback = terminalScrollback
+        TerminalLook.takesMouse = terminalMouse
+        TerminalLook.takesClipboard = terminalClipboard
+        TerminalLook.opensLinks = terminalLinks
+        TerminalLook.syncsOutput = terminalSync
+        TerminalLook.announce()
+    }
+
     init() {
         navigationLeft = store.bool(forKey: "toolbar.left")
         // Carried over from when there were four ways of holding the browser
@@ -800,8 +885,27 @@ final class Preferences: ObservableObject {
         botThinking = BotThinking(rawValue: store.string(forKey: "bot.thinking") ?? "") ?? .off
         botSteps = store.object(forKey: "bot.steps") as? Int ?? 12
         commandBar = store.bool(forKey: "commandbar")
+        terminalFont = store.string(forKey: "terminal.font") ?? ""
+        terminalSize = store.object(forKey: "terminal.size") as? Double ?? TerminalLook.home
+        terminalTheme = store.string(forKey: "terminal.theme").flatMap(TerminalTheme.init) ?? .system
+        terminalCursor = store.string(forKey: "terminal.cursor").flatMap(TerminalCursor.init) ?? .block
+        terminalBlinks = store.object(forKey: "terminal.blinks") as? Bool ?? true
+        terminalFindPlace = store.string(forKey: "terminal.findPlace")
+            .flatMap(TerminalFindPlace.init) ?? .top
+        terminalInputBar = store.string(forKey: "terminal.inputBar")
+            .flatMap(TerminalInputBar.init) ?? .bottom
+        terminalPadding = store.object(forKey: "terminal.padding") as? Double ?? 4
+        terminalShell = store.string(forKey: "terminal.shell") ?? ""
+        terminalDirectory = store.string(forKey: "terminal.directory") ?? ""
+        terminalScrollback = store.object(forKey: "terminal.scrollback") as? Int ?? 100_000
+        terminalMouse = store.object(forKey: "terminal.mouse") as? Bool ?? true
+        terminalClipboard = store.object(forKey: "terminal.clipboard") as? Bool ?? true
+        terminalLinks = store.object(forKey: "terminal.links") as? Bool ?? true
+        terminalSync = store.object(forKey: "terminal.sync") as? Bool ?? true
         floatingNewTab = store.bool(forKey: "newtab.floating")
-        // On for everyone who never touched it (24 Oct 2026).
+        // No property observer runs in an initializer, so the first answer
+        // has to be given by hand. On for everyone who never touched it
+        // (24 Oct 2026).
         let history = store.object(forKey: "swipe.history") as? Bool ?? true
         holdsHistory = history
         PageView.holdsHistory = history
@@ -854,6 +958,7 @@ final class Preferences: ObservableObject {
         Preferences.tellWebKit(autocorrect: corrects)
         Substitution.register()
         pageZoom = store.object(forKey: "pageZoom") as? Double ?? 1
+        terminalLookChanged()
         // Left behind by an assistant this browser no longer has.
         for key in ["mind.model", "mind.effort", "mind.acting", "mind.width", "mind.open"] {
             store.removeObject(forKey: key)

@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import WebKit
 import Combine
+import AVFoundation
 import NaturalLanguage
 import UserNotifications
 import IOKit.pwr_mgt
@@ -3839,7 +3840,10 @@ enum ExtensionShims {
     /// Which of Search's tabs each of those tab ids is, as the extension's
     /// shim found it (sidePanel.placed).
     static var panelTabIDs: [String: [Int: Tab.ID]] = [:]
-    /// One voice for every extension that reads aloud.
+    /// One voice for every extension that reads aloud. The system's own
+    /// synthesizer, the one the reminders and the rest of the system speak
+    /// with — a voice an extension asks for by name is found among the ones
+    /// it has (see `tts.getVoices`).
     static let speaker = AVSpeechSynthesizer()
 
     static func answer(_ message: Any, from context: WKWebExtensionContext, owner: Extensions) async throws -> Any? {

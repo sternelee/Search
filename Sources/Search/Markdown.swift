@@ -29,7 +29,7 @@ enum Markdown {
     static func page(_ text: String, base: URL?) -> Page {
         var lines = normalized(text)
         var title = frontMatter(&lines)
-        var parser = Parser(base: base, references: [:])
+        var parser = PageParser(base: base, references: [:])
         parser.references = references(&lines)
         var blocks = parser.blocks(lines[...])
 
@@ -105,7 +105,7 @@ enum Markdown {
 
     /// Text with the markup taken off, for a title.
     fileprivate static func plain(_ text: String) -> String {
-        let html = Parser(base: nil, references: [:]).inline(text)
+        let html = PageParser(base: nil, references: [:]).inline(text)
         let bare = html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
         return unescape(bare).trimmingCharacters(in: .whitespaces)
     }
@@ -165,19 +165,19 @@ enum Markdown {
 
 // MARK: - blocks
 
-private indirect enum Block {
+private indirect enum PageBlock {
     case heading(Int, String)
     case paragraph(String)
     case code(String?, String)
-    case quote([Block])
-    case list(ordered: Bool, start: Int, items: [[Block]], checks: [Bool?], tight: Bool)
+    case quote([PageBlock])
+    case list(ordered: Bool, start: Int, items: [[PageBlock]], checks: [Bool?], tight: Bool)
     case rule
     case table(head: [String], aligns: [String?], rows: [[String]])
     /// A line of tags written in the source, rebuilt through Inline.tag.
     case html(String)
 }
 
-private struct Parser {
+private struct PageParser {
     let base: URL?
     var references: [String: (String, String?)]
     /// Ids already given, so two headings of the same name don't share one.
@@ -190,8 +190,8 @@ private struct Parser {
 
     // MARK: reading lines into blocks
 
-    func blocks(_ lines: ArraySlice<Substring>) -> [Block] {
-        var out: [Block] = []
+    func blocks(_ lines: ArraySlice<Substring>) -> [PageBlock] {
+        var out: [PageBlock] = []
         var i = lines.startIndex
         while i < lines.endIndex {
             let line = lines[i]
@@ -340,7 +340,7 @@ private struct Parser {
         return nil
     }
 
-    static func atx(_ bare: String) -> Block? {
+    static func atx(_ bare: String) -> PageBlock? {
         let hashes = bare.prefix(while: { $0 == "#" }).count
         guard (1...6).contains(hashes) else { return nil }
         let rest = bare.dropFirst(hashes)
@@ -410,7 +410,7 @@ private struct Parser {
         return Marker(indent: indent, ordered: ordered, start: start, sign: sign, content: indent + width)
     }
 
-    func list(_ lines: ArraySlice<Substring>, from begin: Int) -> (Block, Int) {
+    func list(_ lines: ArraySlice<Substring>, from begin: Int) -> (PageBlock, Int) {
         guard let first = Self.marker(lines[begin]) else { return (.paragraph(String(lines[begin])), begin + 1) }
         var items: [[Substring]] = []
         var current: [Substring] = []
@@ -460,7 +460,7 @@ private struct Parser {
         }
         items.append(current)
         // Blank lines at the very end belong to whatever follows.
-        var parsed: [[Block]] = []
+        var parsed: [[PageBlock]] = []
         var checks: [Bool?] = []
         for var item in items {
             while item.last?.isEmpty == true { item.removeLast() }
@@ -526,7 +526,7 @@ private struct Parser {
         return cells
     }
 
-    func table(_ lines: ArraySlice<Substring>, from begin: Int) -> (Block, Int) {
+    func table(_ lines: ArraySlice<Substring>, from begin: Int) -> (PageBlock, Int) {
         let head = Self.row(String(lines[begin]))
         let aligns = Self.delimiters(lines[begin + 1]) ?? []
         var rows: [[String]] = []
@@ -543,7 +543,7 @@ private struct Parser {
     // MARK: drawing blocks
 
     /// A tag that stood aside draws nothing, and leaves no gap for it.
-    mutating func render(_ blocks: [Block], tight: Bool) -> String {
+    mutating func render(_ blocks: [PageBlock], tight: Bool) -> String {
         var parts: [String] = []
         for block in blocks {
             let html = render(block, tight: tight)
@@ -552,7 +552,7 @@ private struct Parser {
         return parts.joined(separator: "\n")
     }
 
-    mutating func render(_ block: Block, tight: Bool) -> String {
+    mutating func render(_ block: PageBlock, tight: Bool) -> String {
         switch block {
         case .heading(let level, let text):
             var id = Markdown.slug(text)

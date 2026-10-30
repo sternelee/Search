@@ -136,6 +136,31 @@ final class SiteNotifications: NSObject {
         }
     }
 
+    // MARK: - the terminal
+
+    /// A terminal's own announcement (OSC 9 / OSC 777, see Terminal): a
+    /// long job said and done in a tab nobody is looking at. The caller
+    /// holds the tab in front — its shell is already speaking. A test run
+    /// posts nothing; it keeps what it would have posted, for the bench.
+    func post(tab: String, title: String, body: String) {
+        guard !Store.testing else {
+            recorded.append(["title": title, "body": body, "origin": tab, "tag": "", "kind": "terminal"])
+            return
+        }
+        authorize()
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.subtitle = "Terminal"
+        content.threadIdentifier = "terminal|\(tab)"
+        content.categoryIdentifier = "site"
+        content.sound = .default
+        content.userInfo = ["search.kind": "terminal", "search.tab": tab]
+        // One announcement replaces the tab's last: a shell that keeps
+        // ringing doesn't stack up on the screen.
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "terminal|\(tab)", content: content, trigger: nil))
+    }
+
     // MARK: - posting
 
     func post(id: String, title: String, body: String, origin: String, tag: String, info: [String: Any]) {
@@ -185,6 +210,10 @@ final class SiteNotifications: NSObject {
         if info["search.kind"] as? String == "page", let id = (info["search.id"] as? String).flatMap(UInt64.init) {
             return PageNotifications.clicked(id)
         }
+        if info["search.kind"] as? String == "terminal", let tab = info["search.tab"] as? String {
+            bringTerminalForward(tab)
+            return
+        }
         guard info["search.kind"] as? String == "worker", let data = info["search.data"] as? NSDictionary else { return }
         SiteNotifications.tell(from ?? Store.websites, "_processPersistentNotificationClick:completionHandler:", data)
     }
@@ -221,6 +250,18 @@ final class SiteNotifications: NSObject {
         guard let (browser, tab) = found.first(where: { $0.1.store === store })
             ?? found.first(where: { pair in store.map { s in Spaces.stores(of: pair.0.profileID).contains { $0 === s } } ?? true })
         else { return }
+        browser.select(tab)
+        Browsers.show(browser)
+        NSApp.activate()
+    }
+
+    /// The terminal tab in front, found across every window by its own id —
+    /// a shell has no address to speak of (see TERMINAL.md).
+    private func bringTerminalForward(_ id: String) {
+        let found = Browsers.all.filter { $0.extensionPopup == nil }.flatMap { browser in
+            browser.tabs.filter { $0.id.uuidString == id }.map { (browser, $0) }
+        }
+        guard let (browser, tab) = found.first else { return }
         browser.select(tab)
         Browsers.show(browser)
         NSApp.activate()

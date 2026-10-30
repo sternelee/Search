@@ -282,6 +282,75 @@ final class Tab: ObservableObject, Identifiable {
     /// The web view if there is one yet, for the callers that must not be
     /// the reason there is.
     private(set) var built: PageView?
+
+    /// Whether this tab runs a shell in place of a page. Set as the tab is
+    /// made; the shell itself — the process, the parser, the grid — is
+    /// started the first time anyone asks for its view (see console), as
+    /// the page's own view is built only when someone asks for it: a
+    /// session of twenty shells restored is twenty tabs and nothing
+    /// running, not twenty processes fighting the first frame at launch.
+    private let runsShell: Bool
+
+    /// The shell this tab runs, once it has been started: the one the keys
+    /// are in, of however many panes the tab's room holds (see console).
+    /// Everything around the page — the bar, the spaces, the groups, the
+    /// switcher, the session — holds such a tab exactly as it holds any
+    /// other.
+    var shell: Terminal? { madeShell?.focusedTerminal }
+
+    /// True when the tab runs a shell rather than a page.
+    var isTerminal: Bool { runsShell }
+
+    /// Where the keys live in this tab: the focused pane of a terminal's
+    /// room, the page of anything else. The window hands the keyboard back
+    /// to it (see App's handBack) — asking a terminal tab for its page
+    /// would build one nobody ever shows.
+    var keySeat: NSView? { isTerminal ? madeShell?.focusedView : web }
+
+    /// Reports the tab's own notices (see Terminal: OSC 9 / OSC 777 —
+    /// who the shell says it is, where it lives, its bells).
+    var onNotice: ((Notice) -> Void)?
+
+    /// The tab's last shell has exited on its own — an `exit` typed, a
+    /// command run out — and a terminal with nothing left in it is not a
+    /// tab worth keeping. Wired by Browser.prepare to the close ⌘W takes.
+    var onGone: ((Tab) -> Void)?
+
+    /// True when anything can be found in the tab: a page, or a shell's
+    /// whole scrollback (⌘F — see TerminalFind).
+    var searchable: Bool { isTerminal || hasPage }
+
+    /// The shell's room, which is the shells themselves started: made the
+    /// first time anyone asks for it, as the page is made. One pane to
+    /// begin with, and however many it is split into after — what it says
+    /// about itself (its title, its directory, what ⌘F searches) is the
+    /// focused pane's, and the panes are the container's.
+    private(set) var madeShell: TerminalSplits?
+    var console: TerminalSplits? {
+        guard runsShell else { return nil }
+        if let madeShell { return madeShell }
+        let made = TerminalSplits()
+        title = made.title
+        made.$title
+            .receive(on: RunLoop.main)
+            .sink { [weak self] said in self?.title = said }
+            .store(in: &shellEars)
+        made.$cwd
+            .receive(on: RunLoop.main)
+            .sink { [weak self] place in self?.address = place }
+            .store(in: &shellEars)
+        made.onNotice = { [weak self] notice in self?.onNotice?(notice) }
+        made.onEmptied = { [weak self] in
+            guard let self else { return }
+            onGone?(self)
+        }
+        madeShell = made
+        return made
+    }
+
+    /// What the shell says is listened to with, as the page is watched with
+    /// its own observers.
+    private var shellEars: [AnyCancellable] = []
     private var configuration: WKWebViewConfiguration
     let extensionReturn = ExtensionReturnNavigation()
 
@@ -469,6 +538,14 @@ final class Tab: ObservableObject, Identifiable {
     /// the tab has an address, and from the page a moment after it loads.
     @Published var icon: NSImage?
 
+    /// The mark a shell tab wears: its own symbol, not a site's, and there
+    /// before the shell itself is started.
+    static let terminalMark = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+
+    /// What the row draws beside the name: a shell's symbol or a page's
+    /// icon. Asked through here so no site's icon can stand in for a shell's.
+    var mark: NSImage? { isTerminal ? Tab.terminalMark : icon }
+
     /// The letter a pinned tab is reduced to, and what a tab shows in place of
     /// an icon it doesn't have yet.
     var monogram: String {
@@ -483,6 +560,13 @@ final class Tab: ObservableObject, Identifiable {
     }
 
     func adoptIcon() {
+        // A shell's mark is its own, not a site's: where it is (OSC 7) is a
+        // file address with no favicon, and taking that for an answer would
+        // leave the tab wearing the first letter of its directory.
+        if isTerminal {
+            icon = Tab.terminalMark
+            return
+        }
         if let page {
             icon = page.glyph
             return
@@ -776,11 +860,17 @@ final class Tab: ObservableObject, Identifiable {
     /// A tab that has never been anywhere shows the address field instead of a
     /// page. It still owns a web view — built now, warm by the time it's needed.
     /// A chat tab is never one of these blanks to be reused or cleaned
-    /// away, and neither is one of Search's own pages.
-    var isBlank: Bool { !chat && address == nil && page == nil }
+    /// away, and neither is one of Search's own pages. A shell is somewhere
+    /// already, and never blank either.
+    var isBlank: Bool { !chat && shell == nil && address == nil && page == nil }
     /// A tab with a web page — loaded, on its way or asleep — as opposed to
-    /// an empty one or one of Search's own pages.
-    var isWeb: Bool { address != nil }
+    /// an empty one, one of Search's own pages, or a shell.
+    var isWeb: Bool { !isTerminal && address != nil }
+
+    /// True when there is a page to act on. Not a shell: a shell is typed
+    /// at, and every page command — reload, find, print — quietly declines
+    /// rather than building a web view nothing asked for.
+    var hasPage: Bool { shell == nil && !isBlank }
 
     // MARK: - Search's own pages (see InternalPages.swift)
 
@@ -854,11 +944,17 @@ final class Tab: ObservableObject, Identifiable {
         return "New Tab"
     }
 
-    init(shy: Bool = false, bench: Bool = false, chat: Bool = false, configuration: WKWebViewConfiguration? = nil) {
+    init(shy: Bool = false, bench: Bool = false, chat: Bool = false, configuration: WKWebViewConfiguration? = nil, terminal: Bool = false) {
         self.shy = shy
         self.bench = bench
         self.chat = chat
+        self.runsShell = terminal
         self.configuration = configuration ?? Web.configuration(shy: shy)
+        // The shell's own icon, worn before the shell itself is started:
+        // the bar shows what the tab is the moment it is restored.
+        if terminal {
+            icon = Tab.terminalMark
+        }
         if Store.testing { Tab.live.add(self) }
     }
 
@@ -1019,6 +1115,7 @@ final class Tab: ObservableObject, Identifiable {
     /// Between two fifths and three times, which is as far as a page is worth
     /// pushing in either direction.
     func magnify(to value: CGFloat) {
+        guard !isTerminal else { return }
         let wanted = min(3, max(0.4, value))
         guard abs(wanted - web.pageZoom) > 0.004 else { return }
         web.pageZoom = wanted
@@ -1411,6 +1508,14 @@ final class Tab: ObservableObject, Identifiable {
         adoptIcon()
     }
 
+    /// A shell brought back the same way: its name in the row, and nothing
+    /// started — the shell is started with its view (see console), never
+    /// for the row alone.
+    func restore(title: String, name: String? = nil) {
+        self.title = title
+        self.name = name
+    }
+
     /// True for a tab that has a place and an address but is holding no page —
     /// brought back from the last session, or put down with ⌘W while pinned.
     var asleep: Bool { pending != nil }
@@ -1655,6 +1760,10 @@ final class Tab: ObservableObject, Identifiable {
     /// Asked anything at all, the page answers with one particular error, and
     /// the answer to that is to load it again.
     func revive() {
+        // A shell is revived by its own view, not by a page: asking a
+        // terminal tab for its web view builds one nobody shows, and loading
+        // the shell's folder into it is not a page either.
+        guard !isTerminal else { return }
         if stale {
             stale = false
             recoverFromCrash()
@@ -1717,6 +1826,7 @@ final class Tab: ObservableObject, Identifiable {
     /// page, and an address kept for it downloads the file once more
     /// whenever the tab is opened (see Browser.dropEmpty).
     func forget() {
+        guard !isTerminal else { return }
         address = nil
         icon = nil
     }
@@ -1734,8 +1844,11 @@ final class Tab: ObservableObject, Identifiable {
     /// A view that has lost its document is given the address back instead:
     /// there is nothing else for it to reload.
     func reload(fromOrigin: Bool = false) {
-        // Search's own pages are drawn from what is there now, always.
-        guard page == nil else { return }
+        // A shell is not a page: it is not reloaded, it is typed at. The
+        // shell may not be started yet (Tab.console starts it); the mark on
+        // the tab is what matters. Search's own pages, too, are drawn from
+        // what is there now, always.
+        guard !isTerminal, page == nil else { return }
         // A pin put down with ⌘W has no view left to reload; waking it is
         // the reload.
         guard !wake() else { return }
@@ -1753,6 +1866,7 @@ final class Tab: ObservableObject, Identifiable {
     /// Straight through, every time. A page that has to be fetched again is
     /// fetched again — nothing is kept behind to make that look otherwise.
     func back() {
+        guard !isTerminal else { return }
         if let page {
             guard let last = trail.popLast() else { return }
             ahead.append(page)
@@ -1770,6 +1884,7 @@ final class Tab: ObservableObject, Identifiable {
         web.goBack()
     }
     func forward() {
+        guard !isTerminal else { return }
         if let page {
             guard let next = ahead.popLast() else { return }
             trail.append(page)
@@ -1792,6 +1907,17 @@ final class Tab: ObservableObject, Identifiable {
     /// Straight to a page several steps away, as one step.
     func go(to item: WKBackForwardListItem) { web.go(to: item) }
 
+    /// ⌘W in a terminal with panes: the pane the keys are in goes, and the
+    /// room closes over it — the tab is kept for its last pane, with the
+    /// asking about a shell still running the room's own way of closing
+    /// (TerminalSplits.closeFocusedPane), the same one the divider's menu
+    /// goes through. Whether the key was spent on a pane: false is the
+    /// room's way of saying it never had sides, and the tab itself goes.
+    @discardableResult
+    func closeFocusedPane() -> Bool {
+        madeShell?.closeFocusedPane() ?? false
+    }
+
     /// Called when the tab is thrown away. Without it the view keeps running
     /// whatever the page left behind — timers, video, sockets.
     func close() {
@@ -1802,6 +1928,12 @@ final class Tab: ObservableObject, Identifiable {
         onSignIn = nil
         onField = nil
         onCredentials = nil
+        // The shells are processes of their own: closed with the tab, each
+        // is sent on its way — gently first (see Terminal.stop) — and
+        // nothing of them is listened to any more.
+        madeShell?.close()
+        madeShell = nil
+        shellEars = []
         discard()
         // The last private tab gone, in every window: what its pages wore
         // goes with it.

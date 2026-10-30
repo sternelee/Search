@@ -15,6 +15,10 @@ enum Store {
     /// once wrote over somebody's real session, and asking a person to
     /// remember a flag is not a safeguard.
     static var testing: Bool {
+        // A test run is one being run by the test runner. Its executable
+        // is `xctest`, not a bundle, so the path below says nothing about
+        // it — and without this line every `swift test` read and wrote the
+        // folder and the settings of the Search somebody is using.
         if ProcessInfo.processInfo.processName == "xctest" { return true }
         if ProcessInfo.processInfo.environment["SEARCH_PROBE"] != nil { return true }
         return Bundle.main.executablePath?.contains("/.build/") == true

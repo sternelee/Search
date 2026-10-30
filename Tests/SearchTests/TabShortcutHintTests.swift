@@ -82,6 +82,10 @@ final class TabShortcutHintTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: ContentView(browser: browser))
         window.orderFrontRegardless()
+        // Out of sight when the test ends, not closed: a window a probe put
+        // on screen is still visible to every other suite's teardown,
+        // which asserts that nothing is.
+        addTeardownBlock { window.orderOut(nil) }
         let previousFront = Front.shared.browser
         Front.shared.set(browser)
         defer {

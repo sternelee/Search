@@ -27,6 +27,19 @@ struct SearchApp: App {
             Session.startFresh(spaces: Spaces.read().map(\.id))
             Browsers.startFresh()
         }
+        // The island's socket, before anything could be listening for it:
+        // an agent's hook could run the moment a terminal opens, and what
+        // it says should be heard, not held until the first settings panel
+        // happens to open one (see Island).
+        Island.shared.start()
+        // The hooks already installed are rewritten before any agent could
+        // run: a fix to the command or to the pi extension has to reach the
+        // agents somebody installed it into, and nothing else writes those
+        // files twice (see IslandHooks.keepCurrent). A test run writes into
+        // nobody's home.
+        if !Store.testing, let bridge = try? IslandHooks.writeBridge(Store.file("Terminal")) {
+            IslandHooks.keepCurrent(bridge)
+        }
     }
 
     var body: some Scene {
@@ -65,6 +78,8 @@ struct SearchApp: App {
                 }
                 Button("New Tab") { browser.launch() }
                     .shortcut("file.newTab")
+                Button("New Terminal") { browser.newTerminal() }
+                    .shortcut("file.newTerminal")
                 Button("New Private Tab") { browser.newShyTab() }
                     .shortcut("file.newPrivateTab")
                 // A tab that is a talk with the agent, not a page — from
@@ -109,11 +124,12 @@ struct SearchApp: App {
                 Divider()
                 Button("Find on Page…") { browser.openFind() }
                     .shortcut("edit.find")
-                    // On the Settings tab, ⌘F finds a setting.
-                    .disabled(!(browser.active?.isWeb ?? false) && browser.active?.page?.kind != .settings)
+                    // On one of Search's own pages, too (a setting), and in
+                    // a shell, where it finds the scrollback.
+                    .disabled(browser.active?.searchable != true)
                 Button("Find Next") { browser.look(forward: true) }
                     .shortcut("edit.findNext")
-                    .disabled(!browser.finding)
+                    .disabled(!(browser.finding || browser.active?.isTerminal == true))
                 Button("Find Previous") { browser.look(forward: false) }
                     .shortcut("edit.findPrevious")
                     .disabled(!browser.finding)
@@ -255,6 +271,69 @@ struct SearchApp: App {
                 Button("Search Tabs…") { browser.summon() }
                     .shortcut("tabs.search")
                 Divider()
+                // The shell's own marks (OSC 133) are what these walk, so
+                // they are offered only where there is a shell (see
+                // TerminalView.jumpToPrompt).
+                Button("Next Command") { browser.jumpPrompt(forward: true) }
+                    .shortcut("tabs.nextCommand")
+                    .disabled(browser.active?.isTerminal != true)
+                Button("Previous Command") { browser.jumpPrompt(forward: false) }
+                    .shortcut("tabs.previousCommand")
+                    .disabled(browser.active?.isTerminal != true)
+                Divider()
+                // The terminal's own room, in the same Tabs menu (see
+                // TerminalSplits). ⌘D is the room's on a terminal — so
+                // Duplicate stands aside below — and everything that needs
+                // sides is offered once there are some.
+                Button("Split Terminal Right") { browser.splitTerminal(across: .horizontal) }
+                    .shortcut("tabs.splitTerminalRight")
+                    .disabled(browser.active?.isTerminal != true)
+                Button("Split Terminal Down") { browser.splitTerminal(across: .vertical) }
+                    .shortcut("tabs.splitTerminalDown")
+                    .disabled(browser.active?.isTerminal != true)
+                // ⌘[ and ⌘] again — Back and Forward on a page — walking the
+                // panes in reading order, wrapping at the ends.
+                Button("Focus Previous Pane") { browser.cycleTerminalFocus(-1) }
+                    .shortcut("tabs.focusTerminalPrevious")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Next Pane") { browser.cycleTerminalFocus(1) }
+                    .shortcut("tabs.focusTerminalNext")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Terminal Left") { browser.moveTerminalFocus(.left) }
+                    .shortcut("tabs.focusTerminalLeft")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Terminal Right") { browser.moveTerminalFocus(.right) }
+                    .shortcut("tabs.focusTerminalRight")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Terminal Above") { browser.moveTerminalFocus(.up) }
+                    .shortcut("tabs.focusTerminalAbove")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Focus Terminal Below") { browser.moveTerminalFocus(.down) }
+                    .shortcut("tabs.focusTerminalBelow")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Zoom Terminal Pane") { browser.zoomTerminalPane() }
+                    .shortcut("tabs.zoomTerminalPane")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Even Terminal Panes") { browser.evenTerminalPanes() }
+                    .shortcut("tabs.evenTerminalPanes")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Nudge Divider Left") { browser.nudgeTerminalDivider(.left) }
+                    .shortcut("tabs.nudgeTerminalDividerLeft")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Nudge Divider Right") { browser.nudgeTerminalDivider(.right) }
+                    .shortcut("tabs.nudgeTerminalDividerRight")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Nudge Divider Up") { browser.nudgeTerminalDivider(.up) }
+                    .shortcut("tabs.nudgeTerminalDividerUp")
+                    .disabled(browser.terminalPanes < 2)
+                Button("Nudge Divider Down") { browser.nudgeTerminalDivider(.down) }
+                    .shortcut("tabs.nudgeTerminalDividerDown")
+                    .disabled(browser.terminalPanes < 2)
+                // ⇧⌘K: the focused pane's screen and scrollback, wiped.
+                Button("Clear Buffer") { browser.clearTerminal() }
+                    .shortcut("tabs.clearTerminal")
+                    .disabled(browser.active?.isTerminal != true)
+                Divider()
                 if browser.prefs.splitView {
                     Button("Split Current Page") { browser.startSplit() }
                         .shortcut("tabs.split")
@@ -301,6 +380,8 @@ struct SearchApp: App {
                     .disabled(browser.active == nil)
                 Button("Duplicate Tab") { browser.duplicate() }
                     .shortcut("tabs.duplicate")
+                    // ⌘D belongs to the room on a terminal (no web page to
+                    // copy); Split Terminal Right above takes the key there.
                     .disabled(!(browser.active?.isWeb ?? false))
                 Button("Copy Address") { browser.copyAddress() }
                     .shortcut("tabs.copyAddress")
@@ -539,6 +620,21 @@ struct ContentView: View {
         .background { fullscreenWatch }
         .background { GeometryReader { geo in Color.clear.onAppear { across = geo.size.width }
             .onChange(of: geo.size.width) { _, width in across = width } } }
+        // The agents' notch, over every tab (see IslandBar): under the
+        // strip when there is one, at the window's own top when there
+        // isn't. Not in a page's fullscreen — there is no top to be over.
+        // The bar is told how wide and tall the window is, and holds
+        // itself where it was dragged to — along the top and down from
+        // it — as wide as it was stretched (see IslandBar, IslandPlace).
+        .overlay(alignment: .top) {
+            if fullscreenTab == nil {
+                GeometryReader { room in
+                    IslandBar(room: room.size)
+                }
+                .padding(.top, band == 0 ? 8 : Metrics.strip + 6)
+                .allowsHitTesting(true)
+            }
+        }
         .animation(Motion.glide, value: browser.prefs.sidebar)
         .animation(Motion.glide, value: browser.prefs.sidePosition)
         .onAppear { if room == nil { room = chrome } }
@@ -573,11 +669,12 @@ struct ContentView: View {
             .overlay {
                 if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
             }
-            .overlay(alignment: .topTrailing) {
-                if browser.finding {
-                    FindBar(browser: browser)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
+            .overlay(alignment: TerminalLook.findPlace == .top ? .topTrailing : .bottomTrailing) {
+                // Always mounted. The pill draws and erases itself by its
+                // own leg (see FindBar): a leg is a curve read per frame,
+                // and a view taken out of the hierarchy leaves instantly
+                // whatever its transition was, which is no way to leave.
+                FindBar(browser: browser)
             }
             .overlay(alignment: .topTrailing) {
                 if let assistant = browser.assisting, assistant.tab == tab.id {
@@ -931,11 +1028,16 @@ struct ContentView: View {
         guard !browser.fieldShowing, browser.editingTab == nil else { return }
         DispatchQueue.main.async {
             guard !browser.fieldShowing, browser.editingTab == nil else { return }
-            // Search's own pages have no web view to hand the keys to.
-            guard browser.active?.page == nil, let web = browser.active?.web, let window = web.window else { return }
+            guard let tab = browser.active else { return }
+            // Search's own pages have no view to hand the keys to. Anything
+            // else gives them back to wherever they live in this tab — the
+            // focused pane of a terminal, the page of anything else
+            // (Tab.keySeat). Asking a terminal tab for its page would
+            // build one nobody ever shows.
+            guard tab.page == nil, let seat = tab.keySeat, let window = seat.window else { return }
             if let responder = window.firstResponder as? NSView,
-               responder === web || responder.isDescendant(of: web) { return }
-            window.makeFirstResponder(web)
+               responder === seat || responder.isDescendant(of: seat) { return }
+            window.makeFirstResponder(seat)
         }
     }
 

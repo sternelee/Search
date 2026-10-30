@@ -478,6 +478,13 @@ final class Browser: NSObject, ObservableObject {
     @Published var settingsFind = 0
 
     func openFind() {
+        // A terminal finds in its own scrollback (see TerminalFind); a page
+        // in what it shows. On the Settings tab it is the field there that
+        // takes the keys, not a page's own bar.
+        if let console = active?.console {
+            console.openFind()
+            return
+        }
         if active?.page?.kind == .settings {
             settingsFind += 1
             return
@@ -499,7 +506,19 @@ final class Browser: NSObject, ObservableObject {
         }
     }
 
+    /// Walk to the next command's prompt in a terminal, or the one before
+    /// it (see TerminalView.jumpToPrompt). A page has no commands to walk,
+    /// so this does nothing there — the menu does not offer it either.
+    func jumpPrompt(forward: Bool) {
+        active?.console?.jumpToPrompt(forward: forward)
+    }
+
     func look(forward: Bool) {
+        // A terminal steps its own search (see TerminalFind).
+        if let console = active?.console {
+            console.stepFind(forward: forward)
+            return
+        }
         guard let tab = active else {
             missed = false
             findResult = nil
@@ -3090,7 +3109,20 @@ final class Browser: NSObject, ObservableObject {
         var active = id == nil ? -1 : 0
         var indices: [Tab.ID: Int] = [:]
         for tab in tabs {
-            guard kept(tab), let url = tab.pending ?? tab.address ?? tab.page?.url else { continue }
+            guard kept(tab) else { continue }
+            // A shell is kept with the tabs, wherever it was: what comes
+            // back is a new shell, and where it stood is all that can be
+            // brought back with it.
+            if tab.isTerminal {
+                if tab.id == id { active = entries.count }
+                indices[tab.id] = entries.count
+                entries.append(Session.Entry(
+                    url: tab.address?.absoluteString ?? "", title: tab.title, groupID: tab.groupID,
+                    terminal: true
+                ))
+                continue
+            }
+            guard let url = tab.pending ?? tab.address ?? tab.page?.url else { continue }
             if tab.id == id { active = entries.count }
             indices[tab.id] = entries.count
             entries.append(Session.Entry(
@@ -3132,6 +3164,10 @@ final class Browser: NSObject, ObservableObject {
     /// bench's, and only a web page, local file or one of Search's own pages.
     /// A sleeping view is blank, so `pending` must win or its page disappears.
     private func kept(_ tab: Tab) -> Bool {
+        // A shell is kept wherever it stands: the same rule as a page's,
+        // without the page's address — a shell never had one that could
+        // bring it back.
+        if tab.isTerminal { return !tab.shy && !tab.bench && tab.held == nil }
         // A tab holding an extension's sign-in answer (Tab.hold) carries its
         // code in the address: that is never written down.
         let url = tab.pending ?? tab.address
@@ -3546,6 +3582,56 @@ final class Browser: NSObject, ObservableObject {
         if #available(macOS 15.4, *) { Extensions.shared.offerNewTabPage(into: tab) }
     }
 
+    /// A shell in a tab of its own: ⌥⌘T, or "term" in the address field
+    /// (Settings › General › Address bar commands). The shell is your login
+    /// shell (see Terminal); a private terminal is a thing a browser has to
+    /// think harder about, and isn't here yet.
+    func newTerminal() {
+        let tab = Tab(configuration: Web.configuration(space: spaceID), terminal: true)
+        adopt(tab)
+        leaving()
+        activeID = tab.id
+        summoning = false
+        typed = ""
+        editing = false
+        rememberSession()
+    }
+
+    /// The panes in the terminal tab in front, for the menu's own telling:
+    /// zooming and evening out want a room with sides, and a room never
+    /// built is one pane.
+    var terminalPanes: Int { active?.madeShell?.paneCount ?? 0 }
+
+    /// The room in a terminal tab grows a pane — to the right with ⌘D
+    /// (Duplicate on a page: one key, two meanings, told apart by the tab),
+    /// down with ⇧⌘D. The new pane takes the keys and the working directory
+    /// of the one it split (TerminalSplits.split).
+    func splitTerminal(across axis: TerminalAxis) { active?.console?.split(across: axis) }
+
+    /// ⌥⌘-arrows: the keys move to the neighbouring pane, if there is one.
+    func moveTerminalFocus(_ direction: TerminalDirection) { active?.console?.moveFocus(direction) }
+
+    /// ⌘[ and ⌘]: the keys walk the panes in reading order, wrapping at
+    /// the ends. The command carries the keys where a menu can show them;
+    /// the branch in back and forward is where a key pressed on a terminal
+    /// tab is told apart from a page's history.
+    func cycleTerminalFocus(_ step: Int) { active?.console?.cycleFocus(step) }
+
+    /// ⌃⌘-arrows: the divider on that side of the focused pane walks one
+    /// cell at a time, and stops where a pane would get too small to read.
+    func nudgeTerminalDivider(_ direction: TerminalDirection) { active?.console?.nudge(direction) }
+
+    /// ⇧⌘⏎: the focused pane takes the whole room; the same again gives
+    /// it back.
+    func zoomTerminalPane() { active?.console?.toggleZoom() }
+
+    /// ⌥⌘=, or a double-click on a divider: every pane the same size.
+    func evenTerminalPanes() { active?.console?.equalize() }
+
+    /// ⇧⌘K: the focused pane's screen and scrollback wiped. ⌘K stays the
+    /// browser's own — the tabs, searched.
+    func clearTerminal() { active?.console?.clearBuffer() }
+
     /// A new tab given an extension's new tab page, whether blank or showing
     /// another extension's: the page needs a view built from that
     /// extension's configuration, so it is a new tab in the old one's place.
@@ -3614,12 +3700,17 @@ final class Browser: NSObject, ObservableObject {
     /// New), then the tab. Settings, History and the rest are tabs of their
     /// own, as in Chrome, and ⌘W on one closes it. Escape puts things away
     /// in the same order, so the two keys agree on what is in front.
+    ///
+    /// A terminal with panes loses them one at a time — the room shrinks
+    /// before the tab does, and it is the room that knows whether it had
+    /// sides (Tab.closeFocusedPane) — with the same key as ever.
     func closeFront() {
         // The floating new tab is the thing in front: ⌘W takes it away and
         // leaves the page under it.
         if launching { dismiss(); return }
         if peekTab != nil { closePeek() }
         else if closePanel() { return }
+        else if let tab = active, tab.closeFocusedPane() { return }
         else if let tab = active { closeTab(tab) }
     }
 
@@ -4989,10 +5080,19 @@ final class Browser: NSObject, ObservableObject {
         announce("A tab that keeps nothing")
     }
 
-    /// ⌘D. The same page, beside itself.
+    /// ⌘D. The same page, beside itself — and on a terminal, the room
+    /// growing a pane to the right: one key, two meanings, told apart by
+    /// the tab. This is the one place the telling happens; the menu's two
+    /// ⌘D items are each disabled where the other rules (Safari's habit
+    /// with a borrowed key), and both of them come back here.
     func duplicate() {
-        guard let url = active?.address else { return }
-        open(url, foreground: true, from: active)
+        guard let tab = active else { return }
+        if tab.isTerminal {
+            tab.console?.split(across: .horizontal)
+            return
+        }
+        guard tab.hasPage, let url = tab.address else { return }
+        open(url, foreground: true, from: tab)
     }
 
     /// ⌘⇧V, when nothing is being typed. What is in the clipboard, if it is a
@@ -5133,6 +5233,18 @@ final class Browser: NSObject, ObservableObject {
         var row: [Tab] = []
         var bySavedIndex: [Int: Tab] = [:]
         for (savedIndex, entry) in saved.tabs.enumerated() {
+            // A shell comes back as a shell — a new one, in the same place in
+            // the row, with the name it was given.
+            if entry.terminal == true {
+                let tab = Tab(configuration: Web.configuration(space: space), terminal: true)
+                prepare(tab)
+                tab.restore(title: entry.title, name: entry.name)
+                tab.groupID = entry.pin == nil && groups.contains(where: { $0.id == entry.groupID })
+                    ? entry.groupID : nil
+                row.append(tab)
+                bySavedIndex[savedIndex] = tab
+                continue
+            }
             // An empty page is never written; the first builds of Split View
             // on main wrote one for an empty half.
             guard let saved = URL(string: entry.url), entry.url != "about:blank" else { continue }
@@ -5500,6 +5612,11 @@ final class Browser: NSObject, ObservableObject {
             guard let self, let pair = activeSplit, pair.contains(tab.id), activeID != tab.id else { return }
             focusPane(tab)
         }
+        // A terminal whose last shell exited on its own — `exit` typed, a
+        // command run out — goes the way ⌘W takes it: the tab closes.
+        tab.onGone = { [weak self] tab in
+            self?.close(tab)
+        }
         tab.onLink = { [weak self] tab, address in
             guard let self, prefs.showsLinks, visibleTabIDs.contains(tab.id) else { return }
             linkStatus.show(address, over: tab.built)
@@ -5521,6 +5638,25 @@ final class Browser: NSObject, ObservableObject {
             announce("Hidden — ⌘Z puts it back")
         }
         tab.onPickEnd = { [weak self] _ in self?.veiling = false }
+        // A shell that says something of itself is heard here (see Terminal,
+        // TerminalShell): OSC 9 / OSC 777 from a tab nobody is looking at is
+        // a Mac notification — the shell in front is simply speaking. A
+        // bell in the back is a quiet nod, not a shout. A shell an agent is
+        // at work in says itself in the notch over the tabs (Island), and
+        // its sayings on the way are the notch's to say, not the desktop's.
+        tab.onNotice = { [weak self, weak tab] notice in
+            guard let self, let tab else { return }
+            guard tab !== self.active || self.window?.isKeyWindow != true else { return }
+            switch notice {
+            case .note(let title, let body):
+                guard Shared.prefs.siteNotifications else { return }
+                if tab.madeShell?.agentAtWork == true { return }
+                SiteNotifications.shared.post(tab: tab.id.uuidString, title: title, body: body)
+            case .bell:
+                NSApp.requestUserAttention(.criticalRequest)
+            default: break
+            }
+        }
         tab.onImageMenu = { [weak self] tab, url in self?.showImageMenu(for: tab, at: url) }
         tab.searchName = { [weak self] in self.map { $0.prefs.engine.name(custom: $0.prefs.customEngine) } }
         tab.onSearch = { [weak self] tab, text in
@@ -6047,8 +6183,38 @@ final class Browser: NSObject, ObservableObject {
 
     // MARK: - the page
 
-    func zoom(by factor: CGFloat) { active?.magnify(by: factor) }
-    func resetZoom() { active?.resetZoom() }
+    /// ⌘+ and ⌘− grow a page; in a terminal they grow the face instead, the
+    /// one key told apart by the tab (as ⌘D is by duplicate).
+    func zoom(by factor: CGFloat) {
+        if let tab = active, tab.isTerminal {
+            stepTerminalFont(by: factor > 1 ? 1 : -1)
+            return
+        }
+        active?.magnify(by: factor)
+    }
+
+    /// ⌘0: the page every site starts at — or the face every terminal
+    /// starts in, whichever one you were reaching for.
+    func resetZoom() {
+        if let tab = active, tab.isTerminal {
+            prefs.terminalSize = TerminalLook.home
+            return
+        }
+        active?.resetZoom()
+    }
+
+    /// A face a point bigger or smaller, held within the sizes the panel
+    /// offers — the walk itself lives with the stops (TerminalLook.step).
+    /// It is written to Preferences — where the panel writes it — so the
+    /// keyboard and the panel always agree, and it stays put. A step that
+    /// lands where it began writes nothing: the panel's own buttons go
+    /// dark at the ends, and a key held against one should not re-say a
+    /// look that has not moved.
+    private func stepTerminalFont(by step: Int) {
+        let stepped = TerminalLook.step(prefs.terminalSize, by: step)
+        guard stepped != prefs.terminalSize else { return }
+        prefs.terminalSize = stepped
+    }
 
     /// ⌘⇧R. The article, and nothing that was arranged around it.
     // MARK: - dark pages
@@ -6121,7 +6287,7 @@ final class Browser: NSObject, ObservableObject {
     }
 
     func toggleReader() {
-        guard let tab = active else { return }
+        guard let tab = active, tab.hasPage else { return }
         tab.toggleReader { [weak self] worked in
             guard !worked else { return }
             self?.announce("Nothing to read on this page")
@@ -6129,8 +6295,25 @@ final class Browser: NSObject, ObservableObject {
     }
 
     func reload(fromOrigin: Bool = false) { active?.reload(fromOrigin: fromOrigin) }
-    func back() { active?.back() }
-    func forward() { active?.forward() }
+
+    /// ⌘[ and ⌘], one key with two meanings told apart by the tab (as ⌘D
+    /// is by duplicate): a page steps through its history, a terminal
+    /// walks its panes in reading order instead.
+    func back() {
+        if let tab = active, tab.isTerminal {
+            tab.console?.cycleFocus(-1)
+            return
+        }
+        active?.back()
+    }
+
+    func forward() {
+        if let tab = active, tab.isTerminal {
+            tab.console?.cycleFocus(1)
+            return
+        }
+        active?.forward()
+    }
 }
 
 // MARK: - WebKit

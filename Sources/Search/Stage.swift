@@ -30,7 +30,14 @@ struct Page: View {
             // the stage was never told to take it back when it landed, and
             // the tab stayed empty. Nothing, then the page, is a change.
             if holdsPage {
-                WebStage(page: !tab.isWeb || tab.asleep || tab.floating ? nil : tab.web, corner: corner)
+                // A shell is shown as the page is: the stage takes any view,
+                // and the web view of a terminal tab is never built.
+                WebStage(
+                    page: tab.isTerminal
+                        ? tab.console
+                        : (!tab.isWeb || tab.asleep || tab.floating ? nil : tab.web),
+                    corner: corner
+                )
             }
 
             if let page = tab.page, let browser {

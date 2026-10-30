@@ -34,7 +34,8 @@ struct SettingsPanel: View {
     @MainActor static var arcBefore: Preferences.ArcSetup?
 
     enum Page: String, CaseIterable, Identifiable {
-        case general, appearance, tabs, browsing, spaces, passwords, privacy, ai, extensions, browserUse, keyboard, about
+        case general, appearance, tabs, browsing, spaces, terminal, passwords, privacy, ai,
+             extensions, browserUse, keyboard, about
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -43,6 +44,7 @@ struct SettingsPanel: View {
             case .tabs: return "Tabs"
             case .browsing: return "Browsing"
             case .spaces: return "Spaces & Pins"
+            case .terminal: return "Terminal"
             case .passwords: return "Passwords"
             case .privacy: return "Privacy"
             case .ai: return "AI"
@@ -59,11 +61,12 @@ struct SettingsPanel: View {
             case .tabs: return "square.on.square"
             case .browsing: return "globe"
             case .spaces: return "square.stack"
+            case .terminal: return "terminal"
             case .passwords: return "key"
             case .privacy: return "hand.raised"
             case .ai: return "sparkles"
             case .extensions: return "puzzlepiece.extension"
-            case .browserUse: return "terminal"
+            case .browserUse: return "cursorarrow.rays"
             case .keyboard: return "keyboard"
             case .about: return "info.circle"
             }
@@ -83,7 +86,7 @@ struct SettingsPanel: View {
         /// The AI page is the bot's as well as the add-on's, and the bot
         /// ships with the app, so it is always there to open.
         static var blocks: [[Page]] {
-            [[.general, .appearance, .tabs, .browsing, .spaces],
+            [[.general, .appearance, .tabs, .browsing, .spaces, .terminal],
              [.passwords, .privacy, .ai, .extensions, .browserUse, .keyboard],
              [.about]]
         }
@@ -332,6 +335,8 @@ struct SettingsPanel: View {
             GroupBlock(title: "Shortcuts", icon: "command") {
                 ShortcutsPage(browser: browser, store: .shared, prefs: prefs)
             }
+        case .terminal:
+            terminal
         case .extensions:
             ExtensionsPage(browser: browser)
         case .ai:
@@ -900,6 +905,379 @@ struct SettingsPanel: View {
         browser.announce(changed.isEmpty ? "Already set up like Arc" : "Turned on: " + changed.joined(separator: ", "))
     }
 
+    // MARK: - terminal
+
+    /// The terminal's own settings. Everything here reaches the terminals
+    /// already open — the renderer reads the settings for every frame — so
+    /// a change is seen as it is made, except the shell and the folder,
+    /// which a program already running cannot be moved to.
+    private var terminal: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                Line("Font", "Every terminal draws with this face", below: true) {
+                    Picker("", selection: $prefs.terminalFont) {
+                        Text("System Mono").tag("")
+                        ForEach(TerminalLook.faces) { face in
+                            Text(face.title).tag(face.name)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                }
+                Rule()
+                Line("Size") {
+                    Steps(stops: TerminalLook.sizes, value: $prefs.terminalSize, home: TerminalLook.home) {
+                        String(format: "%.1f", $0)
+                    }
+                }
+                Rule()
+                Line("Theme", "Solarized is the scheme as it was published; the rest are the Mac's own") {
+                    Picker("", selection: $prefs.terminalTheme) {
+                        ForEach(TerminalTheme.allCases) { theme in
+                            Text(theme.title).tag(theme)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                }
+            }
+            Card {
+                Line("Cursor") {
+                    Segmented(
+                        options: TerminalCursor.allCases.map { ($0, $0.title) },
+                        selection: $prefs.terminalCursor
+                    )
+                }
+                Rule()
+                Line("Blink", "Twice a second, while the keyboard is in the terminal") {
+                    Switch(on: $prefs.terminalBlinks)
+                }
+                Rule()
+                Line("Find Bar", "Where ⌘F's panel hangs, over the frame's top corner or its bottom") {
+                    Segmented(
+                        options: TerminalFindPlace.allCases.map { ($0, $0.title) },
+                        selection: $prefs.terminalFindPlace
+                    )
+                }
+                Rule()
+                Line("Input Bar", "Where you type — a dock over the frame's bottom, or the grid itself") {
+                    Segmented(
+                        options: TerminalInputBar.allCases.map { ($0, $0.title) },
+                        selection: $prefs.terminalInputBar
+                    )
+                }
+                Rule()
+                Line("Padding", "The room left around the cells, in points") {
+                    Steps(stops: TerminalLook.paddings, value: $prefs.terminalPadding, home: 4) {
+                        String(format: "%.0f", $0)
+                    }
+                }
+            }
+            Card {
+                Line("Take the mouse", "Clicks and drags go to htop, vim and the rest — hold ⌥ to select text instead") {
+                    Switch(on: $prefs.terminalMouse)
+                }
+                Rule()
+                Line("Set the clipboard", "How a program copies, by printing an escape sequence; reading one back is never allowed") {
+                    Switch(on: $prefs.terminalClipboard)
+                }
+                Rule()
+                Line("⌘-click opens links", "Where a program has said a run of words is a link (OSC 8)") {
+                    Switch(on: $prefs.terminalLinks)
+                }
+                Rule()
+                Line("Synchronized output", "A program drawing a frame says when it is whole, and the terminal waits rather than showing half of it") {
+                    Switch(on: $prefs.terminalSync)
+                }
+            }
+            Card {
+                Line(
+                    "Shell",
+                    shown(prefs.terminalShell.isEmpty ? TerminalLook.shellPath() : prefs.terminalShell)
+                ) {
+                    HStack(spacing: 8) {
+                        if !prefs.terminalShell.isEmpty {
+                            Pill("System default") { prefs.terminalShell = "" }
+                        }
+                        Pill("Change…") { chooseShell() }
+                    }
+                }
+                Rule()
+                Line(
+                    "Start in",
+                    prefs.terminalDirectory.isEmpty
+                        ? "Wherever Search was started"
+                        : shown(prefs.terminalDirectory)
+                ) {
+                    HStack(spacing: 8) {
+                        if !prefs.terminalDirectory.isEmpty {
+                            Pill("Default") { prefs.terminalDirectory = "" }
+                        }
+                        Pill("Change…") { chooseTerminalFolder() }
+                    }
+                }
+                Rule()
+                Line("Scrollback", "The lines a terminal keeps above its screen") {
+                    Steps(
+                        stops: TerminalLook.scrollbacks.map(Double.init),
+                        value: Binding(
+                            get: { Double(prefs.terminalScrollback) },
+                            set: { prefs.terminalScrollback = Int($0) }
+                        ),
+                        home: 100_000
+                    ) {
+                        Int($0).formatted()
+                    }
+                }
+            }
+            Caption("The shell and the folder are for the next terminal: a program already running is not moved.")
+            Card {
+                islandRow(islandAgents[0])
+                Rule()
+                islandRow(islandAgents[1])
+                Rule()
+                islandRow(islandAgents[2])
+                if let trouble = islandTrouble {
+                    Rule()
+                    Line(trouble, "Nothing changed — the file is where it said it wouldn't be") { EmptyView() }
+                }
+                if islandMore {
+                    ForEach(islandAgents.dropFirst(3)) { agent in
+                        Rule()
+                        islandRow(agent)
+                    }
+                }
+                Rule()
+                Line(
+                    "More agents",
+                    islandMore
+                        ? "Gemini, Cursor, Qwen, Grok, Droid, Copilot, Oh My Pi"
+                        : "Seven more that Search can watch, each the same way"
+                ) {
+                    Pill(islandMore ? "Show less" : "Show more", filled: !islandMore) {
+                        withAnimation(Motion.quick) { islandMore.toggle() }
+                    }
+                }
+            }
+            Caption("The coding agents say what they're doing to the notch over the tabs (Island), and ask there before a run — but only in a terminal nobody is watching; answered here, they go on there. Clicking a row goes to its terminal. The hooks write nothing anywhere else, and Remove takes them back out cleanly.")
+        }
+    }
+
+    // MARK: - the island
+
+    /// The wind the island's switches tick when they act, so the lines
+    /// say what just happened rather than what was there when the
+    /// settings were opened — none of the hooks' work is anyone's to
+    /// watch but the files' themselves.
+    @State private var islandTick = false
+    @State private var islandTrouble: String?
+
+    /// Whether the island's list shows the agents fewer people run —
+    /// three are enough for most, and the rest wait one click away.
+    @State private var islandMore = false
+
+    /// Where each CLI keeps the settings that run hooks: their own
+    /// homes, in the places they say, overridable by the environment
+    /// each one says it reads.
+    private var claudeHome: URL {
+        ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.claude")
+    }
+    private var codexHome: URL {
+        ProcessInfo.processInfo.environment["CODEX_HOME"].map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.codex")
+    }
+    private var piHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.pi/agent") }
+
+    /// Oh My Pi reads the same folder shape as Pi, one home over: the
+    /// same extension serves it, said for its own source.
+    private var ompHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.omp/agent") }
+    private var geminiHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.gemini") }
+    private var cursorHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.cursor") }
+    private var qwenHome: URL {
+        ProcessInfo.processInfo.environment["QWEN_HOME"].map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.qwen")
+    }
+    private var grokHome: URL {
+        ProcessInfo.processInfo.environment["GROK_HOME"].map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/.grok")
+    }
+    private var droidHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.factory") }
+    private var copilotHome: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.copilot") }
+
+    /// Where the bridge is: the terminals' own folder in Application
+    /// Support, written on the first install (the pill's work, below).
+    private var islandBridge: String {
+        Store.file("Terminal").appendingPathComponent(IslandHooks.bridgeName).path
+    }
+
+    /// The island's list, first three the ones most people run. Each
+    /// row is one agent: where its settings are, whether ours are in
+    /// them, and how to put them in and take them back out — one
+    /// switch for every row, whatever the differences under each.
+    private var islandAgents: [IslandAgent] {
+        [
+            IslandAgent(
+                name: "Claude Code", home: claudeHome, file: "settings.json",
+                hooked: { IslandHooks.claudeHooked(claudeHome, bridge: $0) },
+                install: { try IslandHooks.installClaude(claudeHome, bridge: $0) },
+                remove: { try IslandHooks.removeClaude(claudeHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Codex", home: codexHome, file: "hooks.json",
+                hooked: { IslandHooks.codexHooked(codexHome, bridge: $0) },
+                install: { try IslandHooks.installCodex(codexHome, bridge: $0) },
+                remove: { try IslandHooks.removeCodex(codexHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Pi", home: piHome, file: "extensions/" + IslandHooks.piName,
+                hooked: { _ in IslandHooks.piHooked(piHome) },
+                install: { try IslandHooks.installPi(piHome, bridge: $0) },
+                remove: { _ in try IslandHooks.removePi(piHome) }
+            ),
+            IslandAgent(
+                name: "Gemini", home: geminiHome, file: "settings.json",
+                hooked: { IslandHooks.geminiHooked(geminiHome, bridge: $0) },
+                install: { try IslandHooks.installGemini(geminiHome, bridge: $0) },
+                remove: { try IslandHooks.removeGemini(geminiHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Cursor", home: cursorHome, file: "hooks.json",
+                hooked: { IslandHooks.cursorHooked(cursorHome, bridge: $0) },
+                install: { try IslandHooks.installCursor(cursorHome, bridge: $0) },
+                remove: { try IslandHooks.removeCursor(cursorHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Qwen Code", home: qwenHome, file: "settings.json",
+                hooked: { IslandHooks.qwenHooked(qwenHome, bridge: $0) },
+                install: { try IslandHooks.installQwen(qwenHome, bridge: $0) },
+                remove: { try IslandHooks.removeQwen(qwenHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Grok CLI", home: grokHome, file: "hooks/" + IslandHooks.oursName,
+                hooked: { IslandHooks.grokHooked(grokHome, bridge: $0) },
+                install: { try IslandHooks.installGrok(grokHome, bridge: $0) },
+                remove: { try IslandHooks.removeGrok(grokHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Droid", home: droidHome, file: "settings.json",
+                hooked: { IslandHooks.droidHooked(droidHome, bridge: $0) },
+                install: { try IslandHooks.installDroid(droidHome, bridge: $0) },
+                remove: { try IslandHooks.removeDroid(droidHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Copilot CLI", home: copilotHome, file: "hooks/" + IslandHooks.oursName,
+                hooked: { IslandHooks.copilotHooked(copilotHome, bridge: $0) },
+                install: { try IslandHooks.installCopilot(copilotHome, bridge: $0) },
+                remove: { try IslandHooks.removeCopilot(copilotHome, bridge: $0) }
+            ),
+            IslandAgent(
+                name: "Oh My Pi", home: ompHome, file: "extensions/" + IslandHooks.piName,
+                hooked: { _ in IslandHooks.ompHooked(ompHome) },
+                install: { try IslandHooks.installOmp(ompHome, bridge: $0) },
+                remove: { _ in try IslandHooks.removeOmp(ompHome) }
+            ),
+        ]
+    }
+
+    /// One row of the island's list: the agent's name, where its
+    /// settings are and whether ours are in them, and the switch that
+    /// puts them in or takes them back out.
+    @ViewBuilder
+    private func islandRow(_ agent: IslandAgent) -> some View {
+        Line(agent.name, islandDetail(agent.home, agent.file, agent.hooked(islandBridge))) {
+            Pill(agent.hooked(islandBridge) ? "Remove" : "Install", filled: !agent.hooked(islandBridge)) {
+                islandSwitch(agent)
+            }
+        }
+    }
+
+    /// What each line says of its agent: where its settings are, and
+    /// whether ours are in them. A home that isn't there is a CLI that
+    /// isn't either — installing into it would only be litter.
+    private func islandDetail(_ home: URL, _ file: String, _ hooked: Bool) -> String {
+        let place = home.path.hasPrefix(NSHomeDirectory())
+            ? "~" + home.path.dropFirst(NSHomeDirectory().count)
+            : home.path
+        guard FileManager.default.fileExists(atPath: home.path) else {
+            return "\(place) — the folder isn't there yet"
+        }
+        return "\(place)/\(file)\(hooked ? " — watched" : " — not watched")"
+    }
+
+    /// The one switch every row shares: put the hooks in, or take them
+    /// back out. The bridge is written first, for an install wants it to
+    /// exist; a remove leaves it — it's ours, in our own folder, and it
+    /// might be an uninstall away from being wanted again.
+    private func islandSwitch(_ agent: IslandAgent) {
+        islandTrouble = nil
+        do {
+            if agent.hooked(islandBridge) {
+                try agent.remove(islandBridge)
+            } else {
+                try agent.install(IslandHooks.writeBridge(Store.file("Terminal")))
+            }
+        } catch { islandTrouble = error.localizedDescription }
+        islandTick.toggle()
+    }
+
+    // MARK: - privacy
+
+    private var privacy: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                Line("Block ads and trackers", shield.trouble ?? "Third parties whose only job is to watch") {
+                    Switch(on: $prefs.shielded)
+                }
+                if let trouble = shield.trouble {
+                    Rule()
+                    Line(trouble, "Nothing is being blocked until this clears — try again, or restart Search") {
+                        Pill("Try again") { shield.compile() }
+                    }
+                }
+                if let host = browser.hereHost, prefs.shielded, shield.trouble == nil {
+                    Rule()
+                    Line("Block on \(host)", "Turn off here if the site breaks — the page reloads") {
+                        Switch(on: Binding(
+                            get: { !Shield.shared.isPaused(on: host) },
+                            set: { on in
+                                Shield.shared.pause(host, !on)
+                                browser.reload()
+                            }
+                        ))
+                    }
+                }
+                Rule()
+                Line("Prevent cross-site tracking", "As in Safari. Off, sites you rarely open keep their sign-ins, and trackers inside other sites can follow you across them again, as in Chrome. Private tabs keep it on") {
+                    Switch(on: Binding(get: { !prefs.keepsSignIns }, set: { prefs.keepsSignIns = !$0 }))
+                }
+                Rule()
+                Line("Camera, microphone, location and notifications", "What each site was allowed or refused, and the sites whose videos don't float") {
+                    Pill("Forget choices") { browser.forgetCaptureChoices() }
+                }
+                Rule()
+                Line("Let sites ask to send notifications", "A site asks on a card over its page, and only one you allow reaches your Mac's notifications. Private tabs are never asked") {
+                    Switch(on: $prefs.siteNotifications)
+                }
+                NotificationSites()
+            }
+            Card {
+                Line("History", "Every address you have been to") {
+                    Pill("Clear") { browser.clearHistory() }
+                }
+                Rule()
+                Line("Cookies and sign-ins", "Signs you out of every site") {
+                    Pill("Sign out of everything") { browser.clearSites() }
+                }
+                Rule()
+                Line("Cache", "Only what was fetched to draw pages") {
+                    Pill("Clear") { browser.clearCache() }
+                }
+            }
+        }    }
+
     // MARK: - about
 
     private var aboutHeader: some View {
@@ -970,15 +1348,48 @@ struct SettingsPanel: View {
 
     // MARK: - doing
 
-    private func chooseFolder() {
+    /// The panel all three of these settings put up — the folder downloads
+    /// go to, the program a terminal runs, the folder a terminal starts in
+    /// — with what differs passed in: whether a folder or a file is being
+    /// chosen, where the panel opens, whether hidden files are shown, and
+    /// where the answer goes. One panel's behaviour, in one place.
+    private func choose(
+        _ prompt: String, folders: Bool, from start: URL?, hidden: Bool = false, into store: (URL) -> Void
+    ) {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseDirectories = folders
+        panel.canChooseFiles = !folders
         panel.canCreateDirectories = true
-        panel.directoryURL = prefs.downloads
-        panel.prompt = "Use this folder"
+        panel.showsHiddenFiles = hidden
+        panel.directoryURL = start
+        panel.prompt = prompt
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        prefs.downloads = url
+        store(url)
+    }
+
+    private func chooseFolder() {
+        choose("Use this folder", folders: true, from: prefs.downloads) { prefs.downloads = $0 }
+    }
+
+    /// The program a new terminal runs. Any file can be chosen and not only
+    /// an executable: what is wanted is a path to try, and the terminal
+    /// falls back to the Mac's own shell for one that will not run.
+    private func chooseShell() {
+        choose("Use this shell", folders: false, from: URL(fileURLWithPath: "/bin"), hidden: true) {
+            prefs.terminalShell = $0.path
+        }
+    }
+
+    private func chooseTerminalFolder() {
+        let start = prefs.terminalDirectory.isEmpty
+            ? nil
+            : URL(fileURLWithPath: (prefs.terminalDirectory as NSString).expandingTildeInPath)
+        choose("Start here", folders: true, from: start) { prefs.terminalDirectory = $0.path }
+    }
+
+    /// A path as the panel writes it: the home folder as a tilde.
+    private func shown(_ path: String) -> String {
+        path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
 }
 
@@ -1291,6 +1702,21 @@ private struct LookPicture: View {
 
 /// A row of choices in a grey track, one of them lifted out in white. The
 /// white slides to the one you pick rather than appearing there.
+/// One coding agent in the island's list — the name it goes by, where
+/// its settings are, and what it is to Search to put the hooks in and
+/// take them back out. The bridge's path goes in and out of each: it
+/// is what tells ours from anyone else's in the settings, and an
+/// install writes it fresh.
+private struct IslandAgent: Identifiable {
+    let name: String
+    let home: URL
+    let file: String
+    let hooked: (String) -> Bool
+    let install: (String) throws -> Void
+    let remove: (String) throws -> Void
+    var id: String { name }
+}
+
 struct Segmented<Option: Hashable>: View {
     let options: [(Option, String)]
     @Binding var selection: Option

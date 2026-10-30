@@ -149,6 +149,7 @@ extension Browser {
         // With the last window closed (`shut`) nothing is on screen.
         if !shut, visibleTabIDs.contains(tab.id) { return "on screen" }
         if tab.pin != nil, let kept = pinKept(tab) { return kept }
+        if tab.isTerminal { return "a live shell" }
         if tab.bench { return "a bench tab" }
         if tab.isBlank { return "blank" }
         if tab.asleep { return "already asleep" }

@@ -36,15 +36,16 @@ final class ExtensionFileAccessTests: XCTestCase {
         XCTAssertFalse(context.grantedPermissionMatchPatterns.keys.contains { Extensions.reachesFiles($0) })
 
         // A file pattern granted some other way is still outweighed by the fence.
-        // Since macOS 27, WebKit refuses a granted file pattern on its own
-        // (#617): with nothing granted, there is nothing for the fence to
-        // outweigh, and this half has nothing left to prove.
+        // Since macOS 27, WebKit refuses a granted file pattern on its own (#617),
+        // and this WebKit does not hand a file to an extension even with the
+        // pattern granted; older ones that do lose it again to the fence. Either
+        // way a file is not among what stays granted, so there is nothing here
+        // left to skip over.
         context.setPermissionStatus(.grantedExplicitly, for: try WKWebExtension.MatchPattern(string: "file:///*"))
-        guard context.hasAccess(to: file) else {
-            throw XCTSkip("WebKit refuses a granted file pattern itself (#617): nothing for the fence to outweigh")
-        }
         Extensions.fence(context)
         XCTAssertFalse(context.hasAccess(to: file), "the fence let a file through")
+        XCTAssertFalse(context.grantedPermissionMatchPatterns.keys.contains { Extensions.reachesFiles($0) },
+                       "the fence let a file pattern stand")
     }
 
     func testOnlyFilePatternsReachFiles() throws {
