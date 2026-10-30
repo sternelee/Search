@@ -324,6 +324,13 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
    正文；`Shape` 分 `.http` / `.bare` / `.junk` 三形态）+ `Island`（session 模型：
    `Session.Part` 四态 `working / asking / waiting / done`；事件→状态转移；tty → 窗口→标签→
    窗格匹配；`PermissionRequest` 挂起等横幅上 Approve/Deny/不管它，其余事件即时回 `{}`）。
+   状态转移里有一条是照 CodeIsland 抄的：**工具跑完就把工具撤下来**（`PostToolUse` /
+   `PostToolUseFailure`）——`PreToolUse` 把工具名挂上去，`PostToolUse` 拿下来、卡片回到
+   `working`（"is working"），否则一条命令早就返回了，横幅还在说"is running Bash"，没人会信。
+   撤的时候三条不撤：正停在人身上的问（工具跑完不是回答，撤了就等于把问题从栏上拿掉）、
+   已经 `done` 的一轮（迟到的步骤不许把跑完的一轮翻回在跑）、以及**并行调用里不是当前那一个**
+   的步骤——`Session.use` 记着这个工具调用的 id（Claude 的 `tool_use_id`、pi 的
+   `tool_call_id`，`IslandRead` 两种都读），id 对不上就是旁边还有一个在跑，那一行留着。
 2. **`IslandHooks.swift`** —— 安装/卸载：桥接脚本 `search-island.sh`（纯 sh + curl
    `--unix-socket`，不编译第二个 target；`[ -S "$SOCK" ] || exit 0` 快退；写到 Application
    Support，0755；除了 `X-Search-Tty` / `X-Search-Source` 还带 `X-Search-Event`——Cursor 和
@@ -367,10 +374,16 @@ Grok、Droid、Copilot CLI、Oh My Pi——共十个），人却切去了别的�
    一格、新的从前方滑入（`Motion.settle` 跟 `shown.map(\.id)`），旧卡不是原地换内容。**一个 agent 一张卡**：同一个 session 再说话是更新这张卡
    （`Island.order` 把它放回最上面），不是再添一张——一次长跑的工具调用是一件事，不是
    每步一条。卡片标题是 **agent 名 · 目录名**（"Claude Code · search"，目录取 cwd 最后一段，
-   没说目录就只显名字），后接一句在干什么（`is running Bash` / `wants Bash` / `finished — …`）——
-   这一行只说工具名；说过的话另起一行放在下面（占满卡宽、最多两行），不在同一行里跟工具名抢地方，
-   也不在这一行里再说一遍（`IslandPlace.doing` / `under` 是这同一条规则的两半）；只露一条缝的
-   卡只显标题那一行。`asking` 的带 Allow/Deny/Ask there 三个按钮；点卡片跳到它的窗、标签、窗格。
+   没说目录就只显名字），后接一句在干什么：有工具在跑就是 `is running Bash`，工具跑完了、下一步
+   还没开始就是 `is working`（`is running` 后面空着读起来像横幅丢了词），停在人身上是
+   `wants Bash`，跑完是 `finished`（`IslandBar.partName` 看 session 而不只看 part，就是为这一句）。
+   **说过的话永远另起一行放在下面**，占满卡宽：跑完/等着的卡是「新闻」，给五行（`IslandPlace.read`
+   70pt），摊平后给十二行（`wide` 164pt）——两行装不下一条消息，而被截成两行的消息没法照着做事；
+   在跑/在问的卡是「瞥一眼」，两行（`words` 28pt）。这一行只说工具名，话不在这一行里跟工具名抢地方，
+   也不在下面重复（`IslandPlace.doing` / `under` 是同一条规则的两半）；行数用 `IslandPlace.lines`
+   说，和高度 `said` 一起给，画的和算的仍是同一个答案。装不下的部分由**悬停提示**（`.help`）
+   整条给出（`IslandBar.tip`），消息本身在 `IslandRead.message` 里不裁（上限 4000 字，
+   只有工具名那种一句话才裁到 160）。只露一条缝的卡只显标题那一行。`asking` 的带 Allow/Deny/Ask there 三个按钮；点卡片跳到它的窗、标签、窗格。
    **拖动**：整条可沿窗口顶部
    横向拖到任意处，也可往下拖（最深到窗口底留 14pt；`island.down` 存点数），两端各有一条 6pt
    的隐形边缘可拖宽窄（近端动、远端不动，窗口边缘同款）——位置存成窗口宽度的份额（窗口
@@ -410,12 +423,13 @@ hook 永远不会再跑（进程被杀不会执行任何 hook），所以由终�
 `Island.retired(tty:)` 清掉该 tty 的全部 session，还开着的 hold 回一个空 `{}`，让等着的
 CLI 回自己终端去问。
 
-测试在 `Tests/SearchTests/IslandTests.swift`（33 条）：事件读取与裁词、各家事件名归一（Gemini/Cursor/Copilot/
+测试在 `Tests/SearchTests/IslandTests.swift`（35 条）：事件读取与留词（消息整条留、工具名裁 160）、各家事件名归一（Gemini/Cursor/Copilot/
 Grok 折到横幅自己的词；请求头带名；无 session 的以 tty 为 session）、各形状 settings 的合并与卸载
 （Claude/Codex/Qwen/Droid/Gemini/Cursor/Grok/Copilot/Pi/OMP）、桥接脚本写出且可执行、session 状态转移、
 `Shape` 两形态、socket 收 HTTP 事件、挂起→回答全链路、裸 JSON、终端结束带走 agent、
 横幅位置与宽度夹在窗口内，往下拖的深度也夹在窗口内；一行可收走，收走后只等值得
    再听的话（IslandPlace 纯函数、shelving 语义）；卡片顺序（最新在最上、同一 session 回顶不添卡）、
-   栈形状（收起=顶张整张+每张一条缝、展开=每张整张且不越窗口）、没有 tty 的 agent 永远在栏上
+   栈形状（收起=顶张整张+每张一条缝、展开=每张整张且不越窗口）、工具跑完撤下自己那一行
+   （并行调用按 id 认、问与 done 不撤）、跑完的卡把消息说在标题下面（五行/十二行）、没有 tty 的 agent 永远在栏上
    而 watched 只藏自己终端里的那一只、一句话在卡上只说一遍（doing/under 各说各的半边），以及
    真用 `NSHostingView` 画出来量高度、与 `IslandPlace` 的算术对齐（画的和算的不许各走各的）。

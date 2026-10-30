@@ -647,14 +647,24 @@ enum IslandHooks {
             say(
               said("PreToolUse", ctx, {
                 tool_name: event.toolName,
+                tool_call_id: event.toolCallId,
                 tool_input: input,
               }),
             );
             return undefined;
           });
 
-          pi.on("tool_result", async (_event, ctx) => {
-            say(said("PostToolUse", ctx, {}));
+          // A tool that has finished, named and numbered: Search takes that
+          // tool down from the bar with it, and by its own id — a card names
+          // one call, and two tools run side by side are two calls, so the
+          // one still running keeps its line.
+          pi.on("tool_result", async (event, ctx) => {
+            say(
+              said("PostToolUse", ctx, {
+                tool_name: event.toolName,
+                tool_call_id: event.toolCallId,
+              }),
+            );
           });
         }
         """

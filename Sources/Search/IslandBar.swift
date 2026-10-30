@@ -78,11 +78,41 @@ enum IslandPlace {
     /// pinned for the same reason. A card says either its line alone or
     /// its line and this.
     static let words: CGFloat = 28
+    /// The height of the words on a card that has stopped to be read —
+    /// finished, or waiting on a person. Five lines rather than two: the
+    /// message is the whole reason that card is there, and a message cut
+    /// to two lines is a message nobody can act on.
+    static let read: CGFloat = 70
+    /// And twelve lines of it once the pile is straightened: a card read
+    /// square on is a card being read, and the message is what it is being
+    /// read for. Twelve rather than as many as it takes — the card is a
+    /// notch over a page, and a card as tall as the window is no longer
+    /// one; past twelve lines the tooltip carries the rest, whole.
+    static let wide: CGFloat = 164
 
-    /// How tall a card stands: its breath, its own line, and the two
-    /// lines of what it said when it has anything to say under it.
-    static func card(_ hasWords: Bool) -> CGFloat {
-        pad * 2 + line + (hasWords ? gap + words : 0)
+    /// How tall the words stand on this card: a working or asking one is a
+    /// glance at what it is on, a finished or waiting one is the news.
+    static func said(_ session: Island.Session, over: Bool = false) -> CGFloat {
+        switch session.part {
+        case .asking, .working: return words
+        case .waiting, .done: return over ? wide : read
+        }
+    }
+
+    /// How many lines that is, said as lines rather than as points: the
+    /// text is cut where the card's height cuts it, so the drawing and the
+    /// sum are the same answer and neither can drift from the other.
+    static func lines(_ session: Island.Session, over: Bool = false) -> Int {
+        switch session.part {
+        case .asking, .working: return 2
+        case .waiting, .done: return over ? 12 : 5
+        }
+    }
+
+    /// How tall a card stands: its breath, its own line, and the lines of
+    /// what it said when it has anything to say under it.
+    static func card(_ hasWords: Bool, _ tall: CGFloat = words) -> CGFloat {
+        pad * 2 + line + (hasWords ? gap + tall : 0)
     }
 
     /// How tall a card stands, for the session it's drawn from: the rule
@@ -90,37 +120,30 @@ enum IslandPlace {
     /// the view, so the pile's arithmetic and the cards themselves are
     /// the same answer — the bar is exactly as tall as what it holds,
     /// and the drawing can't drift from the sum without a test failing.
-    static func card(_ session: Island.Session) -> CGFloat {
-        card(under(session) != nil)
+    static func card(_ session: Island.Session, over: Bool = false) -> CGFloat {
+        card(under(session) != nil, said(session, over: over))
     }
 
-    /// What a card's own line says it is doing: the tool it's on when
-    /// there is one, the words it stopped to say when there isn't —
-    /// the one line of it. The words go in the line only when there is
-    /// nothing under the line to say them (see `under`): a card that
-    /// said them in both places — squeezed in beside the tool's name
-    /// and repeated below — is a card that looks broken.
+    /// What a card's own line names: the tool it's on while it's at work,
+    /// or the tool it's asking about. A waiting or finished one names no
+    /// tool — nothing is running, and what it has to say is under the line
+    /// (see `under`), where there is room to read it.
     static func doing(_ session: Island.Session) -> String {
         switch session.part {
-        case .asking, .working:
-            return session.tool ?? session.words ?? ""
-        case .waiting, .done:
-            return session.words ?? ""
+        case .asking, .working: return session.tool ?? ""
+        case .waiting, .done: return ""
         }
     }
 
-    /// What a card says under its own line: the words an agent said,
-    /// where the line above isn't already saying them (`doing` says
-    /// them there when there's no tool). A working or asking one with
-    /// a tool up there has room below for what it said of itself; a
-    /// waiting or done one is saying its words in that very line, and
-    /// saying them twice on one card is a card that looks broken.
+    /// What a card says under its own line: the words an agent said, whole
+    /// and wherever it said them — the last thing an agent said is the
+    /// whole of what a person who wasn't watching wants from it, and a
+    /// card that said it in the one line beside the agent's name had room
+    /// for a title and not for a message. Cut only to the room the card
+    /// has (see `lines`), never in what the island keeps (IslandRead.message).
     static func under(_ session: Island.Session) -> String? {
         guard let words = session.words, !words.isEmpty else { return nil }
-        switch session.part {
-        case .asking, .working: return session.tool == nil ? nil : words
-        case .waiting, .done: return nil
-        }
+        return words
     }
 
     /// How tall the straightened bar stands, before the room has its
@@ -351,7 +374,7 @@ struct IslandBar: View {
     /// the same thing the cards themselves are pinned to, so the bar is
     /// exactly as tall as what it holds.
     private var heights: [CGFloat] {
-        shown.map(IslandPlace.card)
+        shown.map { IslandPlace.card($0, over: over) }
     }
 
     /// How tall the bar stands: the pile's own arithmetic while it's
@@ -489,7 +512,7 @@ struct IslandBar: View {
                 // what it said last. One line of it — the card is a
                 // notch, not a page.
                 (title(session)
-                    + Text(partName(session.part)).foregroundColor(Palette.muted)
+                    + Text(partName(session)).foregroundColor(Palette.muted)
                     + Text(IslandPlace.doing(session)).foregroundColor(Palette.ink))
                     .font(.system(size: 11.5))
                     .lineLimit(1)
@@ -528,13 +551,13 @@ struct IslandBar: View {
                 Text(words)
                     .font(.system(size: 11))
                     .foregroundColor(Palette.muted)
-                    .lineLimit(2)
+                    .lineLimit(IslandPlace.lines(session, over: over))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    // Two lines of it, and the same two lines the pile
-                    // counts on (IslandPlace.words): a card is the height
-                    // the arithmetic says it is, whether it had a word to
-                    // wrap or not.
-                    .frame(height: IslandPlace.words, alignment: .topLeading)
+                    // As many lines of it as this card holds, and the same
+                    // number the pile counts on (IslandPlace.said): a card
+                    // is the height the arithmetic says it is, whether it
+                    // had a word to wrap or not.
+                    .frame(height: IslandPlace.said(session, over: over), alignment: .topLeading)
             }
         }
         .padding(.horizontal, 12)
@@ -548,6 +571,11 @@ struct IslandBar: View {
         .shadow(color: .black.opacity(0.08), radius: 16, y: 5)
         .contentShape(Rectangle())
         .onTapGesture { island.visit(session) }
+        // The whole of what it said, for the cursor that rests on the card:
+        // a card holds as many lines as a notch may (IslandPlace.lines),
+        // and a message longer than that is one to be read here rather
+        // than nowhere at all.
+        .help(tip(session))
         // The pile's depth, said three ways at once, because one of them
         // alone reads as a bug rather than as distance: a card behind is
         // smaller, and dimmer, and tipped back so it leans away into the
@@ -647,14 +675,26 @@ struct IslandBar: View {
         return island.holds.first { $0.event.source + "/" + $0.event.session == session.id }
     }
 
-    /// What a part is called, the little word after the name.
-    private func partName(_ part: Island.Session.Part) -> String {
-        switch part {
+    /// What a part is called, the little word after the name. A working
+    /// one with no tool up is between tools — reading the last one's
+    /// answer, thinking about the next — and says so rather than naming a
+    /// tool that is already done with: "is running" with nothing after it
+    /// is a bar that lost its place.
+    private func partName(_ session: Island.Session) -> String {
+        switch session.part {
         case .asking: return " wants "
-        case .waiting: return " is waiting — "
-        case .working: return " is running "
-        case .done: return " finished — "
+        case .waiting: return " is waiting"
+        case .working: return session.tool == nil ? " is working" : " is running "
+        case .done: return " finished"
         }
+    }
+
+    /// What the card says when a cursor rests on it: who is talking and
+    /// the whole of what it said, past the lines the card itself holds.
+    private func tip(_ session: Island.Session) -> String {
+        let name = Island.name(session.source)
+        guard let words = IslandPlace.under(session) else { return name }
+        return name + " — " + words
     }
 
     /// The close, as an × the size of a word: a click puts the card
