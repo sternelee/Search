@@ -7,6 +7,12 @@ import SwiftUI
 /// stage says the pages are.
 struct SplitStage: View {
     @ObservedObject var browser: Browser
+    /// Each page's corners, as a card (see CardEdge).
+    var corner: CGFloat = 0
+    /// The page lent to WebKit's full screen window, as the window has it:
+    /// told with the rest of the chrome, in the same pass (see
+    /// ContentView.immersing), never on the stage's own.
+    var immersed: Tab.ID? = nil
     @ObservedObject private var drag = TabDrag.shared
     /// Where each page on screen is, as the stage last said.
     @State private var frames: [Tab.ID: CGRect] = [:]
@@ -17,36 +23,49 @@ struct SplitStage: View {
         let split = browser.activeSplit
         let shown: [Tab] = split.map { pair in pair.tabs.compactMap { id in browser.tabs.first { $0.id == id } } }
             ?? browser.active.map { [$0] } ?? []
-        ZStack(alignment: .topLeading) {
-            PaneStageView(
-                tabs: shown, split: split, focused: browser.activeID,
-                commit: { id, sizes in browser.setSplitFraction(id, fraction: sizes[0]) },
-                focus: { tab in browser.focusPane(tab) },
-                frames: { frames = $0 },
-                action: { action in
-                    switch action {
-                    case .swap: browser.swapSplit()
-                    case .even: browser.evenSplit()
-                    case .separate: if let tab = browser.active { browser.detachSplit(tab) }
-                    case .closeBoth: browser.closeSplit()
-                    }
-                },
-                hover: { hovered = $0 },
-                find: browser.finding ? browser : nil
-            )
-            ForEach(shown) { tab in
-                if let frame = frames[tab.id] {
-                    PaneLayers(browser: browser, tab: tab, paired: shown.count > 1, width: frame.width,
-                               hovered: hovered == tab.id)
-                        .frame(width: frame.width, height: frame.height)
-                        .offset(x: frame.minX, y: frame.minY)
+        // The stage alone says how big it is; what is drawn over each page
+        // follows the frames it reports and has no say. Laid out beside the
+        // stage, a page's frame from a moment ago held the stage at that
+        // width: back from a video's full screen, the pages kept the whole
+        // window's width, the stage reported it again, and the window's
+        // content, too wide, was centred in it — the column cut off at the
+        // left and the pages past the right edge, for good.
+        PaneStageView(
+            tabs: shown, split: split, focused: browser.activeID,
+            commit: { id, sizes in browser.setSplitFraction(id, fraction: sizes[0]) },
+            focus: { tab in browser.focusPane(tab) },
+            frames: { frames = $0 },
+            action: { action in
+                switch action {
+                case .swap: browser.swapSplit()
+                case .even: browser.evenSplit()
+                case .separate: if let tab = browser.active { browser.detachSplit(tab) }
+                case .closeBoth: browser.closeSplit()
                 }
-            }
-            if let preview = drag.preview, preview.browserID == ObjectIdentifier(browser) {
-                SplitDropPreview(preview: preview, tabs: browser.tabs)
-                    .transition(.opacity)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+            },
+            hover: { hovered = $0 },
+            find: browser.finding ? browser : nil,
+            accounts: browser.suggesting.map { (browser, $0) },
+            pairing: browser.applePairing.map { (browser, $0) },
+            corner: corner,
+            immersed: immersed
+        )
+        .overlay(alignment: .topLeading) {
+            ZStack(alignment: .topLeading) {
+                ForEach(shown) { tab in
+                    if let frame = frames[tab.id] {
+                        PaneLayers(browser: browser, tab: tab, paired: shown.count > 1, width: frame.width,
+                                   hovered: hovered == tab.id, corner: corner)
+                            .frame(width: frame.width, height: frame.height)
+                            .offset(x: frame.minX, y: frame.minY)
+                    }
+                }
+                if let preview = drag.preview, preview.browserID == ObjectIdentifier(browser) {
+                    SplitDropPreview(preview: preview, tabs: browser.tabs)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -62,6 +81,8 @@ private struct PaneLayers: View {
     let paired: Bool
     let width: CGFloat
     var hovered = false
+    /// The page's corners, for Search's own pages drawn here (see InternalPages.swift).
+    var corner: CGFloat = 0
 
     private var focused: Bool { browser.activeID == tab.id }
 
@@ -90,11 +111,10 @@ private struct PaneLayers: View {
             // The page's own layers — its cover, the floating video's line,
             // its trouble, the history disc — without the page, which is
             // the stage's.
-            Page(tab: tab, holdsPage: false)
+            Page(tab: tab, holdsPage: false, corner: corner, browser: browser)
 
-            if browser.fieldShowing && focused {
+            if focused {
                 Omnibox(browser: browser, over: !tab.isBlank, fitted: true)
-                    .transition(.scale(scale: 0.97).combined(with: .opacity))
             }
 
             // An empty page of a pair: the field, and the tabs already open,
@@ -122,12 +142,9 @@ private struct PaneLayers: View {
                 LinkBubble(status: browser.linkStatus, page: paired ? tab.built : nil)
             }
         }
-        .overlay(alignment: .topLeading) {
-            if let asked = browser.suggesting, asked.tab == tab.id {
-                AccountList(browser: browser, asked: asked)
-                    .transition(.opacity)
-            }
-        }
+        // The accounts under a sign-in box are the stage's (PaneStage.showAccounts):
+        // drawn here, they were under the page. So is Apple Passwords' code card
+        // (PaneStage.showPairing).
         .overlay(alignment: .topTrailing) { whose }
         .animation(Motion.quick, value: hovered)
         .background { SplitDropZone(browser: browser, tab: tab, kind: .stage) }
@@ -138,7 +155,6 @@ private struct PaneLayers: View {
             if paired { browser.focusPane(tab) }
         }
         .clipped()
-        .animation(Motion.quick, value: browser.suggesting)
     }
 }
 

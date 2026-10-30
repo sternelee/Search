@@ -43,7 +43,7 @@ enum SiteCardPanel {
                 MainActor.assumeIsolated {
                     guard let browser else { return }
                     guard let id = editing, !browser.renamingTab,
-                          let tab = browser.tabs.first(where: { $0.id == id }), !tab.isBlank
+                          let tab = browser.tabs.first(where: { $0.id == id }), tab.isWeb
                     else { original = nil; hide(); return }
                     if original == nil {
                         // The edit began: the card comes up under the field once it
@@ -91,9 +91,10 @@ enum SiteCardPanel {
         glass.layer?.masksToBounds = true
         glass.layer?.borderWidth = 0.5
         glass.layer?.borderColor = MenuMetrics.edge.cgColor
-        // Before macOS 26 the material behind the window ignores the layer's
-        // corners, and showed square ones; a mask rounds it there too.
-        if #unavailable(macOS 26) { glass.maskImage = Self.rounded(MenuMetrics.corner) }
+        // The material behind the window ignores the layer's corners: a pale
+        // square showed past each rounded one, before macOS 26 and on it too.
+        // A mask rounds the material, and the window's shadow with it.
+        glass.maskImage = Self.rounded(MenuMetrics.corner)
         host.frame = glass.bounds
         host.autoresizingMask = [.width, .height]
         glass.addSubview(host)
@@ -186,6 +187,7 @@ enum SiteCardPanel {
 /// goes a step further in, to what it means and the certificate behind it.
 struct SiteCard: View {
     let browser: Browser
+    @ObservedObject var prefs: Preferences
     @ObservedObject var tab: Tab
     let close: () -> Void
 
@@ -197,6 +199,7 @@ struct SiteCard: View {
 
     init(browser: Browser, tab: Tab, deeper: Bool = false, close: @escaping () -> Void) {
         self.browser = browser
+        self.prefs = browser.prefs
         self.tab = tab
         self.close = close
         _deeper = State(initialValue: deeper)
@@ -244,6 +247,23 @@ struct SiteCard: View {
             zoom
             sound
             grounded
+            darken
+            if prefs.keepsSitesAwake, tab.awakeHost != nil {
+                HStack(spacing: 0) {
+                    Text("Keep This Site Awake").font(MenuMetrics.font)
+                    Spacer(minLength: 24)
+                    Switch(on: Binding(get: { browser.keepsAwake(tab) }, set: { browser.keepAwake($0, for: tab) }))
+                        .accessibilityRepresentation {
+                            Toggle("Keep This Site Awake", isOn: Binding(get: { browser.keepsAwake(tab) }, set: { browser.keepAwake($0, for: tab) }))
+                        }
+                        .focusable()
+                        .onKeyPress(.space) { browser.keepAwake(!browser.keepsAwake(tab), for: tab); return .handled }
+                }
+                .padding(.leading, MenuMetrics.text)
+                .padding(.trailing, MenuMetrics.trailing)
+                .frame(height: MenuMetrics.row)
+                .help(tab.shy ? "Only in this private tab, until it closes. Uses more memory." : "Prevents sleep and automatic closure, even when memory is low. You can still close the tab.")
+            }
         }
     }
 
@@ -255,6 +275,15 @@ struct SiteCard: View {
            let url = tab.pageAddress, ["http", "https"].contains(url.scheme?.lowercased()),
            Players.knows(url), let host = url.host() {
             Ground(host: host)
+        }
+    }
+
+    /// Whether Search darkens the site (see Dusk.swift), a switch like the
+    /// sound's. Only while dark pages are on and doing something: not
+    /// paused, and the frame dark. It takes effect on the page at once.
+    @ViewBuilder private var darken: some View {
+        if browser.canDusk(tab) {
+            Darken(on: Binding(get: { tab.dusked }, set: { browser.dusk($0, tab) }))
         }
     }
 
@@ -356,6 +385,32 @@ struct SiteCard: View {
             .padding(.trailing, MenuMetrics.trailing)
             .frame(height: MenuMetrics.row)
             .onChange(of: on) { _, value in Grounded.set(value, for: host) }
+        }
+    }
+
+    private struct Darken: View {
+        @Binding var on: Bool
+
+        var body: some View {
+            HStack(spacing: 0) {
+                Text("Darken This Site")
+                    .font(MenuMetrics.font)
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .fixedSize()
+                Spacer(minLength: 24)
+                // The key as it is now: Settings › Shortcuts can move it.
+                if let keys = ShortcutStore.shared.key(for: "view.dusk")?.display {
+                    Text(keys)
+                        .font(MenuMetrics.font)
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .fixedSize()
+                        .padding(.trailing, 8)
+                }
+                Switch(on: $on)
+            }
+            .padding(.leading, MenuMetrics.text)
+            .padding(.trailing, MenuMetrics.trailing)
+            .frame(height: MenuMetrics.row)
         }
     }
 

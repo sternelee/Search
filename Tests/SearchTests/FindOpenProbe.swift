@@ -15,6 +15,11 @@ final class FindOpenProbe: XCTestCase {
         window.orderFrontRegardless()
         window.makeFirstResponder(view)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        // Out of sight when the test ends, not closed: a window this test put
+        // on screen is still visible to every other suite's teardown, which
+        // asserts that nothing is (and a close here frees something the next
+        // test's run loop is still holding — see "踩过的坑" in TERMINAL.md).
+        addTeardownBlock { window.orderOut(nil) }
         return (view, window)
     }
 
@@ -73,6 +78,9 @@ final class FindOpenProbeText: XCTestCase {
         window.orderFrontRegardless()
         window.makeFirstResponder(view)
         RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        // Same bargain as the probe above: the window leaves the process's
+        // visible set when this test is done with it.
+        addTeardownBlock { window.orderOut(nil) }
         return (view, window)
     }
 

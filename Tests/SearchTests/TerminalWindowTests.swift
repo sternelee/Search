@@ -19,6 +19,10 @@ final class TerminalWindowTests: XCTestCase {
         let view = TerminalView(terminal: terminal)
         window.contentView = view
         window.orderFrontRegardless()
+        // Out of sight when the test ends, not closed: a window a probe put
+        // on screen is still visible to every other suite's teardown,
+        // which asserts that nothing is.
+        addTeardownBlock { window.orderOut(nil) }
 
         // The shell's words may land before anything is listening for them,
         // so the scene itself is polled — the words are what matter, and
@@ -73,6 +77,7 @@ final class TerminalWindowTests: XCTestCase {
         let view = TerminalView(terminal: terminal)
         window.contentView = view
         window.orderFrontRegardless()
+        addTeardownBlock { window.orderOut(nil) }
 
         // The marks arrive with the output, so the blocks are polled for:
         // what is waited on is the scrollback having something to walk.
@@ -160,6 +165,7 @@ final class TerminalWindowTests: XCTestCase {
         let view = TerminalView(terminal: terminal)
         window.contentView = view
         window.orderFrontRegardless()
+        addTeardownBlock { window.orderOut(nil) }
 
         var there = false
         for _ in 0..<100 {
@@ -200,6 +206,7 @@ final class TerminalWindowTests: XCTestCase {
         let view = TerminalView(terminal: terminal)
         window.contentView = view
         window.orderFrontRegardless()
+        addTeardownBlock { window.orderOut(nil) }
 
         func read() -> [String] {
             guard let seen = terminal.scene(scroll: 0) else { return [] }

@@ -46,7 +46,7 @@ struct PasswordsPanel: View {
                         }
                         .padding(.bottom, 2)
                     }
-                    .frame(maxHeight: 400)
+                    .listHeight(400)
                 }
             }
         } foot: {
@@ -56,12 +56,18 @@ struct PasswordsPanel: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Palette.muted)
                     // Which browser, which profile and what of it: the sheet.
-                    Pill("Bring in…") {
-                        browser.managing = false
-                        browser.bringingIn = ""
-                    }
+                    Pill("Bring in…") { browser.lead(to: InternalPage(.importing)) }
                     Pill("File…") { browser.importFile() }
                     Spacer(minLength: 0)
+                    // What the list shows, all of it or what the search
+                    // leaves: never more than can be seen (Browser.forgetShown).
+                    let shown = browser.shownSites.reduce(0) { $0 + $1.logins.count }
+                    if shown > 0 {
+                        Pill(browser.hunting.trimmingCharacters(in: .whitespaces).isEmpty ? "Remove All…" : "Remove \(shown)…") {
+                            browser.forgetShown()
+                        }
+                        .disabled(browser.forgetting)
+                    }
                     Text(browser.saved.count == 1 ? "1 password" : "\(browser.saved.count) passwords")
                         .font(.system(size: 12))
                         .foregroundStyle(Palette.muted)
@@ -158,6 +164,10 @@ struct PasswordsPanel: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(minWidth: 120, alignment: .leading)
+                    // Selectable, as the password beside it is: a username is
+                    // not a secret, and it is the half of a sign-in you are
+                    // most often asked to type somewhere else.
+                    .textSelection(.enabled)
 
                 // Ten dots whatever it is: the row does not know the length
                 // until the secret is read, and a count that changed with it

@@ -13,14 +13,20 @@
     ./bench select ID                  bring a tab to the front — --test runs only
     ./bench resize W H [STEPS]         take the window to W×H in steps, like a drag — --test runs only
     ./bench key ID TEXT                press keys on a tab as real key events — --test runs only
+    ./bench textcheck ID [NAME]        test run: text replacement, smart quotes and dashes — the Mac's, the
+                                       page's, Edit › Substitutions' ticks; NAME (quotes|dashes|replacement)
+                                       switches one, only in a copy under its own bundle id
     ./bench press CODE CHARS [MODS…]   press a key on the whole app (cmd shift ctrl opt, repeat) — --test runs only
     ./bench tap ID SELECTOR [MODS…]    a real mouse click on an element (or text=Words), shift/cmd/opt held — --test runs only
     ./bench text ID                    the page's text
+    ./bench translate ID [LANG]        Translate Page on a tab → what it measured
+    ./bench translate ID original|state|toggle|always LANG|never LANG
     ./bench eval ID JS [search]        run JavaScript, print what it returns; search: in Search's own world
     ./bench click ID SELECTOR
     ./bench type ID SELECTOR TEXT
     ./bench submit ID SELECTOR         the form around SELECTOR
     ./bench shot ID [PATH] [WIDTH]     a PNG of the page → its path
+    ./bench pdf PATH                   test run: export the page on screen as a continuous, screen-layout PDF
     ./bench close ID | all             only tabs the bench opened
     ./bench probe                      the window's own state: panels, modal, windows
     ./bench extensions                 installed extensions, loaded or not, with their warnings
@@ -37,8 +43,10 @@
     ./bench ext-shot ID PATH           a picture of its popup while it is open
     ./bench ext-answer yes|no|ask      test run: answer extensions' questions without asking; lists what was asked
     ./bench ext-enable ID on|off       switch an extension on or off
+    ./bench ext-private ID on|off      test run: allow one extension in private tabs
     ./bench capture                    extensions' screen recording: ids given, what records, who may, last request
     ./bench capture-stop ID            stop what an extension is recording, as the pill's Stop does
+    ./bench sidepanel [eval JS|touch|close]  the side panel: what is in it and where; test run: JS in its page, a click, or close it
     ./bench ext-remove ID
     ./bench strip PATH [WIDTH]         the row of tabs across the top, drawn off screen to a PNG
     ./bench column PATH [HEIGHT]       the column of tabs, drawn off screen to a PNG
@@ -63,6 +71,9 @@
                                        test run: the tab groups; a tab into a new group, into one by name,
                                        or out of its group; a group folded or opened, or closed with its tabs
     ./bench tospace ID N               test run: Move to Space, the tab to the Nth space
+    ./bench popups ID [open N|allow]   the windows a tab's page was refused and its site; test run: open the
+                                       Nth newest as the sign would, or Always Allow its site
+    ./bench popups sites | remove SITE the sites allowed to open pop-ups; test run: remove one
     ./bench field TEXT [type] [go]     test run: TEXT pasted into the address field (type: a key at a time),
                                        each timed until the window has caught up; go: then Return, timed
                                        until the page is loading
@@ -70,7 +81,9 @@
     ./bench ai mock URL | key PROVIDER KEY | ask PROVIDER MODEL TEXT | read ID | check TEXT | signin | engine [PATH MODELS] | use PROVIDER [MODEL] | summarize ID | question ID TEXT | agree | state | picture DIR
                                        test run: the AI add-on's requests, against a stand-in on this Mac;
                                        what of a page would go to the model, and an answer checked against it
-    ./bench answer once|always|no     test run: the card of a page asking for the camera, microphone or location
+    ./bench answer once|always|no|screen|window|noscreen
+                                       test run: the card of a page asking for the camera, microphone or location;
+                                       screen/window/noscreen answer a page asking to share your screen
     ./bench accounts [ROW]             test run: the list under the sign-in box the caret is in (passkeys,
                                        then passwords); ROW: a click on that row, from 0
     ./bench pull DX [STEPS] [MS]       test run: two fingers DX points sideways over the page (back is +) — where it went
@@ -85,8 +98,12 @@
     ./bench import-file-status       test run: current filename, stage, counts and cancellation state
     ./bench import-file-cancel       test run: request cancellation of the current file import
     ./bench remove-folder TITLE        test run: the bookmarks list's Remove on a top-level folder, its question left up
+    ./bench passwords [TEXT] [remove]  test run: the passwords list, narrowed to TEXT; remove: its Remove All… / Remove N… (ui confirm on|off answers it, Touch ID included)
     ./bench menu [open]                test run: the Bookmarks menu as it is about to open, and its first
                                        folder (open: its first bookmark picked)
+    ./bench marks                      test run: each bookmark on the bar (its size), in the bar's folders'
+                                       menus and the Bookmarks menu, every folder opened, and in the list:
+                                       what it reads, and whether it wears an icon
     ./bench bookmark URL [new]         test run: a bookmark picked from the list, timed until it loads
                                        (new: into a new tab, whose page isn't built yet)
     ./bench windows [list|new|close N|reopen|frame N X Y W H|front N|link URL]
@@ -107,9 +124,14 @@
     ./bench pages on|off               test run: let a hidden probe's pages be painted, off every screen (for picture)
     ./bench picture PATH               test run: the whole window, pages included, drawn to a PNG (start the probe hidden)
     ./bench film peek|unpeek|fold PATH [N] [SECS]  the window drawn N times while it animates → PATH-00.png… — --test runs only
-    ./bench film float|land PATH [SECS]  the tab in front's video out into its floating window, or back: every
+    ./bench film select ID PATH [N] [SECS]        the same, while selecting a tab
+    ./bench film float|land PATH [SECS] [key|switch|app]
+                                       the tab in front's video out into its floating window, or back, by ⇧⌘P,
+                                       by going to another tab (and back), or by another app coming forward: every
                                        frame the page draws for SECS (1), its size, the video's box and how much
-                                       of the view it fills → PATH.json; from a probe started hidden, both
+                                       of the view it fills, when the covers over the little window and the
+                                       tab are up, and what WebKit has handed over to draw → PATH.json; from a
+                                       probe started hidden, both
                                        windows kept off every screen — --test runs only
     ./bench float screens [two] | place X Y | swipe DX DY [STEPS] [MS] | wheel DX DY | click
                                        test run: the floating window's gestures (after film float, so it is
@@ -118,8 +140,11 @@
                                        leaves it, and how far it swings on the way
     ./bench ui KEY VALUE               settings/passwords/welcome/history/downloads/bookmarks/hidden on|off,
                                        import on|off|extensions|BROWSER,
-                                       look light|dark|system, sidebar on|off, side left|right, spaces on|off, hides on|off,
-                                       folded on|off, peek on|off, peeklink keep|close, pages120 on|off
+                                       look light|dark|system, sidebar on|off, side left|right, spaces on|off, sharedpins on|off, swipepages on|off, confirm on|off, hides on|off,
+                                       folded on|off, peek on|off, peeklink keep|close, pages120 never|onPower|always,
+                                       cards on|off (the page as a card), fullscreen on|off (test run: the
+                                       window's full screen as the chrome sees it, the window staying put),
+                                       gpc on|off, clickids on|off (test run: Settings › Privacy's switches)
 
 Needs Settings › General › "Let a script drive Search" switched on in the
 running app. IDs are the first characters of a tab's id, as `tabs` prints
@@ -195,6 +220,13 @@ def main(argv):
     elif verb in ("text", "close", "sleep", "select", "visible"):
         if len(args) != 1: sys.exit(f"usage: bench {verb} ID")
         request["id"] = args[0]
+    elif verb == "translate":
+        if len(args) not in (1, 2, 3): sys.exit("usage: bench translate ID [LANG|original|state|toggle|always LANG|never LANG]")
+        request["id"] = args[0]
+        if len(args) >= 2:
+            if args[1] in ("original", "state", "toggle", "always", "never"): request["action"] = args[1]
+            else: request["lang"] = args[1]
+        if len(args) == 3: request["lang"] = args[2]
     elif verb == "eval":
         if len(args) not in (2, 3) or (len(args) == 3 and args[2] != "search"): sys.exit("usage: bench eval ID JS [search]")
         request["id"], request["js"] = args[0], args[1]
@@ -212,6 +244,9 @@ def main(argv):
         request["id"] = args[0]
         if len(args) > 1: request["path"] = os.path.abspath(args[1])
         if len(args) > 2: request["width"] = float(args[2])
+    elif verb == "pdf":
+        if len(args) != 1: sys.exit("usage: bench pdf PATH")
+        request["path"] = os.path.abspath(args[0])
     elif verb == "sitesearch":
         request["action"] = args[0] if args else "state"
         if len(args) == 3 and args[0] == "learn":
@@ -220,13 +255,18 @@ def main(argv):
         if len(args) != 2: sys.exit("usage: bench ui KEY VALUE")
         key, value = args
         if key == "side" and value not in ("left", "right"): sys.exit("usage: bench ui side left|right")
-        request[key] = value if key in ("look", "edittab", "peeklink", "import", "side") else value in ("on", "true", "1", "yes")
+        request[key] = value if key in ("look", "edittab", "peeklink", "import", "side", "pages120") else value in ("on", "true", "1", "yes")
     elif verb in ("ext-add", "ext-press", "ext-remove", "ext-reload"):
         if len(args) != 1: sys.exit(f"usage: bench {verb} ID")
         request["id"] = args[0]
         request["yes"] = yes
     elif verb == "capture":
         pass
+    elif verb == "sidepanel":
+        request["action"] = args[0] if args else "state"
+        if args and args[0] == "eval":
+            if len(args) != 2: sys.exit("usage: bench sidepanel eval JS")
+            request["js"] = args[1]
     elif verb == "capture-stop":
         if len(args) != 1: sys.exit("usage: bench capture-stop ID")
         request["id"] = args[0]
@@ -234,6 +274,10 @@ def main(argv):
         if len(args) != 2: sys.exit("usage: bench ext-enable ID on|off")
         request["id"] = args[0]
         request["on"] = args[1] in ("on", "true", "1", "yes")
+    elif verb == "ext-private":
+        if len(args) != 2 or args[1] not in ("on", "off"): sys.exit("usage: bench ext-private ID on|off")
+        request["id"] = args[0]
+        request["on"] = args[1] == "on"
     elif verb == "ext-pin":
         if not 1 <= len(args) <= 2: sys.exit("usage: bench ext-pin ID [on|off]")
         request["id"] = args[0]
@@ -262,6 +306,10 @@ def main(argv):
     elif verb == "press":
         if len(args) < 2: sys.exit("usage: bench press KEYCODE CHARS [cmd] [shift] [ctrl] [opt]")
         request["code"], request["chars"], request["mods"] = int(args[0]), args[1], args[2:]
+    elif verb == "textcheck":
+        if not 1 <= len(args) <= 2: sys.exit("usage: bench textcheck ID [quotes|dashes|replacement]")
+        request["id"] = args[0]
+        if len(args) == 2: request["toggle"] = args[1]
     elif verb == "key":
         if len(args) != 2: sys.exit("usage: bench key ID TEXT")
         request["id"], request["text"] = args
@@ -374,6 +422,16 @@ def main(argv):
         elif len(args) >= 2 and args[1] == "new": request["id"], request["new"], request["name"] = args[0], True, " ".join(args[2:])
         elif len(args) >= 2: request["id"], request["name"] = args[0], " ".join(args[1:])
         elif args: sys.exit("usage: bench group [ID new [NAME] | ID NAME | ID none | fold NAME | close NAME]")
+    elif verb == "popups":
+        if not args: sys.exit("usage: bench popups ID [open N|allow] | sites | remove SITE")
+        if args[0] == "sites": request["action"] = "sites"
+        elif args[0] == "remove" and len(args) == 2: request["action"], request["site"] = "remove", args[1]
+        else:
+            request["id"] = args[0]
+            if len(args) >= 2 and args[1] == "open": request["action"], request["index"] = "open", int(args[2]) if len(args) > 2 else 0
+            elif len(args) == 2 and args[1] == "allow": request["action"] = "allow"
+            elif len(args) == 1: request["action"] = "state"
+            else: sys.exit("usage: bench popups ID [open N|allow] | sites | remove SITE")
     elif verb == "tospace":
         if len(args) != 2: sys.exit("usage: bench tospace ID N")
         request["id"], request["index"] = args[0], int(args[1])
@@ -405,11 +463,17 @@ def main(argv):
     elif verb == "remove-folder":
         if len(args) != 1: sys.exit("usage: bench remove-folder TITLE")
         request["title"] = args[0]
+    elif verb == "passwords":
+        for a in args:
+            if a == "remove": request["remove"] = True
+            else: request["filter"] = a
     elif verb in ("import-file-status", "import-file-cancel"):
         if args: sys.exit(f"usage: bench {verb}")
     elif verb == "menu":
         if args not in ([], ["open"]): sys.exit("usage: bench menu [open]")
         request["open"] = args == ["open"]
+    elif verb == "marks":
+        if args: sys.exit("usage: bench marks")
     elif verb == "keyeq":
         if len(args) < 2 or any(a != "shift" for a in args[2:]): sys.exit("usage: bench keyeq CHARS CODE [shift]")
         request["chars"], request["code"], request["mods"] = args[0], int(args[1]), args[2:]
@@ -469,11 +533,17 @@ def main(argv):
             try: request["args"] = [float(a) for a in args[1:]]
             except ValueError: sys.exit(usage)
     elif verb == "film":
-        if len(args) not in (2, 3, 4) or args[0] not in ("peek", "unpeek", "fold", "none", "float", "land"):
+        if args[:1] == ["select"]:
+            if len(args) < 3: sys.exit("usage: bench film select ID PATH [FRAMES] [EVERY]")
+            request["id"] = args.pop(1)
+        if len(args) not in (2, 3, 4) or args[0] not in ("peek", "unpeek", "fold", "none", "float", "land", "select"):
             sys.exit("usage: bench film peek|unpeek|fold|none|float|land PATH [FRAMES] [EVERY]")
         request["action"], request["path"] = args[0], os.path.abspath(args[1])
         if args[0] in ("float", "land"):
             if len(args) > 2: request["seconds"] = float(args[2])
+            if len(args) > 3:
+                if args[3] not in ("key", "switch", "app"): sys.exit("usage: bench film float|land PATH [SECS] [key|switch|app]")
+                request["via"] = args[3]
         else:
             if len(args) > 2: request["frames"] = int(args[2])
             if len(args) > 3: request["every"] = float(args[3])
@@ -512,7 +582,8 @@ def main(argv):
         elif args[0] == "check" and len(args) == 2: request["text"] = args[1]
         else: sys.exit(usage)
     elif verb == "answer":
-        if args not in (["once"], ["always"], ["no"]): sys.exit("usage: bench answer once|always|no")
+        if args not in (["once"], ["always"], ["no"], ["screen"], ["window"], ["noscreen"]):
+            sys.exit("usage: bench answer once|always|no|screen|window|noscreen")
         request["with"] = args[0]
     elif verb == "notifications":
         pass

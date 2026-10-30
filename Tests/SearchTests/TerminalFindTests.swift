@@ -64,6 +64,10 @@ final class TerminalFindPlaceTests: XCTestCase {
         let view = TerminalView(terminal: terminal)
         window.contentView = view
         window.orderFrontRegardless()
+        // Out of sight when the test ends, not closed: a window this test put
+        // on screen is still visible to every other suite's teardown, which
+        // asserts that nothing is.
+        addTeardownBlock { window.orderOut(nil) }
         return view
     }
 

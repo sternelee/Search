@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import QuartzCore
 import simd
 
@@ -124,27 +123,6 @@ final class TerminalView: NSView, NSTextInputClient {
     /// The field itself, for the search and the keyboard, or nothing.
     var findField: NSTextField? { findPanel?.field }
 
-    /// The chat view's own furniture: the chip in the corner that says
-    /// which agent is in here, the plate the conversation is laid on, and
-    /// the reader that follows the agent's own transcript (AgentChat).
-    /// The chip is up whenever an agent that can be read as a
-    /// conversation is in this terminal; the plate only while it is
-    /// asked for. Nothing here is a clock: the chip is told by the
-    /// island's own news, and the plate reads the file on a slow tick
-    /// that exists only while it is up.
-    var chatPill: TerminalChatSwitch?
-    var chatPlate: TerminalChatView?
-    var chatReader: ChatReader?
-    var chatTalk: AgentTalk.Talk?
-    var chatTick: Timer?
-    /// Whether the talk is up — the chip's own state, kept here because
-    /// the chip is thrown away when the agent leaves.
-    var chatShowing = false
-    /// The island's news, kept for this view's life: a session saying
-    /// which agent it is is the only thing that decides whether the chip
-    /// exists, and nothing polls for it.
-    private var watchingIsland: AnyCancellable?
-
     // MARK: - born
 
     init(terminal given: Terminal) {
@@ -181,15 +159,6 @@ final class TerminalView: NSView, NSTextInputClient {
             guard let self, self.window?.screen != nil else { return nil }
             return self.displayLink(target: self.pacer, selector: #selector(TerminalPacer.tick(_:)))
         }
-        // Which agent is in this terminal is the island's to say (the
-        // hooks hear it from the agent itself), so the chip is put up,
-        // re-pointed, and taken down on its news rather than on a tick.
-        // The publisher speaks in willSet — when it speaks, the stored
-        // sessions still hold what came before — so the saying itself is
-        // the truth to read, not the shelf it has not reached yet.
-        watchingIsland = Island.shared.$sessions.sink { [weak self] now in
-            MainActor.assumeIsolated { self?.watchTalk(now) }
-        }
         // The look is the app's and not this view's: the panel writes it
         // down, and every terminal open takes it as it changes.
         watching = NotificationCenter.default.addObserver(
@@ -205,7 +174,6 @@ final class TerminalView: NSView, NSTextInputClient {
     deinit {
         if let watching { NotificationCenter.default.removeObserver(watching) }
         statusAsk?.invalidate()
-        chatTick?.invalidate()
         MainActor.assumeIsolated { pacer.detach() }
     }
 
@@ -268,7 +236,6 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         placeFindField()
         placeDock()
-        placeChat()
         present()
     }
 
@@ -771,20 +738,6 @@ final class TerminalView: NSView, NSTextInputClient {
         if TerminalLook.inputBar != .bottom, dockPlate != nil {
             dock.suspend()
             drawDock()
-        }
-        // The chat view is the look's too: its words are the terminal's
-        // own face a size down, and its ground the theme's.
-        chatPlate?.refont()
-        chatPlate?.needsDisplay = true
-        _ = chatPill?.say(chatTalk?.agent.name ?? "", showing: chatShowing)
-        // The Agent View setting says what an agent's terminal opens in,
-        // and a change made in the Settings window is felt by the panes
-        // already open — the same courtesy the Input Bar gets. Written from
-        // the switch too, so the press and the setting are one path.
-        if chatTalk != nil, TerminalLook.agentView == .talk, !chatShowing {
-            openChat()
-        } else if TerminalLook.agentView == .screen, chatShowing {
-            closeChat()
         }
         // And the status bar's face is the look's own too — its height
         // moves with it, and the layout that follows places it.

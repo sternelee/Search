@@ -16,6 +16,7 @@ import SwiftUI
 struct FindBar: View {
     @ObservedObject var browser: Browser
     var availableWidth: CGFloat? = nil
+    var onPillFrame: ((CGRect) -> Void)? = nil
 
     @FocusState private var focused: Bool
 
@@ -114,6 +115,9 @@ struct FindBar: View {
                 lineWidth: 1
             )
         )
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("find")) }) {
+            onPillFrame?($0)
+        }
         .shadow(color: .black.opacity(0.10), radius: 18, y: 5)
         .modifier(OutOfTheCorner(leg: leg, press: press))
         .padding(place == .top ? .top : .bottom, 12)
@@ -121,6 +125,7 @@ struct FindBar: View {
         .frame(maxWidth: availableWidth == nil ? nil : .infinity,
                maxHeight: availableWidth == nil ? nil : .infinity,
                alignment: place == .top ? .topTrailing : .bottomTrailing)
+        .coordinateSpace(name: "find")
         // Gone into the corner it is not there to be clicked: the leg is
         // walked, and the keyboard has no business in a field that has not
         // arrived.

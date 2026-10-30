@@ -18,11 +18,6 @@ struct IslandEvent {
     var call: String?
     var prompt: String?
     var words: String?
-    /// Which run of which agent this is, and where its own transcript
-    /// is — read from the payload, which is the only place that knows
-    /// (Claude says `transcript_path`; our pi extension says
-    /// `_sessionFile`). Nil for an agent whose talk can't be read.
-    var talk: AgentTalk.Talk? = nil
 }
 
 /// The reading of what a hook said: pure work, nothing held. Everything
@@ -49,8 +44,7 @@ enum IslandRead {
             tool: say(raw["tool_name"]),
             call: call(raw["tool_input"]),
             prompt: say(raw["prompt"]),
-            words: say(raw["last_assistant_message"]) ?? say(raw["message"]),
-            talk: AgentTalk.talk(in: raw, source: source ?? say(raw["_source"]) ?? "", cwd: say(raw["cwd"]))
+            words: say(raw["last_assistant_message"]) ?? say(raw["message"])
         )
     }
 
@@ -153,18 +147,6 @@ final class Island: ObservableObject {
         var tty: String?
         var cwd: String?
         var at: Date
-        /// Which run of the agent is in this terminal, for the chat view
-        /// to read. Carried by the saying that made the session, since
-        /// only a saying knows it.
-        var talk: AgentTalk.Talk? = nil
-    }
-
-    /// The run in a terminal, if one said where its transcript is: what
-    /// the chip names and the chat view reads. Asked by a terminal view
-    /// for its own tty, which is the one thing both sides know.
-    func talk(of tty: String?) -> AgentTalk.Talk? {
-        guard let tty, !tty.isEmpty else { return nil }
-        return sessions.first { $0.tty == tty }?.talk
     }
 
     /// A permission held open, waiting for a person: what was asked,
@@ -245,7 +227,7 @@ final class Island: ObservableObject {
             shelved.remove(id)
             let fresh = Island.Session(
                 id: id, source: event.source, part: .working, tool: nil, words: nil,
-                tty: event.tty, cwd: event.cwd, at: Date(), talk: event.talk
+                tty: event.tty, cwd: event.cwd, at: Date()
             )
             if let i = sessions.firstIndex(where: { $0.id == id }) { sessions[i] = fresh }
             else { sessions.append(fresh) }
@@ -452,12 +434,8 @@ final class Island: ObservableObject {
         var session = i.map { sessions[$0] }
             ?? Island.Session(
                 id: id, source: event.source, part: .working, tool: nil, words: nil,
-                tty: event.tty, cwd: event.cwd, at: Date(), talk: event.talk
+                tty: event.tty, cwd: event.cwd, at: Date()
             )
-        // A saying that names the transcript replaces what was known of
-        // it: a run's file is only said once, and a session that has
-        // not written its first answer gains its file later.
-        if let talk = event.talk { session.talk = talk }
         if session.tty == nil { session.tty = event.tty }
         then(&session)
         session.at = Date()

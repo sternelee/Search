@@ -1,21 +1,22 @@
 import AppKit
 import SwiftUI
 
-/// Settings › Shortcuts: every menu command with its key, a card to a menu,
+/// Settings › Keyboard & Mouse › Shortcuts: every menu command with its key, a card to a menu,
 /// narrowed by name or key. Click a key and press the new one; right-click
 /// to clear it or put the default back.
 struct ShortcutsPage: View {
     @ObservedObject var browser: Browser
     @ObservedObject var store: ShortcutStore
+    @ObservedObject var prefs: Preferences
 
     @State private var hunt = ""
     @FocusState private var hunting: Bool
 
     /// By name, or by key as the menus write it: "tab" and "⌘T" both find New Tab.
     private func shown(_ command: Command) -> Bool {
-        // Split View's commands only once it is on.
-        if Command.split.contains(command.id), !browser.prefs.splitView { return false }
+        if command.section == .spaces, !prefs.usesSpaces { return false }
         if Command.ai.contains(command.id), !browser.prefs.ai { return false }
+        if Command.dusk.contains(command.id), !browser.prefs.darkensPages { return false }
         let words = hunt.trimmingCharacters(in: .whitespaces)
         guard !words.isEmpty else { return true }
         let key = store.key(for: command.id)?.display ?? ""
@@ -51,8 +52,11 @@ struct ShortcutsPage: View {
                 }
             }
             if #available(macOS 15.4, *) { extensionCommands }
-            if store.anyChanged, hunt.isEmpty {
-                Pill("Reset All to Defaults") { store.resetAll() }
+            if store.anyChanged || prefs.peekClick != .shift, hunt.isEmpty {
+                Pill("Reset All to Defaults") {
+                    store.resetAll()
+                    prefs.peekClick = .shift
+                }
             }
         }
     }
@@ -124,6 +128,8 @@ private struct KeyBox: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // What the Shortcuts group's line under its title used to say.
+        .help("Click, then press the new shortcut")
         .onHover { hovering = $0 }
         .onDisappear(perform: stop)
     }
@@ -159,6 +165,10 @@ private struct KeyBox: View {
         guard let combo = KeyCombo(event: event) else { return }
         guard combo.isUsable else { return say("Add ⌘, ⌥ or ⌃") }
         guard !KeyCombo.isReserved(combo) else { return say("Can’t be changed") }
+        // The switcher stays up while its key's ⌃, ⌥ or ⌘ is held, and
+        // takes the tab picked when it is let go of: a key needs one.
+        guard id != Command.recentTabs || combo.control || combo.option || combo.command
+        else { return say("Hold ⌃, ⌥ or ⌘ with it") }
         // An extension's command takes a key as its manifest would: one
         // that types a character, not an arrow or a function key.
         guard !id.hasPrefix("ext:") || combo.key.count == 1 else { return say("Not for an extension") }

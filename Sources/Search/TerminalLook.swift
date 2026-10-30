@@ -49,24 +49,6 @@ enum TerminalInputBar: String, CaseIterable, Identifiable {
     }
 }
 
-/// Which view a terminal running an agent opens in. Not a switch the shell
-/// can see — it is the pane's own habit, remembered across panes: a person
-/// who reads Claude Code as a conversation should not have to say so again
-/// on every new terminal. A remembered "Chat" does nothing in a pane with no
-/// agent in it, which is the one place the setting has no opinion.
-enum TerminalAgentView: String, CaseIterable, Identifiable {
-    case screen, talk
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .screen: return "Terminal"
-        case .talk: return "Chat"
-        }
-    }
-}
-
 /// Where the ⌘F panel sits in the frame. Metalterm's own input box is a dock
 /// at the bottom, which TERMINAL.md declines to copy — but the *place* is not
 /// the furniture, and a find bar over the top corner is a long way from the
@@ -130,10 +112,6 @@ enum TerminalLook {
     /// Where typing lands: the dock over the frame's bottom, or the grid
     /// itself. See TerminalInputBar.
     static var inputBar: TerminalInputBar = .bottom
-    /// Which view an agent's terminal opens in: the screen, or the talk
-    /// read as a conversation. A pane with no agent still opens on the
-    /// screen — there is nothing else to show. See TerminalAgentView.
-    static var agentView: TerminalAgentView = .screen
     /// The room left at the terminal's edges, in points.
     static var padding: Double = 4
     /// The program a new terminal runs. Empty is the Mac's own shell.

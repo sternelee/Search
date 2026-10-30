@@ -1,59 +1,137 @@
 import SwiftUI
 
-/// Everything there is to set. Pages down the left, one page at a time on
-/// the right, each a short list of lines with a hairline between them —
-/// nothing to scroll through, nothing to hunt for. The same white and
-/// hairline as the rest of the app; the same pill for the page you are on
-/// as for the tab you are on.
+/// Everything there is to set. Sections down the left, under a field that
+/// finds any setting by its words (⌘F); one section at a time on the right,
+/// in titled groups, each a card of rows. A row says what it is with a small
+/// icon and a line of plain words, the rest behind its (i). Every row of a
+/// card stands at the same level, hairlines from edge to edge; a row that
+/// only counts while another is on is only there while it counts. Every
+/// row comes from SettingsIndex, so what the find field finds is exactly
+/// what the sections hold.
 struct SettingsPanel: View {
     @ObservedObject var browser: Browser
     @ObservedObject var prefs: Preferences
+    /// The section the tab's address names (search://settings/privacy),
+    /// when Settings is a tab: asked for again, it moves there.
+    var asked: String? = nil
+    /// Words already in Find a setting when it opens (previews).
+    var found: String? = nil
+    @Environment(\.asTab) private var asTab
 
     @ObservedObject private var updater = Updater.shared
     @ObservedObject private var shield = Shield.shared
     @State private var isDefault = Links.isDefault
     /// A site shortcut being written, kept out of Preferences until it's saved.
     @State private var draft: Keyword?
-    @State private var page: Page = Page(rawValue: Store.settings.string(forKey: "settings.page") ?? "") ?? .general
+    @State private var page: Page = Page.named(Store.settings.string(forKey: "settings.page") ?? "") ?? .general
+    /// What is typed in Find a setting.
+    @State private var query = ""
+    @FocusState private var finding: Bool
+    /// A row gone to from a result, lit for a moment.
+    @State private var lit: String?
+    /// What Set Up Like Arc changed, for Undo.
+    @State private var arcBefore: Preferences.ArcSetup? = SettingsPanel.arcBefore
+    @MainActor static var arcBefore: Preferences.ArcSetup?
 
     enum Page: String, CaseIterable, Identifiable {
-        case general, tabs, terminal, shortcuts, extensions, passwords, downloads, privacy, ai, about
+        case general, appearance, tabs, browsing, spaces, terminal, passwords, privacy, ai,
+             extensions, keyboard, about
         var id: String { rawValue }
         var title: String {
             switch self {
             case .general: return "General"
+            case .appearance: return "Appearance"
             case .tabs: return "Tabs"
+            case .browsing: return "Browsing"
+            case .spaces: return "Spaces & Pins"
             case .terminal: return "Terminal"
-            case .shortcuts: return "Shortcuts"
-            case .extensions: return "Extensions"
             case .passwords: return "Passwords"
-            case .downloads: return "Downloads"
             case .privacy: return "Privacy"
             case .ai: return "AI"
+            case .extensions: return "Extensions"
+            case .keyboard: return "Keyboard & Mouse"
             case .about: return "About"
             }
         }
         var icon: String {
             switch self {
-            case .general: return "macwindow"
-            case .tabs: return "rectangle.split.3x1"
+            case .general: return "gearshape"
+            case .appearance: return "paintbrush"
+            case .tabs: return "square.on.square"
+            case .browsing: return "globe"
+            case .spaces: return "square.stack"
             case .terminal: return "terminal"
-            case .shortcuts: return "keyboard"
-            case .extensions: return "puzzlepiece.extension"
             case .passwords: return "key"
-            case .downloads: return "arrow.down.circle"
             case .privacy: return "hand.raised"
             case .ai: return "sparkles"
+            case .extensions: return "puzzlepiece.extension"
+            case .keyboard: return "keyboard"
             case .about: return "info.circle"
             }
         }
+        /// A section by its name in an address or in the settings file,
+        /// the old names included: Downloads is in General now, Shortcuts
+        /// is Keyboard & Mouse.
+        static func named(_ name: String) -> Page? {
+            switch name.lowercased() {
+            case "downloads": return .general
+            case "shortcuts", "mouse": return .keyboard
+            default: return Page(rawValue: name.lowercased())
+            }
+        }
+        /// The rail's three blocks: the browser, your data and tools, About.
+        static var blocks: [[Page]] {
+            [[.general, .appearance, .tabs, .browsing, .spaces, .terminal],
+             [.passwords, .privacy] + (AI.shipped ? [.ai] : []) + [.extensions, .keyboard],
+             [.about]]
+        }
     }
 
-    private static let rail: CGFloat = 168
-    private static let width: CGFloat = 660
-    private static let height: CGFloat = 500
+    private static let rail: CGFloat = 196
+    private static let column: CGFloat = 600
+    private static let width: CGFloat = 720
+    private static let height: CGFloat = 540
+    /// Where a row's words start, past its icon. What goes under a row's
+    /// words (pictures, lists, fields) starts there too.
+    static let textInset: CGFloat = 52
+    /// A list under a row's words starts this far in, its lines adding
+    /// their own 14 to reach textInset.
+    static let listInset: CGFloat = textInset - 14
 
     var body: some View {
+        Group {
+            if asTab { tabbed } else { card }
+        }
+        .onChange(of: browser.settingsFind) { _, _ in finding = true }
+        .onAppear { if let found { query = found } }
+    }
+
+    /// In a tab of its own (see InternalPages.swift): the sections down the
+    /// left, the window's whole height, and the section down the middle of
+    /// the rest.
+    private var tabbed: some View {
+        HStack(spacing: 0) {
+            pages
+            Rectangle().fill(Palette.hairline).frame(width: 1)
+            content
+                .padding(.top, 26)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { follow(asked) }
+        .onChange(of: asked) { _, asked in follow(asked) }
+        .onChange(of: page) { _, page in
+            Store.settings.set(page.rawValue, forKey: "settings.page")
+            browser.settingsMoved(to: page)
+        }
+    }
+
+    private func follow(_ asked: String?) {
+        guard let asked, let wanted = Page.named(asked), wanted != .ai || AI.shipped, wanted != page else { return }
+        page = wanted
+    }
+
+    private var card: some View {
         HStack(spacing: 0) {
             pages
             Rectangle().fill(Palette.hairline).frame(width: 1)
@@ -72,16 +150,32 @@ struct SettingsPanel: View {
 
     // MARK: - the rail
 
+    private var hits: [SettingsItem] { SettingsIndex.find(query) }
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
     private var pages: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let counts = Dictionary(grouping: hits, by: \.page).mapValues(\.count)
+        return VStack(alignment: .leading, spacing: 2) {
             Text("Settings")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Palette.ink)
                 .padding(.horizontal, 10)
                 .padding(.top, 14)
-                .padding(.bottom, 12)
-            ForEach(Page.allCases.filter { $0 != .ai || AI.shipped }) { item in
-                PageRow(page: item, on: page == item) { page = item }
+                .padding(.bottom, 10)
+            FindField(text: $query, focus: $finding)
+                .padding(.bottom, 10)
+            ForEach(Array(Page.blocks.enumerated()), id: \.offset) { index, block in
+                if index > 0 {
+                    Rectangle().fill(Palette.hairline).frame(height: 1)
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                }
+                ForEach(block) { item in
+                    PageRow(page: item, on: !searching && page == item,
+                            count: searching ? counts[item] ?? 0 : nil) {
+                        query = ""
+                        page = item
+                    }
+                }
             }
             Spacer(minLength: 0)
         }
@@ -91,9 +185,54 @@ struct SettingsPanel: View {
         .background(Palette.wash.opacity(0.45), in: Rectangle())
     }
 
+    /// Find a setting: the wash, the glass, ⌘F beside it until something
+    /// is typed. Escape empties it.
+    private struct FindField: View {
+        @Binding var text: String
+        var focus: FocusState<Bool>.Binding
+
+        var body: some View {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Palette.muted)
+                ZStack(alignment: .leading) {
+                    if text.isEmpty {
+                        Text("Find a setting").foregroundStyle(Palette.muted.opacity(0.8))
+                    }
+                    TextField("", text: $text)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(Palette.ink)
+                        .focused(focus)
+                        .onExitCommand { text = "" }
+                        .accessibilityLabel("Find a setting")
+                }
+                .font(.system(size: 12.5))
+                if text.isEmpty {
+                    Text("⌘F")
+                        .font(.system(size: 10.5, design: .rounded))
+                        .foregroundStyle(Palette.muted.opacity(0.8))
+                } else {
+                    Button { text = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.faint)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(Palette.ground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
+        }
+    }
+
     private struct PageRow: View {
         let page: Page
         let on: Bool
+        /// While searching: how many rows of this section match.
+        let count: Int?
         let act: () -> Void
         @State private var hovering = false
 
@@ -106,8 +245,17 @@ struct SettingsPanel: View {
                     Text(page.title)
                         .font(.system(size: 13, weight: on ? .medium : .regular))
                     Spacer(minLength: 0)
+                    if let count, count > 0 {
+                        Text("\(count)")
+                            .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                            .foregroundStyle(Palette.ink)
+                            .padding(.horizontal, 6)
+                            .frame(height: 17)
+                            .background(Palette.ground, in: Capsule())
+                    }
                 }
                 .foregroundStyle(on ? Palette.ink : (hovering ? Palette.ink.opacity(0.75) : Palette.muted))
+                .opacity(count == 0 ? 0.4 : 1)
                 .padding(.horizontal, 10)
                 .frame(height: 30)
                 .background(
@@ -127,226 +275,569 @@ struct SettingsPanel: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(page.title)
+            HStack(spacing: 10) {
+                if !searching {
+                    Image(systemName: page.icon)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(Palette.ink)
+                }
+                Text(searching ? "Settings matching “\(query.trimmingCharacters(in: .whitespaces))”" : page.title)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Palette.ink)
+                    .lineLimit(1)
                 Spacer()
-                Door(icon: "xmark", help: "Done   esc") { browser.tuning = false }
-            }
-            .padding(.bottom, 16)
-
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
-                    switch page {
-                    case .general: general
-                    case .tabs:
-                        tabs
-                        if !prefs.sidebar { toolbar }
-                    case .terminal: terminal
-                    case .shortcuts: ShortcutsPage(browser: browser, store: .shared)
-                    case .extensions: ExtensionsPage(browser: browser)
-                    case .passwords: passwords
-                    case .downloads: downloads
-                    case .privacy: privacy
-                    case .ai: if AI.shipped { AISettings(browser: browser, prefs: prefs) }
-                    case .about: about
-                    }
+                if !asTab {
+                    Door(icon: "xmark", help: "Done   esc") { browser.tuning = false }
                 }
-                .padding(.bottom, 4)
+            }
+            .padding(.bottom, 18)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: asTab ? SettingsPanel.column : .infinity)
+            .frame(maxWidth: .infinity)
+
+            ScrollViewReader { reader in
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 22) {
+                        if searching { results } else { section(page) }
+                    }
+                    .environment(\.ruleInset, 0)
+                    .padding(.bottom, 24)
+                    // Keep the rows narrow, not the scroll view: the empty
+                    // space beside them must receive scrolling too.
+                    .padding(.horizontal, 24)
+                    .frame(maxWidth: asTab ? SettingsPanel.column : .infinity)
+                    .frame(maxWidth: .infinity)
+                }
+                .onAppear { if let lit { reader.scrollTo(lit, anchor: .center) } }
             }
             // A page of its own opens at its top. One scroll view kept for
             // them all opened Tabs as far down as General had been read.
-            .id(page)
+            .id(searching ? "found" : page.rawValue)
         }
-        .padding(.horizontal, 22)
         .padding(.top, 18)
-        .padding(.bottom, 18)
+        .padding(.bottom, 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    // MARK: - general
+    @ViewBuilder
+    private func section(_ page: Page) -> some View {
+        switch page {
+        case .about:
+            aboutHeader
+            groups(of: page)
+        case .keyboard:
+            groups(of: page)
+            GroupBlock(title: "Shortcuts", icon: "command") {
+                ShortcutsPage(browser: browser, store: .shared, prefs: prefs)
+            }
+        case .terminal:
+            terminal
+        case .extensions:
+            ExtensionsPage(browser: browser)
+        case .ai:
+            if AI.shipped { AISettings(browser: browser, prefs: prefs) }
+        default:
+            groups(of: page)
+        }
+    }
 
-    private var general: some View {
-        Card {
-            Line(
-                "Open links from other apps",
-                isDefault ? "Search is the default browser on this Mac" : "Mail, Slack and the rest still send links elsewhere"
-            ) {
-                if isDefault {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Palette.ink)
-                        .frame(width: 24)
-                } else {
-                    Pill("Make default", filled: true) {
-                        Links.becomeDefault { worked in
-                            isDefault = Links.isDefault
-                            browser.announce(worked && isDefault ? "Links now open here" : "macOS didn't change it")
-                        }
-                    }
-                }
+    private func groups(of page: Page) -> some View {
+        ForEach(SettingsIndex.groups(of: page)) { group in
+            GroupBlock(title: group.title, icon: group.icon) {
+                Card { rows(SettingsIndex.items(in: group.id).filter(shown), searched: false) }
             }
-            Rule()
-            // Coming from another browser, now or any time later: the same
-            // sheet as File › Bring Things Over… and the Welcome's.
-            Line("Bring things over", "Bookmarks, history, passwords and extensions from another browser on this Mac, or from a file it exported") {
-                Pill("Bring Things Over…") {
-                    browser.tuning = false
-                    browser.bringingIn = ""
-                }
-            }
-            Rule()
-            Line("Search with", searchDetail) {
-                Picker("", selection: $prefs.engine) {
-                    ForEach(Engine.allCases) { engine in
-                        Text(engine.title).tag(engine)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .fixedSize()
-            }
-            if prefs.engine == .custom {
-                ZStack(alignment: .leading) {
-                    if prefs.customEngine.isEmpty {
-                        Text("https://example.com/search?q=%s")
-                            .foregroundStyle(Palette.muted.opacity(0.8))
-                    }
-                    TextField("", text: $prefs.customEngine)
-                        .textFieldStyle(.plain)
-                        .foregroundStyle(Palette.ink)
-                }
-                .font(.system(size: 12.5))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .padding(.horizontal, 14)
-                .padding(.bottom, 11)
-            }
-            Rule()
-            Line("Site shortcuts", keywordDetail) {
-                if draft == nil {
-                    Pill("Add") { draft = Keyword() }
-                } else {
+        }
+    }
+
+    /// In its section, a dependent row is there only while it counts.
+    private func shown(_ item: SettingsItem) -> Bool { SettingsIndex.applies(item, prefs) }
+
+    private func rows(_ items: [SettingsItem], searched: Bool) -> some View {
+        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            if index > 0 { Rule() }
+            row(item)
+            after(item, searched: searched)
+        }
+    }
+
+    private func row(_ item: SettingsItem) -> some View {
+        let counts = SettingsIndex.applies(item, prefs)
+        return SettingRow(
+            icon: item.icon,
+            title: title(of: item),
+            detail: counts ? detail(of: item) : SettingsIndex.needs(item),
+            more: counts ? item.more : nil,
+            wide: item.kind == .wide,
+            lit: lit == item.id
+        ) {
+            control(item)
+        }
+        .disabled(!counts)
+        .opacity(counts ? 1 : 0.5)
+        .id(item.id)
+    }
+
+    // MARK: - found
+
+    @ViewBuilder
+    private var results: some View {
+        let found = hits
+        if found.isEmpty {
+            Card { Nothing("No setting called that. Try other words, like dark, tabs or video") }
+        }
+        let byGroup = Dictionary(grouping: found, by: \.group)
+        ForEach(SettingsIndex.groups.filter { byGroup[$0.id] != nil }) { group in
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    let first = byGroup[group.id]?.first
+                    query = ""
+                    page = group.page
+                    lit = first?.findOnly == false ? first?.id : nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation(Motion.quick) { lit = nil } }
+                } label: {
                     HStack(spacing: 6) {
-                        Pill("Cancel") { draft = nil }
-                        Pill("Save", filled: true) { saveDraft() }
-                            .disabled(draftProblem != nil)
-                            .opacity(draftProblem == nil ? 1 : 0.4)
+                        Image(systemName: group.icon).font(.system(size: 10.5, weight: .medium))
+                        Text("\(group.page.title)  ›  \(group.title)".uppercased())
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .tracking(0.4)
+                        Image(systemName: "arrow.right").font(.system(size: 9, weight: .semibold)).opacity(0.6)
+                    }
+                    .foregroundStyle(Palette.muted)
+                    .padding(.leading, 2)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open \(group.page.title) at \(group.title)")
+                Card { rows(byGroup[group.id] ?? [], searched: true) }
+            }
+        }
+    }
+
+    // MARK: - words that change
+
+    private func title(of item: SettingsItem) -> String {
+        switch item.id {
+        case "updates.version": return versionTitle
+        default: return item.title
+        }
+    }
+
+    private func detail(of item: SettingsItem) -> String {
+        switch item.id {
+        case "general.default":
+            return isDefault ? "Search is the default browser on this Mac" : item.detail
+        case "downloads.folder":
+            return prefs.downloads.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+        case "search.engine": return searchDetail
+        case "search.suggest": return suggestDetail
+        case "search.keywords": return keywordDetail
+        case "passwords.save": return savingDetail
+        case "passkeys":
+            return !prefs.passkeysPossible
+                ? "Needs an Apple entitlement this build doesn't have"
+                : Passkeys.access == .denied
+                ? "macOS was told no: System Settings › Privacy & Security › Passkeys"
+                : item.detail
+        case "shield": return shield.trouble ?? item.detail
+        case "updates.version": return versionDetail
+        case "arc.import": return arcHere ? item.detail : "Arc isn't on this Mac. Bring Things Over can read an export"
+        default: return item.detail
+        }
+    }
+
+    private var arcHere: Bool { FileManager.default.fileExists(atPath: Arc.file.path) }
+
+    // MARK: - controls
+
+    @ViewBuilder
+    private func control(_ item: SettingsItem) -> some View {
+        switch item.page {
+        case .general: generalControl(item.id)
+        case .appearance: appearanceControl(item.id)
+        case .tabs: tabsControl(item.id)
+        case .browsing: browsingControl(item.id)
+        case .spaces: spacesControl(item.id)
+        case .passwords, .privacy: keptControl(item.id)
+        case .keyboard, .about: otherControl(item.id)
+        default: EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func generalControl(_ id: String) -> some View {
+        switch id {
+        case "general.default":
+            if isDefault {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.ink)
+                    .frame(width: 24)
+            } else {
+                Pill("Make default", filled: true) {
+                    Links.becomeDefault { worked in
+                        isDefault = Links.isDefault
+                        browser.announce(worked && isDefault ? "Links now open here" : "macOS didn't change it")
                     }
                 }
             }
-            if let current = draft {
-                HStack(spacing: 8) {
-                    TextField("yt", text: Binding(
-                        get: { current.keyword },
-                        set: { draft?.keyword = $0 }
-                    ))
-                    .textFieldStyle(.plain)
-                    .frame(width: 50)
-                    Text("→").foregroundStyle(Palette.muted)
-                    TextField("https://www.youtube.com/results?search_query=%s", text: Binding(
-                        get: { current.template },
-                        set: { draft?.template = $0 }
-                    ))
-                    .textFieldStyle(.plain)
-                    .onSubmit(saveDraft)
-                }
-                .font(.system(size: 12.5))
-                .foregroundStyle(Palette.ink)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .padding(.horizontal, 14)
-                .padding(.bottom, 6)
+        case "general.import":
+            // Coming from another browser, now or any time later: the same
+            // page as File › Bring Things Over… and the Welcome's.
+            Pill("Bring Things Over…") { browser.lead(to: InternalPage(.importing)) }
+        case "quit.confirm": Switch(on: $prefs.confirmsQuit)
+        case "downloads.folder": Pill("Change…") { chooseFolder() }
+        case "downloads.ask": Switch(on: $prefs.asksWhereToSave)
+        case "downloads.button": Switch(on: $prefs.alwaysShowsDownloads)
+        default: EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func appearanceControl(_ id: String) -> some View {
+        switch id {
+        case "look":
+            Pictures(options: Look.allCases.map { look in
+                (look, look == .system ? "Auto" : look.title, AnyView(LookPicture(look: look)))
+            }, selection: $prefs.look)
+        case "pages.dusk": Switch(on: $prefs.darkensPages)
+        case "tabs.layout":
+            Pictures(options: TabsLayout.allCases.map { ($0, $0.title, AnyView(LayoutPicture(layout: $0))) },
+                     selection: Binding(
+                        get: { prefs.tabsLayout },
+                        set: { layout in withAnimation(Motion.glide) { prefs.tabsLayout = layout } }
+                     ))
+        case "sidebar.hides": Switch(on: $prefs.sideHides)
+        case "layout.cards":
+            Pictures(options: [(true, "As a card", AnyView(CardPicture(card: true))),
+                               (false, "Edge to edge", AnyView(CardPicture(card: false)))],
+                     selection: Binding(
+                        get: { prefs.cards },
+                        set: { on in withAnimation(Motion.glide) { prefs.cards = on } }
+                     ))
+        case "toolbar.left": Switch(on: $prefs.navigationLeft)
+        case "sidebar.roomy":
+            Switch(on: Binding(
+                get: { prefs.roomyTabs },
+                set: { on in withAnimation(Motion.glide) { prefs.roomyTabs = on } }
+            ))
+        case "glyph": Segmented(options: Glyph.allCases.map { ($0, $0.title) }, selection: $prefs.glyph)
+        case "tabs.reading": Switch(on: $prefs.showsReading)
+        case "tabs.give": Switch(on: $prefs.tabsGive)
+        case "bookmarks.bar": Switch(on: $prefs.bookmarksBar)
+        case "motion.light": Switch(on: $prefs.lightMotion)
+        case "note.split": Always()
+        default: EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func tabsControl(_ id: String) -> some View {
+        switch id {
+        case "tabs.newPlace":
+            Picker("New tab position", selection: $prefs.newTabPlace) {
+                Text("After current").tag(NewTabPlace.next)
+                Text(prefs.sidebar ? "Top" : "Leftmost").tag(NewTabPlace.top)
+                Text(prefs.sidebar ? "Bottom" : "Rightmost").tag(NewTabPlace.end)
             }
-            ForEach(prefs.keywords) { entry in
-                HStack(spacing: 8) {
-                    Text(entry.keyword)
-                        .frame(width: 50, alignment: .leading)
-                    Text("→").foregroundStyle(Palette.muted)
-                    Text(entry.template)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button {
-                        prefs.keywords.removeAll { $0.id == entry.id }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(Palette.faint)
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+        case "tabs.newAfterLast": Switch(on: $prefs.newTabAfterLast)
+        case "tabs.closeGoesBack": Switch(on: $prefs.closeGoesBack)
+        case "tabs.lazy": Switch(on: $prefs.lazyTabs)
+        case "tabs.popupWindows": Switch(on: $prefs.popupWindows)
+        case "tabs.sleep":
+            VStack(alignment: .leading, spacing: 7) {
+                Segmented(options: SleepChoice.allCases.map { ($0, $0.title) }, selection: $prefs.sleepChoice, wide: true)
+                    .frame(maxWidth: 340)
+                Text(prefs.sleepChoice.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.muted)
+            }
+        case "tabs.close.after":
+            Picker("", selection: $prefs.tabLife) {
+                ForEach(TabLife.allCases) { life in
+                    Text(life.title).tag(life)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+        case "tabs.shortcuts": Switch(on: $prefs.showsTabShortcuts)
+        case "tabs.address":
+            Switch(on: Binding(
+                get: { prefs.showsAddress },
+                set: { on in withAnimation(Motion.glide) { prefs.showsAddress = on } }
+            ))
+        case "note.groups", "note.awake": Always()
+        default: EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func browsingControl(_ id: String) -> some View {
+        switch id {
+        case "search.engine":
+            Picker("", selection: $prefs.engine) {
+                ForEach(Engine.allCases) { engine in
+                    Text(engine.title).tag(engine)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+        case "search.suggest": Switch(on: $prefs.engineSuggests)
+        case "search.keywords":
+            if draft == nil {
+                Pill("Add") { draft = Keyword() }
+            } else {
+                HStack(spacing: 6) {
+                    Pill("Cancel") { draft = nil }
+                    Pill("Save", filled: true) { saveDraft() }
+                        .disabled(draftProblem != nil)
+                        .opacity(draftProblem == nil ? 1 : 0.4)
+                }
+            }
+        case "links.little": Switch(on: $prefs.littleLinks)
+        case "reader.twins": Switch(on: $prefs.readsTwins)
+        case "reader.follows": Switch(on: $prefs.readerFollowsLook)
+        case "float.style": Segmented(options: FloatStyle.allCases.map { ($0, $0.title) }, selection: $prefs.floatStyle)
+        case "float.own":
+            Segmented(options: FloatOwn.allCases.map { ($0, $0.title) }, selection: $prefs.floatOwn, wide: true)
+                .frame(maxWidth: 340)
+        case "media.click": Switch(on: $prefs.waitsForPlay)
+        case "fullscreen.escapeTwice": Switch(on: $prefs.escapeTwice)
+        case "pageZoom":
+            // The number itself takes it back to 100%.
+            Steps(stops: Preferences.zooms, value: $prefs.pageZoom, home: 1) { "\(Int(($0 * 100).rounded()))%" }
+        case "pages.120": Segmented(options: FastPages.allCases.map { ($0, $0.title) }, selection: $prefs.fastPages)
+        case "autocorrect": Switch(on: $prefs.autocorrect)
+        case "note.panel", "note.translate", "note.sitesearch", "note.links", "note.flick": Always()
+        default: EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func spacesControl(_ id: String) -> some View {
+        switch id {
+        case "arc.setup":
+            if let before = arcBefore, prefs.looksLikeArc {
+                Pill("Undo") {
+                    withAnimation(Motion.glide) { prefs.restore(before) }
+                    arcBefore = nil
+                    SettingsPanel.arcBefore = nil
+                    browser.announce("Put back as it was")
+                }
+            } else if prefs.looksLikeArc {
+                Always(text: "Set up")
+            } else {
+                Pill("Set Up", filled: true) { setUpLikeArc() }
+            }
+        case "arc.import":
+            Pill("Bring Over…") { browser.lead(to: InternalPage(.importing, "Arc")) }
+                .disabled(!arcHere)
+                .opacity(arcHere ? 1 : 0.4)
+        case "spaces": Switch(on: $prefs.usesSpaces)
+        case "profiles": Pill("New Profile…") { ProfileMenu.askNew() }
+        case "pins.keep": Switch(on: $prefs.pinsKeepSite)
+        case "pins.list": Switch(on: $prefs.listsPins)
+        case "newtab.floating": Switch(on: $prefs.floatingNewTab)
+        case "commandbar": Switch(on: $prefs.commandBar)
+        case "start.fresh": Switch(on: $prefs.startsFresh)
+        case "note.sharedpins", "note.pinback": Always()
+        default: EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func keptControl(_ id: String) -> some View {
+        switch id {
+        case "passwords.open": Pill("Open…") { browser.lead(to: InternalPage(.passwords)) }
+        case "passwords.save": Switch(on: $prefs.savesPasswords)
+        case "passwords.fill": Switch(on: $prefs.fillsPasswords)
+        case "passkeys": Switch(on: $prefs.passkeys)
+        case "passwords.apple": Switch(on: $prefs.applePasswords)
+        case "shield": Switch(on: $prefs.shielded)
+        case "sites.keep": Switch(on: Binding(get: { !prefs.keepsSignIns }, set: { prefs.keepsSignIns = !$0 }))
+        case "privacy.clickIDs": Switch(on: $prefs.removesClickIDs)
+        case "privacy.gpc": Switch(on: $prefs.sendsPrivacySignal)
+        case "notifications.ask": Switch(on: $prefs.siteNotifications)
+        case "privacy.forget": Pill("Forget choices") { browser.forgetCaptureChoices() }
+        case "clear.history": Pill("Clear") { browser.clearHistory() }
+        case "clear.cookies": Pill("Sign out of everything") { browser.clearSites() }
+        case "clear.cache": Pill("Clear") { browser.clearCache() }
+        default: EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func otherControl(_ id: String) -> some View {
+        switch id {
+        case "links.peek":
+            Picker("Peek at a link", selection: $prefs.peekChoice) {
+                ForEach(PeekChoice.allCases) { choice in
+                    Text(choice.title).tag(choice)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+        case "autoscroll": Switch(on: $prefs.autoScroll)
+        case "swipe.history": Switch(on: $prefs.holdsHistory)
+        case "note.switcher": Always()
+        case "updates.version": versionControl
+        case "updates.auto": Switch(on: $prefs.installsUpdates)
+        case "about.feedback": Pill("Send Feedback") { Links.writeFeedback() }
+        case "about.notes": Pill("What's New…") { browser.lead(to: InternalPage(.notes)) }
+        case "bench": Switch(on: $prefs.bench)
+        default: EmptyView()
+        }
+    }
+
+    // MARK: - what goes under a row
+
+    // Rows here are siblings of the one above, at its level; lists sit
+    // under its words, as pictures do, their hairlines still edge to edge.
+
+    @ViewBuilder
+    private func after(_ item: SettingsItem, searched: Bool) -> some View {
+        switch item.id {
+        case "search.engine":
+            if prefs.engine == .custom { customEngine }
+        case "search.keywords":
+            keywordEditor
+            // What ⌘T opens to, and the way back after an extension took
+            // it. Only there while an extension offers a page.
+            if !searched { HomePageLine() }
+        case "shield":
+            if let trouble = shield.trouble {
+                Rule()
+                Line(trouble, "Nothing is being blocked until this clears. Try again, or restart Search") {
+                    Pill("Try again") { shield.compile() }
+                }
+                .under()
+            }
+            if !searched, let host = browser.hereHost, prefs.shielded, shield.trouble == nil {
+                Rule()
+                SettingRow(icon: "checkmark.shield", title: "Block on \(host)",
+                           detail: "Turn off here if the site breaks; the page reloads") {
+                    Switch(on: Binding(
+                        get: { !Shield.shared.isPaused(on: host) },
+                        set: { on in
+                            Shield.shared.pause(host, !on)
+                            browser.reload()
+                        }
+                    ))
+                }
+            }
+        case "privacy.forget":
+            if !searched {
+                Group {
+                    NotificationSites()
+                    PopupSiteList(prefs: prefs)
+                }
+                .under()
+            }
+        case "passkeys":
+            if !searched, !Vault.never.isEmpty {
+                Rule()
+                SettingRow(icon: "hand.raised.slash", title: "Sites never asked",
+                           detail: "\(Vault.never.count) sites told to stop offering") {
+                    Pill("Forget") {
+                        Vault.never = []
+                        browser.announce("Every site can ask again")
                     }
-                    .buttonStyle(.plain)
                 }
-                .font(.system(size: 12.5))
+            }
+        case "passwords.apple":
+            ApplePasswordsCard(prefs: prefs, bare: true)
+                .under()
+        case "profiles":
+            if !searched {
+                ProfileList(browser: browser)
+                    .under()
+            }
+        case "pages.120":
+            if !searched, PageTranslator.available, !prefs.translateAlways.isEmpty {
+                TranslateLanguageList(prefs: prefs)
+                    .under()
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private var customEngine: some View {
+        ZStack(alignment: .leading) {
+            if prefs.customEngine.isEmpty {
+                Text("https://example.com/search?q=%s")
+                    .foregroundStyle(Palette.muted.opacity(0.8))
+            }
+            TextField("", text: $prefs.customEngine)
+                .textFieldStyle(.plain)
                 .foregroundStyle(Palette.ink)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .padding(.horizontal, 14)
-                .padding(.bottom, 6)
+        }
+        .font(.system(size: 12.5))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.leading, SettingsPanel.textInset)
+        .padding(.trailing, 14)
+        .padding(.bottom, 11)
+    }
+
+    @ViewBuilder
+    private var keywordEditor: some View {
+        if let current = draft {
+            HStack(spacing: 8) {
+                TextField("yt", text: Binding(
+                    get: { current.keyword },
+                    set: { draft?.keyword = $0 }
+                ))
+                .textFieldStyle(.plain)
+                .frame(width: 50)
+                Text("→").foregroundStyle(Palette.muted)
+                TextField("https://www.youtube.com/results?search_query=%s", text: Binding(
+                    get: { current.template },
+                    set: { draft?.template = $0 }
+                ))
+                .textFieldStyle(.plain)
+                .onSubmit(saveDraft)
             }
-            Rule()
-            Line("Appearance", "Light, dark, or whatever the Mac is doing — pages follow it too") {
-                Segmented(options: Look.allCases.map { ($0, $0.title) }, selection: $prefs.look)
+            .font(.system(size: 12.5))
+            .foregroundStyle(Palette.ink)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .padding(.leading, SettingsPanel.textInset)
+            .padding(.trailing, 14)
+            .padding(.bottom, 6)
+        }
+        ForEach(prefs.keywords) { entry in
+            HStack(spacing: 8) {
+                Text(entry.keyword)
+                    .frame(width: 50, alignment: .leading)
+                Text("→").foregroundStyle(Palette.muted)
+                Text(entry.template)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    prefs.keywords.removeAll { $0.id == entry.id }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(Palette.faint)
+                }
+                .buttonStyle(.plain)
             }
-            Rule()
-            Line("Page zoom", "Where every site starts. ⌘+ and ⌘− are still remembered for each site.") {
-                // The number itself takes it back to 100%.
-                Steps(stops: Preferences.zooms, value: $prefs.pageZoom, home: 1) { "\(Int(($0 * 100).rounded()))%" }
-            }
-            Rule()
-            Line("Correct spelling as you type", "macOS's autocorrect inside pages — the one that capitalises for you") {
-                Switch(on: $prefs.autocorrect)
-            }
-            Rule()
-            Line("Peek at a link with a shift-click", "Its page opens in a panel over the one you're reading. Escape puts it away; the other button keeps it as a tab") {
-                Switch(on: $prefs.peeksLinks)
-            }
-            Rule()
-            Line("Open links from other apps in a small window", "To read and close, or keep with Open in Search (⌘O)") {
-                Switch(on: $prefs.littleLinks)
-            }
-            Rule()
-            Line("Address bar commands", "A word like \"settings\" or \"new tab\", typed alone in the address field, goes there instead of searching for it") {
-                Switch(on: $prefs.commandBar)
-            }
-            Rule()
-            Line("Show where links go", "Point at a link and its address shows at the bottom of the page") {
-                Switch(on: $prefs.showsLinks)
-            }
-            Rule()
-            Line("Scroll with the middle button", "Click the wheel on a page, then move the mouse up or down to scroll, as on Windows. Click again to stop") {
-                Switch(on: $prefs.autoScroll)
-            }
-            Rule()
-            Line("Pages at 120 Hz", "Animations and scrolling in pages at up to 120 frames a second on a screen that can, instead of 60 as in Safari. Uses more battery. Open tabs follow when reloaded") {
-                Switch(on: $prefs.fastPages)
-            }
-            Rule()
-            Line("Hold a swipe to pick from history", "Swipe back or forward and keep your fingers down: the pages that way appear, and moving up or down picks one to go to") {
-                Switch(on: $prefs.holdsHistory)
-            }
-            Rule()
-            Line("Flick the floating video to a corner", "Two fingers on it send it to the corner or edge they point at, instead of pushing it along; a strong swipe at the side of the screen it is against tucks it in there, a sliver left to bring it back by. Dragging still puts it anywhere") {
-                Switch(on: $prefs.floatFlicks)
-            }
-            Rule()
-            Line("Videos wait for a click", "Videos don't start by themselves, even without sound; they play when you press play. Tabs already open follow once closed and opened again, or after they've slept") {
-                Switch(on: $prefs.waitsForPlay)
-            }
-            Rule()
-            Line("Float the video when you switch tabs", "A video playing on YouTube and the like comes out into its floating window when you go to another tab, and back when you return. ⇧⌘P still floats one by hand") {
-                Switch(on: $prefs.floatsOnLeave)
-            }
-            Rule()
-            Line("Float the video when you switch apps", "A video playing on the site you're on comes out into its floating window as another app comes to the front, and goes back into its tab when you return") {
-                Switch(on: $prefs.floatsAway)
-            }
-            Rule()
-            Line("Let a script drive Search", "A local socket for testing. Its tabs open beside yours with a flask on them and never take over — see ./bench") {
-                Switch(on: $prefs.bench)
-            }
+            .font(.system(size: 12.5))
+            .foregroundStyle(Palette.ink)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Palette.wash, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .padding(.leading, SettingsPanel.textInset)
+            .padding(.trailing, 14)
+            .padding(.bottom, 6)
         }
     }
 
@@ -358,9 +849,7 @@ struct SettingsPanel: View {
     }
 
     private var keywordDetail: String {
-        guard let draft else {
-            return "A word before your search goes straight to that site, whatever engine you've picked — \"yt cats\" to YouTube"
-        }
+        guard let draft else { return SettingsIndex.item("search.keywords")?.detail ?? "" }
         if draft.keyword.isEmpty, draft.template.isEmpty {
             return "A word, then the site's search address with %s where the words go"
         }
@@ -376,6 +865,15 @@ struct SettingsPanel: View {
         draft = nil
     }
 
+    /// Said plainly: turned on, what you type leaves the Mac as you type it.
+    private var suggestDetail: String {
+        let name = prefs.engine.name(custom: prefs.customEngine)
+        guard EngineSuggest.endpoint(for: prefs.engine) != nil else {
+            return "A custom engine has no suggestions to give, so nothing is sent"
+        }
+        return "What you type is sent to \(name) as you type"
+    }
+
     private var searchDetail: String {
         guard prefs.engine == .custom else { return "Where words that aren't an address go" }
         guard Engine.accepts(prefs.customEngine) else {
@@ -384,161 +882,20 @@ struct SettingsPanel: View {
         return "Words go to \(prefs.engine.name(custom: prefs.customEngine))"
     }
 
-    // MARK: - tabs
-
-    /// Where back, forward and reload sit with the tabs across the top. With
-    /// the sidebar they are already beside the window's buttons: nothing to
-    /// move, and the line isn't shown.
-    private var toolbar: some View {
-        Card {
-            Line("Back, forward and reload on the left", "Beside the window's buttons, before the tabs") {
-                Switch(on: $prefs.navigationLeft)
-            }
-        }
-    }
-
-    private var tabs: some View {
-        Card {
-            Line("Tabs in a sidebar", "Down the \(prefs.sidePosition.rawValue) instead of across the top. Pull its edge to make it wider; double-click the edge to reset.") {
-                Switch(on: Binding(
-                    get: { prefs.sidebar },
-                    set: { on in withAnimation(Motion.glide) { prefs.sidebar = on } }
-                ))
-            }
-            if prefs.sidebar {
-                Rule()
-                Line("Sidebar position", "Tabs down the \(prefs.sidePosition.rawValue) edge of the window") {
-                    Segmented(options: SidebarPosition.allCases.map { ($0, $0.title) }, selection: $prefs.sidePosition)
-                }
-                Rule()
-                Line("Hide the sidebar until the pointer reaches the edge", "The page takes the whole window; push against its \(prefs.sidePosition.rawValue) edge for the tabs. ⌘S keeps them out.") {
-                    Switch(on: $prefs.sideHides)
-                }
-            }
-            Rule()
-            Line("Tabs show", "Beside the title, and on a pinned square") {
-                Segmented(options: Glyph.allCases.map { ($0, $0.title) }, selection: $prefs.glyph)
-            }
-            Rule()
-            Line("Show the bookmarks bar", "Your bookmarks in a row above the page, folders opening as menus. It folds away with the tabs") {
-                Switch(on: $prefs.bookmarksBar)
-            }
-            Rule()
-            Line("Show how far you've read", "The tab you're on fills with grey as you scroll down the page") {
-                Switch(on: $prefs.showsReading)
-            }
-            Rule()
-            Line("Sleep tabs you aren't using", "After half an hour away they come back where you left them. Pinned tabs, sound, calls and anything typed stay awake.") {
-                Switch(on: $prefs.sleepsTabs)
-            }
-            Rule()
-            Line("Load background tabs when you go to them", "A link opened behind the page, with ⌘-click or the middle button, or a batch of links from another app, waits until you go to its tab. ⇧⌘-click still takes you there at once.") {
-                Switch(on: $prefs.lazyTabs)
-            }
-            Rule()
-            Line("Search a site from the address field", "Type the start of a site's name, like red or yout, then Tab, and what you type next searches that site. Sites you visit that offer a search join the list.") {
-                Switch(on: $prefs.searchesSites)
-            }
-            Rule()
-            Line("Start with a fresh window", "Each time Search opens, your pinned tabs are there and last time's other tabs aren't.") {
-                Switch(on: $prefs.startsFresh)
-            }
-            Rule()
-            Line("Spaces", "Separate sets of tabs, signed in where the others are or starting afresh, switched with ⌃1–⌃9, two fingers sideways over the column, or the space's icon. Mission Control's own ⌃1–⌃9, if you turned them on, take those keys first.") {
-                Switch(on: $prefs.usesSpaces)
-            }
-            Rule()
-            Line("Tab groups", "Named sections in the sidebar. Right-click a tab to start a group; click its heading to hide or show its tabs.") {
-                Switch(on: $prefs.usesTabGroups)
-            }
-            if prefs.sidebar {
-                Rule()
-                Line("Pinned rows", "As in Arc: pins as squares for the sites you live in, pins as rows under them for pages you keep, and a line over the rest with Clear. Right-click a tab to pin it as a row.") {
-                    Switch(on: $prefs.listsPins)
-                }
-            }
-            Rule()
-            Line("Split View", "Show two tabs side by side. Drag a tab onto a page to pair them.") {
-                Switch(on: $prefs.splitView)
-            }
-        }
-    }
-
-    // MARK: - passwords
-
     /// Says so when a password manager extension has taken the saving over.
     private var savingDetail: String {
         if #available(macOS 15.4, *), let name = Extensions.shared.passwordSavingTakenBy {
-            return "\(name) does the saving — it asked Search not to offer"
+            return "\(name) does the saving; it asked Search not to offer"
         }
         return "Asked once per site, never again for a site you refuse"
     }
 
-    private var passwords: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Card {
-                Line("Your passwords", "In the macOS keychain, shown with Touch ID") {
-                    Pill("Open…") {
-                        browser.tuning = false
-                        browser.managing = true
-                    }
-                }
-                Rule()
-                Line("Offer to save passwords", savingDetail) {
-                    Switch(on: $prefs.savesPasswords)
-                }
-                Rule()
-                Line("Fill in sign-ins", "Click a sign-in box and the accounts kept for the site hang from it") {
-                    Switch(on: $prefs.fillsPasswords)
-                }
-                Rule()
-                Line(
-                    "Offer passkeys",
-                    !prefs.passkeysPossible
-                        ? "Needs an Apple entitlement this build doesn't have — off keeps sites to the password"
-                        : Passkeys.access == .denied
-                        ? "macOS was told no — System Settings › Privacy & Security › Passkeys Access for Web Browsers"
-                        : "Touch ID or an iCloud passkey, on sites that offer one"
-                ) {
-                    Switch(on: $prefs.passkeys)
-                }
-                if !Vault.never.isEmpty {
-                    Rule()
-                    Line("Sites never asked", "\(Vault.never.count) sites told to stop offering") {
-                        Pill("Forget") {
-                            Vault.never = []
-                            browser.announce("Every site can ask again")
-                        }
-                    }
-                }
-            }
-            Card {
-                Line("Bring yours in", "From another browser on this Mac — nothing leaves it") {
-                    Pill("Import…") {
-                        browser.tuning = false
-                        browser.bringingIn = ""
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - downloads
-
-    private var downloads: some View {
-        Card {
-            Line("Save to", prefs.downloads.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")) {
-                Pill("Change…") { chooseFolder() }
-            }
-            Rule()
-            Line("Ask where to save each file") {
-                Switch(on: $prefs.asksWhereToSave)
-            }
-            Rule()
-            Line("Always show the downloads button", "Beside the other buttons, even with nothing downloading. Off, it shows only while a file comes in") {
-                Switch(on: $prefs.alwaysShowsDownloads)
-            }
-        }
+    private func setUpLikeArc() {
+        let before = prefs.arcSnapshot
+        let changed = withAnimation(Motion.glide) { prefs.setUpLikeArc() }
+        arcBefore = before
+        SettingsPanel.arcBefore = before
+        browser.announce(changed.isEmpty ? "Already set up like Arc" : "Turned on: " + changed.joined(separator: ", "))
     }
 
     // MARK: - terminal
@@ -602,16 +959,6 @@ struct SettingsPanel: View {
                     Segmented(
                         options: TerminalInputBar.allCases.map { ($0, $0.title) },
                         selection: $prefs.terminalInputBar
-                    )
-                }
-                Rule()
-                Line(
-                    "Agent View",
-                    "What a terminal running Claude Code, Pi or Codex opens in — the screen, or its talk read as a conversation. The switch in the pane's corner changes this too"
-                ) {
-                    Segmented(
-                        options: TerminalAgentView.allCases.map { ($0, $0.title) },
-                        selection: $prefs.terminalAgentView
                     )
                 }
                 Rule()
@@ -922,69 +1269,23 @@ struct SettingsPanel: View {
                     Pill("Clear") { browser.clearCache() }
                 }
             }
-        }
-    }
+        }    }
 
     // MARK: - about
 
-    private var about: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
-                Logomark()
-                    .fill(Palette.ink, style: FillStyle(eoFill: true))
-                    .aspectRatio(Logomark.canvas.width / Logomark.canvas.height, contentMode: .fit)
-                    .frame(height: 34)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Search")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Palette.ink)
-                    Text("by Office Commun · version \(Updater.version)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.muted)
-                }
-            }
-            .padding(.bottom, 2)
-
-            Card {
-                Line(versionTitle, versionDetail) { versionControl }
-                Rule()
-                Line("Install updates on its own", "Off, Search still looks every hour and tells you, and installs only when you press Install") {
-                    Switch(on: $prefs.installsUpdates)
-                }
-                Rule()
-                Line("Found something wrong?", "Opens a draft with the version already in it") {
-                    Pill("Send Feedback") { Links.writeFeedback() }
-                }
-                Rule()
-                Line("What's new", "Every version's notes, newest first") {
-                    Pill("What's New…") { browser.notesShowing = true }
-                }
-            }
-
-            Card {
-                Shortcut("⌘L", "Address")
-                Rule()
-                Shortcut("⌘K", "Switch tab")
-                Rule()
-                Shortcut("⌘T  ⌘W  ⇧⌘T", "New, close, reopen tab")
-                Rule()
-                Shortcut("⇧⌘V", "Paste and go")
-                Rule()
-                Shortcut("⇧⌘C", "Copy address")
-                Rule()
-                Shortcut("⌃⇥  ⌘1–9", "Next tab, a tab by its place")
-                Rule()
-                Shortcut("⇧⌘S", "Tabs in a sidebar")
-                Rule()
-                Shortcut("⌘S", "Fold the sidebar away")
-                Rule()
-                Shortcut("⇧⌘R", "Reading mode")
-                Rule()
-                Shortcut("⇧⌘H", "Hide something on this site")
-                Rule()
-                Shortcut("⇧⌘P", "Float the video")
-                Rule()
-                Shortcut("⇧⌘⌫", "Clear browsing data")
+    private var aboutHeader: some View {
+        HStack(spacing: 14) {
+            Logomark()
+                .fill(Palette.ink, style: FillStyle(eoFill: true))
+                .aspectRatio(Logomark.canvas.width / Logomark.canvas.height, contentMode: .fit)
+                .frame(height: 34)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Search")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Palette.ink)
+                Text("by Office Commun · version \(Updater.version)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Palette.muted)
             }
         }
     }
@@ -1003,10 +1304,10 @@ struct SettingsPanel: View {
     private var versionDetail: String {
         switch updater.stage {
         case .none:
-            return updater.lastChecked.map { "Checked \($0.formatted(.relative(presentation: .named))) — every hour on its own" }
+            return updater.lastChecked.map { "Checked \($0.formatted(.relative(presentation: .named))), every hour on its own" }
                 ?? "Checked every hour on its own"
         case .fetching(let next):
-            return next.notes ?? "Quietly, in the background — nothing you have set is touched"
+            return next.notes ?? "Quietly, in the background. Nothing you have set is touched"
         case .ready(let next):
             return next.notes ?? "It's there the next time you open Search"
         case .offered(let next):
@@ -1083,27 +1384,311 @@ struct SettingsPanel: View {
     private func shown(_ path: String) -> String {
         path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
+}
 
-    // MARK: - pieces
+// MARK: - pieces
 
-    /// A keystroke and what it does.
-    private struct Shortcut: View {
-        let keys: String
-        let does: String
-        init(_ keys: String, _ does: String) { self.keys = keys; self.does = does }
+private extension View {
+    /// A list under a row's words (sites, profiles, languages): its lines
+    /// start where the row's title does, and its hairlines are pulled back
+    /// out to the card's left edge, as every other one in Settings.
+    func under() -> some View {
+        padding(.leading, SettingsPanel.listInset)
+            .environment(\.ruleInset, -SettingsPanel.listInset)
+    }
+}
 
-        var body: some View {
-            HStack {
-                Text(does)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.ink)
-                Spacer()
-                Text(keys)
-                    .font(.system(size: 12, design: .rounded))
-                    .foregroundStyle(Palette.muted)
+/// A group of a section: its small heading with an icon, then its card.
+/// No line under the heading: the rows say what they do.
+struct GroupBlock<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 10.5, weight: .semibold))
+                Text(title.uppercased())
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .tracking(0.5)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .foregroundStyle(Palette.ink.opacity(0.62))
+            .padding(.leading, 2)
+            content()
+        }
+    }
+}
+
+/// One setting: its icon in a soft tile, what it is, one line on what it
+/// does (the rest behind the (i)), and its control. A wide control goes
+/// under the words.
+struct SettingRow<Control: View>: View {
+    let icon: String
+    let title: String
+    let detail: String
+    var more: String? = nil
+    var wide = false
+    var lit = false
+    @ViewBuilder let control: () -> Control
+
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.ink.opacity(0.78))
+                    .frame(width: 26, height: 26)
+                    .background(Palette.wash, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(title)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Palette.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if more != nil {
+                            Button { withAnimation(Motion.quick) { open.toggle() } } label: {
+                                Image(systemName: open ? "info.circle.fill" : "info.circle")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(Palette.muted.opacity(0.8))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(more ?? "")
+                            .accessibilityLabel("More about \(title)")
+                        }
+                    }
+                    if !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Palette.muted)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if open, let more {
+                        Text(more)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 3)
+                            .transition(.opacity)
+                    }
+                }
+                Spacer(minLength: 8)
+                if !wide { control() }
+            }
+            if wide {
+                control()
+                    .padding(.leading, 38)
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 14)
+        .padding(.vertical, 10)
+        .background(lit ? Palette.hover : .clear)
+    }
+}
+
+/// For a feature that is simply there: no switch, a quiet word.
+struct Always: View {
+    var text = "Always on"
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(Palette.muted)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Palette.wash, in: Capsule())
+    }
+}
+
+/// Choices shown as small pictures, as macOS's own Appearance pane has
+/// them: a ring around the one picked, its name under each.
+struct Pictures<Option: Hashable>: View {
+    let options: [(Option, String, AnyView)]
+    @Binding var selection: Option
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            ForEach(options, id: \.0) { option, title, picture in
+                let on = option == selection
+                Button { withAnimation(Motion.settle) { selection = option } } label: {
+                    VStack(spacing: 6) {
+                        picture
+                            .frame(width: 76, height: 50)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .strokeBorder(Palette.hairline, lineWidth: 1)
+                            )
+                            .padding(3)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 9.5, style: .continuous)
+                                    .strokeBorder(on ? Palette.ink : .clear, lineWidth: 2)
+                            )
+                        Text(title)
+                            .font(.system(size: 11.5, weight: on ? .medium : .regular))
+                            .foregroundStyle(on ? Palette.ink : Palette.muted)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+    }
+}
+
+/// A window in miniature with the tabs where a layout puts them.
+private struct LayoutPicture: View {
+    let layout: TabsLayout
+
+    var body: some View {
+        let tab = Palette.ink.opacity(0.22)
+        let lit = Palette.ink.opacity(0.55)
+        ZStack {
+            Palette.wash
+            switch layout {
+            case .top:
+                VStack(spacing: 4) {
+                    HStack(spacing: 3) {
+                        lights
+                        Capsule().fill(lit).frame(width: 14, height: 4)
+                        Capsule().fill(tab).frame(width: 14, height: 4)
+                        Capsule().fill(tab).frame(width: 10, height: 4)
+                        Spacer(minLength: 0)
+                    }
+                    page
+                }
+                .padding(5)
+            case .left, .right:
+                HStack(spacing: 4) {
+                    if layout == .right { page }
+                    VStack(alignment: .leading, spacing: 3) {
+                        if layout == .left { lights } else { Color.clear.frame(height: 3) }
+                        Capsule().fill(lit).frame(width: 16, height: 3.5)
+                        Capsule().fill(tab).frame(width: 16, height: 3.5)
+                        Capsule().fill(tab).frame(width: 12, height: 3.5)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: 18)
+                    if layout == .left { page }
+                }
+                .padding(5)
+            case .icons:
+                // A narrow column of squares, one under the other: the
+                // tabs' icons, no titles.
+                HStack(spacing: 4) {
+                    VStack(spacing: 3) {
+                        VStack(spacing: 1.5) {
+                            ForEach(0..<3) { _ in Circle().fill(Palette.ink.opacity(0.25)).frame(width: 3, height: 3) }
+                        }
+                        .padding(.bottom, 1)
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous).fill(lit).frame(width: 6, height: 6)
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous).fill(tab).frame(width: 6, height: 6)
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous).fill(tab).frame(width: 6, height: 6)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: 8)
+                    page
+                }
+                .padding(5)
+            }
+        }
+    }
+
+    private var lights: some View {
+        HStack(spacing: 1.5) {
+            ForEach(0..<3) { _ in Circle().fill(Palette.ink.opacity(0.25)).frame(width: 3, height: 3) }
+        }
+    }
+
+    private var page: some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Palette.ground)
+            .overlay(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 2.5) {
+                    Capsule().fill(Palette.ink.opacity(0.18)).frame(width: 22, height: 3)
+                    Capsule().fill(Palette.ink.opacity(0.1)).frame(width: 30, height: 2.5)
+                    Capsule().fill(Palette.ink.opacity(0.1)).frame(width: 26, height: 2.5)
+                }
+                .padding(5)
+            }
+    }
+}
+
+/// The page as a card, or reaching the window's edges.
+private struct CardPicture: View {
+    let card: Bool
+
+    var body: some View {
+        HStack(spacing: card ? 4 : 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Capsule().fill(Palette.ink.opacity(0.55)).frame(width: 15, height: 3.5)
+                Capsule().fill(Palette.ink.opacity(0.22)).frame(width: 15, height: 3.5)
+                Capsule().fill(Palette.ink.opacity(0.22)).frame(width: 11, height: 3.5)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 8)
+            .padding(.leading, card ? 0 : 5)
+            .frame(width: card ? 17 : 22, alignment: .leading)
+            if !card { Rectangle().fill(Palette.hairline).frame(width: 1) }
+            RoundedRectangle(cornerRadius: card ? 4 : 0, style: .continuous)
+                .fill(Palette.ground)
+                .shadow(color: .black.opacity(card ? 0.12 : 0), radius: 1.5, y: 0.5)
+        }
+        .padding(card ? 5 : 0)
+        .background(card ? Palette.wash : Palette.ground)
+    }
+}
+
+/// Light, dark, or both halves for Auto: drawn in the look itself, not in
+/// the one Search is in now.
+private struct LookPicture: View {
+    let look: Look
+
+    var body: some View {
+        switch look {
+        case .light: Window(dark: false)
+        case .dark: Window(dark: true)
+        default:
+            ZStack {
+                Window(dark: false)
+                Window(dark: true).mask(HStack(spacing: 0) { Color.clear; Color.black })
+            }
+        }
+    }
+
+    private struct Window: View {
+        let dark: Bool
+        var body: some View {
+            let ground = Color(white: dark ? 0.11 : 1)
+            let wash = Color(white: dark ? 0.17 : 0.93)
+            let ink = Color(white: dark ? 0.93 : 0.09)
+            HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Capsule().fill(ink.opacity(0.55)).frame(width: 14, height: 3.5)
+                    Capsule().fill(ink.opacity(0.2)).frame(width: 14, height: 3.5)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 8)
+                .frame(width: 16)
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(ground)
+                    .overlay(alignment: .topLeading) {
+                        VStack(alignment: .leading, spacing: 2.5) {
+                            Capsule().fill(ink.opacity(0.4)).frame(width: 20, height: 3)
+                            Capsule().fill(ink.opacity(0.18)).frame(width: 28, height: 2.5)
+                        }
+                        .padding(5)
+                    }
+            }
+            .padding(5)
+            .background(wash)
         }
     }
 }

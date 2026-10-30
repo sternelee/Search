@@ -14,6 +14,11 @@ struct Page: View {
     /// False where the page itself is held elsewhere (see PaneStage.swift)
     /// and only what goes over it is wanted here.
     var holdsPage = true
+    /// The page's corners, as a card on the window's frame (see CardEdge).
+    var corner: CGFloat = 0
+    /// The window, for a tab showing one of Search's own pages, which are
+    /// drawn here in the web page's place (see InternalPages.swift).
+    var browser: Browser?
 
     var body: some View {
         ZStack {
@@ -27,21 +32,43 @@ struct Page: View {
             if holdsPage {
                 // A shell is shown as the page is: the stage takes any view,
                 // and the web view of a terminal tab is never built.
-                WebStage(page: tab.isTerminal
-                    ? tab.console
-                    : tab.isBlank || tab.asleep || tab.floating ? nil : tab.web)
+                WebStage(
+                    page: tab.isTerminal
+                        ? tab.console
+                        : (!tab.isWeb || tab.asleep || tab.floating ? nil : tab.web),
+                    corner: corner
+                )
+            }
+
+            if let page = tab.page, let browser {
+                InternalPageView(browser: browser, tab: tab, page: page, corner: corner)
             }
 
             if let cover = tab.cover {
                 // The page as it was left, while it is rebuilt underneath —
                 // anchored where the page itself starts, and never in the
-                // way of a click meant for the page.
+                // way of a click meant for the page. Up at once, since what
+                // it covers is not fit to be seen (a page waking up, or one
+                // landing from the floating window); off with a fade.
                 Image(nsImage: cover)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    // No smaller than nothing: a picture taken in a window of
+                    // another shape would otherwise ask for its own size, and
+                    // push the column aside until the page woke (#664).
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                           alignment: .topLeading)
                     .clipped()
                     .allowsHitTesting(false)
+                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
+            }
+
+            if tab.reader, Shared.prefs.readerFollowsLook {
+                // One for each tab: the look it shows is the one the tab's
+                // article wears.
+                ReaderLook(tab: tab)
+                    .id(tab.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .transition(.opacity)
             }
 
@@ -61,7 +88,25 @@ struct Page: View {
                     .transition(.opacity)
             }
 
-            if let pull = tab.pull, pull.stops != nil {
+            Swiping(pull: tab.pull)
+        }
+        .animation(Motion.quick, value: tab.page?.kind)
+        .animation(Motion.quick, value: tab.failure)
+        .animation(Motion.quick, value: tab.floating)
+        .animation(Motion.quick, value: tab.reader)
+        .animation(.easeOut(duration: 0.2), value: tab.cover == nil)
+        .animation(.easeOut(duration: 0.16), value: tab.pull == nil)
+    }
+}
+
+/// What a sideways swipe puts over the page: the disc, or the list a held
+/// one opens. The page's own stage, and a small window's (Little.swift).
+struct Swiping: View {
+    let pull: Pull?
+
+    var body: some View {
+        ZStack {
+            if let pull, pull.stops != nil {
                 // In the disc's place, grown from its own edge: it sits in a
                 // frame as wide as the window, and grown from that frame's
                 // middle it would slide in from the middle.
@@ -71,7 +116,7 @@ struct Page: View {
                         insertion: .opacity.combined(with: .scale(scale: 0.92, anchor: pull.back ? .leading : .trailing)),
                         removal: .opacity.combined(with: .scale(scale: 0.96, anchor: pull.back ? .leading : .trailing))
                     ))
-            } else if let pull = tab.pull {
+            } else if let pull {
                 Disc(pull: pull)
                     // A disc for each edge, never one that changes edges: a
                     // view whose alignment flips is a view that glides the
@@ -83,10 +128,6 @@ struct Page: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
             }
         }
-        .animation(Motion.quick, value: tab.failure)
-        .animation(Motion.quick, value: tab.floating)
-        .animation(.easeOut(duration: 0.2), value: tab.cover == nil)
-        .animation(.easeOut(duration: 0.16), value: tab.pull == nil)
     }
 }
 
@@ -120,7 +161,8 @@ private struct Disc: View {
                 .stroke(Palette.ink, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .padding(0.75)
-            Image(systemName: pull.back ? "arrow.left" : "arrow.right")
+            // Back from a small window's first page closes it, and says so.
+            Image(systemName: pull.leaves ? "xmark" : pull.back ? "arrow.left" : "arrow.right")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Palette.ink.opacity(0.4 + 0.6 * grown))
         }
@@ -189,7 +231,7 @@ private struct HistoryList: View {
 
     @ViewBuilder
     private func icon(_ url: URL) -> some View {
-        if let site = Favicons.site(url), let image = Favicons.shared.cached(site) {
+        if let image = Favicons.shared.cached(for: url) {
             Image(nsImage: image).resizable().interpolation(.high)
         } else {
             Image(systemName: "globe")
@@ -204,10 +246,20 @@ private struct HistoryList: View {
 /// reload, no lost scroll position, no forgotten form.
 struct WebStage: NSViewRepresentable {
     let page: NSView?
+    var corner: CGFloat = 0
+
+    // The hosted page's previous bounds are not an ideal size for this layout.
+    // Accept the offered room so a window can shrink around its browser chrome.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: StageView, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height,
+              width.isFinite, height.isFinite else { return nil }
+        return CGSize(width: width, height: height)
+    }
 
     func makeNSView(context: Context) -> StageView { StageView() }
 
     func updateNSView(_ view: StageView, context: Context) {
+        view.corner = corner
         view.show(page)
     }
 }
@@ -226,12 +278,74 @@ final class StageView: NSView {
     /// every layout. Nothing to fall out of step with.
     private weak var wanted: NSView?
 
+    /// A page on its way out to the floating window (Browser.lift), kept
+    /// here unseen under the one on show until the little window takes it,
+    /// or it turns out to have nothing playing. Taken out of every window
+    /// as the tab changed, the page let go of the layers it had drawn and
+    /// built them all again in the little window, its video last; going out
+    /// by switching tabs still jumped where ⇧⌘P didn't. Kept in a window,
+    /// it goes out the way ⇧⌘P sends it.
+    private weak var parting: NSView?
+
+    /// Pages on a call — camera, microphone or screen in use — kept here
+    /// unseen under the one on show when you go to another tab, as long as
+    /// the call lasts. Taken out of the window, a page is one WebKit counts
+    /// as out of sight: its timers held to once a second, its animation
+    /// frames stopped. A call site that hands the camera on from a loop of
+    /// its own (Google Meet takes about 45 pictures a second from it, by
+    /// ImageCapture) stalls with it, and on a Meet call the others saw your
+    /// picture frozen until you came back to the tab, where Safari and
+    /// Chrome keep sending. Kept in the window, the page carries on as it
+    /// did in front. Only pages on a call: any other tab still leaves the
+    /// window, and is slowed and put to sleep as before.
+    private var calls: [ObjectIdentifier: CallWatch] = [:]
+
+    /// Whether this page is using the camera, the microphone or the screen.
+    /// Muted counts: a camera turned off from the call's own button is a
+    /// call still going.
+    static func onCall(_ view: NSView) -> Bool {
+        guard let web = view as? WKWebView else { return false }
+        if web.cameraCaptureState != .none || web.microphoneCaptureState != .none { return true }
+        if #available(macOS 15.4, *) { return ExtensionCapture.screen(web) }
+        return false
+    }
+
+    /// Whether this page is one kept here unseen for its call.
+    func holdsCall(_ view: NSView) -> Bool {
+        calls[ObjectIdentifier(view)]?.web === view
+    }
+
+    func keep(_ page: NSView) {
+        guard page.superview === self else { return }
+        parting = page
+    }
+
+    func letGo(_ page: NSView) {
+        guard parting === page else { return }
+        parting = nil
+        if page.superview === self, page !== wanted { page.removeFromSuperview() }
+        page.alphaValue = 1
+    }
+
     /// The Web Inspector each page off show had docked beside it. WebKit
     /// docks it once, on show; a page coming back without it was laid out
     /// short, beside an empty space. Weak both ways: a closed tab's page
     /// takes its entry with it, and an inspector is kept by WebKit while it
     /// is open, never by this.
     private static let docks = NSMapTable<NSView, NSView>.weakToWeakObjects()
+
+    /// Round, as the page's card is (see CardEdge): the web view is cut to
+    /// the corners by this view's own layer, which a clip of SwiftUI's isn't
+    /// always carried down to.
+    var corner: CGFloat = 0 {
+        didSet {
+            guard corner != oldValue else { return }
+            wantsLayer = true
+            layer?.cornerRadius = corner
+            layer?.cornerCurve = .continuous
+            layer?.masksToBounds = corner > 0
+        }
+    }
 
     override func layout() {
         super.layout()
@@ -254,6 +368,10 @@ final class StageView: NSView {
     }
 
     func show(_ page: NSView?) {
+        if let page, page === parting {
+            parting = nil
+            page.alphaValue = 1
+        }
         if let leaving = wanted, leaving !== page, let dock = subviews.first(where: Self.isInspector) {
             Self.docks.setObject(dock, forKey: leaving)
             dock.removeFromSuperview()
@@ -267,8 +385,16 @@ final class StageView: NSView {
         // window, with a placeholder left here in its place. The chrome
         // stepping aside lays this stage out again in that same moment, and
         // taking the page back then left the screen black with the sound
-        // still playing. WebKit puts it back itself on the way out.
-        if let web = wanted as? WKWebView, web.fullscreenState != .notInFullscreen { return }
+        // still playing. WebKit puts it back itself on the way out, at the
+        // placeholder's frame: kept at this stage's size, the chrome having
+        // come back before that (see Tab.immersed), the page comes home at
+        // its own size and is laid out once.
+        if let web = wanted as? WKWebView, web.fullscreenState != .notInFullscreen {
+            for view in subviews where view !== web && Self.isPlaceholder(view) && view.frame != bounds {
+                view.frame = bounds
+            }
+            return
+        }
 
         // Anything here that isn't wanted, out. Only ever what is actually
         // ours: a page may be somewhere else on purpose. Except the Web
@@ -277,10 +403,42 @@ final class StageView: NSView {
         // resize, it left the page shrunk beside nothing (#91).
         let docked = inspecting
         for view in subviews where view !== wanted && !(docked && Self.isInspector(view)) {
+            // Unseen, and still drawn: WebKit asks whether its view is in a
+            // window and not hidden, not whether anything shows of it.
+            if view === parting {
+                view.alphaValue = 0
+                continue
+            }
+            if Self.onCall(view) {
+                hold(view)
+                continue
+            }
             view.removeFromSuperview()
+        }
+        // Calls that ended, or pages that went elsewhere, are watched no more.
+        for (key, watch) in calls {
+            guard let web = watch.web, web.superview === self, web !== wanted, Self.onCall(web) else {
+                watch.stop()
+                calls[key] = nil
+                continue
+            }
         }
 
         guard let wanted, window != nil else { return }
+        if wanted.superview === self, wanted.alphaValue == 0, wanted !== parting,
+           (wanted as? PageView)?.unpainted != true {
+            // Back from being kept for its call: seen again, and over the
+            // others — the order of a view's subviews, changed without
+            // taking anything out of the window.
+            wanted.alphaValue = 1
+            sortSubviews({ a, b, context in
+                guard let context else { return .orderedSame }
+                let front = Unmanaged<NSView>.fromOpaque(context).takeUnretainedValue()
+                if a === front { return .orderedDescending }
+                if b === front { return .orderedAscending }
+                return .orderedSame
+            }, context: Unmanaged.passUnretained(wanted).toOpaque())
+        }
         if wanted.superview !== self {
             // A web view can have only one superview, so taking it back is how
             // it is taken back.
@@ -310,6 +468,36 @@ final class StageView: NSView {
         }
     }
 
+    /// A page on a call, kept: unseen, at the stage's size, and never the
+    /// one the keys go to. Out of the window, a page loses the keys by
+    /// itself; kept in it, a page that had them would go on taking what
+    /// you type in the tab in front.
+    private func hold(_ view: NSView) {
+        view.alphaValue = 0
+        if !(inspecting && subviews.contains(where: Self.isInspector)) { view.frame = bounds }
+        if let window, let responder = window.firstResponder as? NSView,
+           responder === view || responder.isDescendant(of: view) {
+            window.makeFirstResponder(nil)
+        }
+        let key = ObjectIdentifier(view)
+        guard calls[key]?.web !== view, let web = view as? WKWebView else { return }
+        calls[key]?.stop()
+        calls[key] = CallWatch(web) { [weak self] in self?.settle() }
+    }
+
+    /// Nothing reaches a page kept unseen: a click, a scroll or a drop
+    /// there goes to the page on show.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        if let parting, let hit, hit === parting || hit.isDescendant(of: parting) { return nil }
+        if let hit, let held = subviews.first(where: { holdsCall($0) && (hit === $0 || hit.isDescendant(of: $0)) }),
+           held !== wanted {
+            guard let wanted, wanted.superview === self else { return nil }
+            return wanted.hitTest(convert(point, from: superview))
+        }
+        return hit
+    }
+
     /// Whether the page on show has its Web Inspector up. WebKit answers only
     /// through names outside its public framework, asked for before use (see
     /// Inspector.swift).
@@ -323,8 +511,46 @@ final class StageView: NSView {
         return unsafeBitCast(inspector.method(for: visible), to: Getter.self)(inspector, visible)
     }
 
+    /// What WebKit leaves in a page's place while it fills the screen.
+    private static func isPlaceholder(_ view: NSView) -> Bool {
+        String(describing: type(of: view)).contains("FullScreenPlaceholder")
+    }
+
     private static func isInspector(_ view: NSView) -> Bool {
         String(describing: type(of: view)).hasPrefix("WKInspector")
+    }
+}
+
+/// Tells a stage when a page it keeps for its call stops capturing, so the
+/// page leaves the window as any tab behind does. WebKit's camera and
+/// microphone states are public and observable; its screen's is asked for
+/// by name, only where it answers to it.
+final class CallWatch: NSObject {
+    private static let keys = ["cameraCaptureState", "microphoneCaptureState", "_displayCaptureState"]
+    private(set) weak var web: WKWebView?
+    private var watching: [String] = []
+    private let changed: () -> Void
+
+    init(_ web: WKWebView, changed: @escaping () -> Void) {
+        self.web = web
+        self.changed = changed
+        super.init()
+        for key in Self.keys where key.hasPrefix("_") == false || web.responds(to: NSSelectorFromString(key)) {
+            web.addObserver(self, forKeyPath: key, options: [], context: nil)
+            watching.append(key)
+        }
+    }
+
+    func stop() {
+        if let web { for key in watching { web.removeObserver(self, forKeyPath: key) } }
+        watching = []
+    }
+
+    deinit { stop() }
+
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
+                               change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        DispatchQueue.main.async { [weak self] in self?.changed() }
     }
 }
 
@@ -422,6 +648,10 @@ struct DragStrip: NSViewRepresentable {
 
         private var pressed: NSEvent?
         private var moved = false
+        private var over = false
+        /// How many strips the pointer is over, per window: the strips
+        /// overlap (the corner's lies in the row's).
+        private static var hovered: [ObjectIdentifier: Int] = [:]
 
         /// The strip moves the window and answers the double-click itself.
         /// Left to say yes, AppKit takes both on too in the title bar the
@@ -437,16 +667,41 @@ struct DragStrip: NSViewRepresentable {
             return super.hitTest(point)
         }
 
+        /// The window is not movable while the pointer is over a strip: macOS
+        /// starts a title bar's drag before the app sees the press, so a tab
+        /// picked up in the row carried the window off unless the window was
+        /// unmovable already. Elsewhere it is movable, for Window › Move &
+        /// Resize, tiling and window managers (#286).
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas { removeTrackingArea(area) }
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        }
+
+        override func mouseEntered(with event: NSEvent) { hover(true) }
+        override func mouseExited(with event: NSEvent) { hover(false) }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            hover(false)
+            super.viewWillMove(toWindow: newWindow)
+        }
+
+        private func hover(_ on: Bool) {
+            guard let window, on != over else { return }
+            over = on
+            let id = ObjectIdentifier(window)
+            let count = max(0, (Strip.hovered[id] ?? 0) + (on ? 1 : -1))
+            Strip.hovered[id] = count == 0 ? nil : count
+            window.isMovable = count == 0
+        }
+
         override func mouseDown(with event: NSEvent) {
             pressed = event
             moved = false
         }
 
-        /// The window is not movable while a press lasts (see dress in
-        /// App.swift): a tab picked up in the strip would carry the window
-        /// off with it. Here it is let go for the one drag, handed to the
-        /// system's own window drag so it snaps and tiles as any window does,
-        /// and stays movable after it, as between presses.
+        /// Here the window is let go for the one drag, handed to the system's
+        /// own window drag so it snaps and tiles as any window does.
         override func mouseDragged(with event: NSEvent) {
             guard let window, let pressed, !moved else { return }
             let dx = event.locationInWindow.x - pressed.locationInWindow.x
@@ -456,6 +711,7 @@ struct DragStrip: NSViewRepresentable {
             moved = true
             window.isMovable = true
             window.performDrag(with: pressed)
+            window.isMovable = Strip.hovered[ObjectIdentifier(window)] == nil
         }
 
         /// A double-click does what a title bar's does, unless this strip

@@ -20,6 +20,10 @@ final class FindStayTests: XCTestCase {
         let view = TerminalView(terminal: terminal)
         window.contentView = view
         window.orderFrontRegardless()
+        // Out of sight when the test ends, not closed: a window this test put
+        // on screen is still visible to every other suite's teardown, which
+        // asserts that nothing is.
+        addTeardownBlock { window.orderOut(nil) }
         view.openFind()
         let panel = try XCTUnwrap(view.findPanel)
         XCTAssertEqual(panel.frame.maxY, view.bounds.height - FieldBox.edge, accuracy: 1)

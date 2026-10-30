@@ -25,10 +25,20 @@ struct PaneStageView: NSViewRepresentable {
     let action: (PaneStage.Action) -> Void
     let hover: (Tab.ID?) -> Void
     var find: Browser? = nil
+    /// The accounts hanging from the sign-in box the caret is in, if any.
+    var accounts: (browser: Browser, asked: Browser.Suggesting)? = nil
+    /// Apple Passwords' code card, hanging from the same box, if it is up.
+    var pairing: (browser: Browser, pairing: Browser.ApplePairing)? = nil
+    /// Each page's corners, as a card (see CardEdge).
+    var corner: CGFloat = 0
+    /// The page filling the screen, if one is (see SplitStage.immersed).
+    var immersed: Tab.ID? = nil
 
     func makeNSView(context: Context) -> PaneStage { PaneStage() }
 
     func updateNSView(_ stage: PaneStage, context: Context) {
+        stage.corner = corner
+        stage.immersedID = immersed
         stage.onCommit = commit
         stage.onFocus = focus
         stage.onFrames = frames
@@ -36,10 +46,27 @@ struct PaneStageView: NSViewRepresentable {
         stage.onHover = hover
         stage.show(tabs, split: split, focused: focused)
         stage.showFind(find)
+        stage.showAccounts(accounts)
+        stage.showPairing(pairing)
     }
 }
 
 final class PaneStage: NSView {
+    /// Each page's corners, as a card (see CardEdge): with the tabs down the
+    /// side, each page on the stage is a card of its own, with the window's
+    /// ground in the gutter between two.
+    var corner: CGFloat = 0 {
+        didSet {
+            guard corner != oldValue else { return }
+            for slot in slots { slot.corner = corner }
+            for cue in cues { cue.corner = corner }
+            paint()
+            needsLayout = true
+        }
+    }
+    /// The shadow under each page's card, a layer of the stage's own behind
+    /// the page — never the page's, which is cut to its corners.
+    private var shadows: [CALayer] = []
     var onCommit: ((UUID, [Double]) -> Void)?
     var onFocus: ((Tab) -> Void)?
     /// Where each page is, from the top left, each time that changes — never
@@ -100,9 +127,63 @@ final class PaneStage: NSView {
         findGoing = nil
         if findBar == nil {
             let bar = FindHost(rootView: FindBar(browser: browser))
+            bar.rootView.onPillFrame = { [weak bar] in bar?.pillFrame = $0 }
             findBar = bar
             addSubview(bar, positioned: .above, relativeTo: nil)
         }
+        needsLayout = true
+    }
+
+    private var accountList: AccountHost?
+    private var accountsFor: Tab.ID?
+    private var pairingCard: PairingHost?
+    private var pairingFor: Tab.ID?
+
+    /// Apple Passwords' code card under a sign-in box (ApplePairingCard),
+    /// above the pages for the reason the accounts are.
+    func showPairing(_ pairing: (browser: Browser, pairing: Browser.ApplePairing)?) {
+        guard let pairing else {
+            pairingCard?.removeFromSuperview()
+            pairingCard = nil
+            pairingFor = nil
+            return
+        }
+        let view = ApplePairingCard(browser: pairing.browser, apple: pairing.browser.applePasswords, pairing: pairing.pairing)
+        if pairingCard == nil {
+            let host = PairingHost(rootView: FromTopLeft(content: view))
+            host.sizingOptions = []
+            pairingCard = host
+            addSubview(host, positioned: .above, relativeTo: nil)
+        }
+        guard let host = pairingCard else { return }
+        host.rootView = FromTopLeft(content: view)
+        host.spot = pairing.pairing.spot
+        pairingFor = pairing.pairing.tab
+        needsLayout = true
+    }
+
+    /// The accounts under a sign-in box, for the same reason: drawn by
+    /// SwiftUI over the stage, they were under WebKit's pages and never
+    /// seen, though the list was up and a click on the box did nothing.
+    func showAccounts(_ accounts: (browser: Browser, asked: Browser.Suggesting)?) {
+        guard let accounts else {
+            accountList?.removeFromSuperview()
+            accountList = nil
+            accountsFor = nil
+            return
+        }
+        var view = AccountList(browser: accounts.browser, asked: accounts.asked)
+        if accountList == nil {
+            let host = AccountHost(rootView: FromTopLeft(content: view))
+            host.sizingOptions = []
+            accountList = host
+            addSubview(host, positioned: .above, relativeTo: nil)
+        }
+        guard let host = accountList else { return }
+        view.onFrame = { [weak host] in host?.card = $0 }
+        host.spot = accounts.asked.spot
+        host.rootView = FromTopLeft(content: view)
+        accountsFor = accounts.asked.tab
         needsLayout = true
     }
     fileprivate var slots: [StageView] = []
@@ -214,27 +295,69 @@ final class PaneStage: NSView {
         }
     }
 
-    /// The page a tab puts on the stage: none while it is blank, asleep or
-    /// floating, as Page decides it (see Stage.swift). A shell is put on as
-    /// the page is — the stage takes any view.
+    /// The page a tab puts on the stage: a shell is put on as the page is —
+    /// the stage takes any view. Otherwise none while it is blank, one of
+    /// Search's own pages, asleep or floating, as Page decides it (see
+    /// Stage.swift).
     private func page(_ tab: Tab) -> NSView? {
         if let console = tab.console { return console }
-        return tab.isBlank || tab.asleep || tab.floating ? nil : tab.web
+        return !tab.isWeb || tab.asleep || tab.floating ? nil : tab.web
     }
 
     private func refill() {
         while slots.count < tabs.count {
             let slot = StageView()
+            slot.corner = corner
             addSubview(slot, positioned: .below, relativeTo: divider)
             slots.append(slot)
+            let shadow = CALayer()
+            shadow.actions = ["bounds": NSNull(), "position": NSNull(), "hidden": NSNull()]
+            layer?.insertSublayer(shadow, at: 0)
+            shadows.append(shadow)
             let cue = FocusCue()
+            cue.corner = corner
             cue.alphaValue = 0
             addSubview(cue, positioned: .below, relativeTo: divider)
             cues.append(cue)
         }
-        feed()
+        // Which page each slot holds is put right with where the slots are,
+        // in layout(), not here: told from SwiftUI's update, a page filling
+        // the screen took the other one off a frame before the stage grew
+        // to give it the room.
+        paint()
         needsLayout = true
         watchClicks()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        paint()
+    }
+
+    /// The cards' edges and shadows, in this appearance's colours; nothing
+    /// without corners, where the pages fill the stage as they always did.
+    private func paint() {
+        let card = corner > 0
+        divider.card = card
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let edge = NSColor.labelColor.withAlphaComponent(CardEdge.edge).cgColor
+            let ground = Palette.NS.ground.cgColor
+            layer?.backgroundColor = card ? NSColor.clear.cgColor : ground
+            for slot in slots {
+                slot.layer?.borderWidth = card ? 1 : 0
+                slot.layer?.borderColor = edge
+            }
+            for shadow in shadows {
+                shadow.isHidden = !card
+                shadow.backgroundColor = ground
+                shadow.cornerRadius = corner
+                shadow.cornerCurve = .continuous
+                shadow.shadowColor = NSColor.black.cgColor
+                shadow.shadowOpacity = Swift.Float(CardEdge.shadow)
+                shadow.shadowRadius = 6
+                shadow.shadowOffset = CGSize(width: 0, height: 1)
+            }
+        }
     }
 
     /// What each slot was last told to show.
@@ -264,7 +387,13 @@ final class PaneStage: NSView {
     }
 
     /// A page lent to WebKit's full screen window: its slot has the stage.
-    fileprivate var immersed: Int? { tabs.firstIndex { $0.immersed } }
+    /// As the window says it, with its chrome, not from the tab: read from
+    /// the tab, the other page went (or came back) a turn before the column
+    /// and the card did, one more jump.
+    var immersedID: Tab.ID? = nil {
+        didSet { if immersedID != oldValue { needsLayout = true } }
+    }
+    fileprivate var immersed: Int? { immersedID.flatMap { id in tabs.firstIndex { $0.id == id } } }
 
     /// Whether the page in this slot is on screen.
     private func shown(_ index: Int) -> Bool {
@@ -294,6 +423,12 @@ final class PaneStage: NSView {
             let visible = index < tabs.count && shown(index) && frame.width > 0
             slot.isHidden = !visible
             if slot.frame != frame { slot.frame = frame }
+            if index < shadows.count {
+                // Pages run the stage's full height, so its flip is no matter.
+                let shadow = shadows[index]
+                shadow.frame = frame
+                shadow.isHidden = corner == 0 || !visible
+            }
             // Only with two pages on screen does it matter which one keys go to.
             let cue = cues[index]
             cue.frame = frame
@@ -327,6 +462,21 @@ final class PaneStage: NSView {
                 bar.frame = CGRect(x: page.maxX - width, y: y,
                                    width: width, height: min(60, page.height))
             }
+        }
+        if let host = pairingCard {
+            // As the accounts below: over the page the box is on.
+            let page = pairingFor.flatMap { id in tabs.firstIndex { $0.id == id } }
+                .flatMap { frames.indices.contains($0) ? frames[$0] : nil }
+            host.isHidden = page == nil || page?.width == 0
+            if let page, host.frame != page { host.frame = page }
+        }
+        if let host = accountList {
+            // Over the page the box is on, as large as it: the list places
+            // itself under the box from that page's top-left.
+            let page = accountsFor.flatMap { id in tabs.firstIndex { $0.id == id } }
+                .flatMap { frames.indices.contains($0) ? frames[$0] : nil }
+            host.isHidden = page == nil || page?.width == 0
+            if let page, host.frame != page { host.frame = page }
         }
         guard live == nil else { return }
         var now: [Tab.ID: CGRect] = [:]
@@ -464,41 +614,67 @@ final class PaneStage: NSView {
 /// which shows on a white page and a dark one alike; drawn rather than a
 /// layer's border, so a picture of the window has it too. It takes no clicks.
 final class FocusCue: NSView {
+    /// Round, when the pages are cards.
+    var corner: CGFloat = 0 { didSet { if corner != oldValue { needsDisplay = true } } }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) {
         Palette.NS.muted.withAlphaComponent(0.55).setStroke()
-        let line = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
+        let inner = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let line = corner > 0
+            ? NSBezierPath(roundedRect: inner, xRadius: corner - 0.5, yRadius: corner - 0.5)
+            : NSBezierPath(rect: inner)
         line.lineWidth = 1
         line.stroke()
     }
 }
 
-/// The line between two pages. A hairline in a narrow gutter, that grows a
-/// little under the pointer; dragged, the pages follow it; double-clicked,
-/// they are made even. It never takes the keys: the page keeps them.
+/// Between two pages: a narrow gutter that takes the pointer, with a small
+/// pill in its middle (see Grip) — faint at rest, longer and darker under the
+/// pointer and while held. As cards, the gap is what parts the pages; edge to
+/// edge, a hairline down the gutter does. Dragged, the pages follow it;
+/// double-clicked, they are made even. It never takes the keys: the page
+/// keeps them.
 final class PaneDivider: NSView {
     weak var stage: PaneStage?
+    /// The pages are cards (see PaneStage.paint): no hairline then.
+    var card = false {
+        didSet { if card != oldValue { needsDisplay = true } }
+    }
 
-    private let line = CALayer()
+    private let pill = CALayer()
+    private let seam = CALayer()
     private var hovering = false
     private var dwell: DispatchWorkItem?
     private var dragging = false
+    private var lit: Bool { hovering || dragging }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var wantsUpdateLayer: Bool { true }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.addSublayer(line)
-        line.actions = ["bounds": NSNull(), "position": NSNull()]
+        layer?.addSublayer(seam)
+        layer?.addSublayer(pill)
+        for part in [pill, seam] {
+            part.actions = ["bounds": NSNull(), "position": NSNull(), "backgroundColor": NSNull(), "hidden": NSNull()]
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func updateLayer() {
-        line.backgroundColor = (hovering || dragging ? Palette.NS.muted : Palette.NS.faint).cgColor
+        paint()
+    }
+
+    private func paint() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            pill.backgroundColor = (lit ? Palette.NS.muted : Palette.NS.faint).cgColor
+            seam.backgroundColor = Palette.NS.hairline.cgColor
+        }
+        seam.isHidden = card
     }
 
     override func layout() {
@@ -507,19 +683,27 @@ final class PaneDivider: NSView {
     }
 
     private func place() {
-        let width: CGFloat = hovering || dragging ? 3 : 1
-        line.frame = CGRect(x: (bounds.width - width) / 2, y: 0, width: width, height: bounds.height)
-        line.cornerRadius = width / 2
+        let length = min(bounds.height, lit ? Grip.lit : Grip.rest)
+        pill.frame = CGRect(x: (bounds.width - Grip.width) / 2, y: (bounds.height - length) / 2,
+                            width: Grip.width, height: length)
+        pill.cornerRadius = Grip.width / 2
+        seam.frame = CGRect(x: (bounds.width - 1) / 2, y: 0, width: 1, height: bounds.height)
     }
 
     private func light(_ on: Bool) {
         guard hovering != on else { return }
         hovering = on
+        // Only this change moves; the pill keeps still while the window or
+        // the pages are being resized.
+        let still = pill.actions
+        pill.actions = nil
         CATransaction.begin()
         CATransaction.setAnimationDuration(Motion.reduced ? 0 : 0.14)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
         place()
-        line.backgroundColor = (on || dragging ? Palette.NS.muted : Palette.NS.faint).cgColor
+        paint()
         CATransaction.commit()
+        pill.actions = still
     }
 
     override func resetCursorRects() {
@@ -627,8 +811,7 @@ extension PaneStage {
     fileprivate func motion(to next: [Tab], split next2: TabSplit?) -> Move? {
         let old = tabs.map(\.id), new = next.map(\.id)
         defer { dragged = false }
-        guard bounds.width - PaneStage.gutter >= 2 * PaneStage.narrowest, immersed == nil,
-              !next.contains(where: \.immersed) else { return nil }
+        guard bounds.width - PaneStage.gutter >= 2 * PaneStage.narrowest, immersedID == nil else { return nil }
         if old.count == 1, new.count == 2, new.contains(old[0]), let other = new.first(where: { $0 != old[0] }) {
             return .enter(other)
         }
@@ -727,6 +910,10 @@ extension PaneStage {
             view.imageAlignment = .alignTopLeft
             view.wantsLayer = true
             view.layer?.backgroundColor = Palette.NS.ground.cgColor
+            // Moving as a card, when the pages are cards.
+            view.layer?.cornerRadius = corner
+            view.layer?.cornerCurve = .continuous
+            view.layer?.masksToBounds = corner > 0
             addSubview(view, positioned: .below, relativeTo: divider)
             self.pictures.append(view)
             moving.append((view, after[id]))
@@ -802,8 +989,90 @@ extension PaneStage {
 /// pill; a press where the pill isn't goes to the page under it, rather than
 /// to the box, which would have kept the click or carried the window off.
 private final class FindHost: NSHostingView<FindBar> {
+    var pillFrame = CGRect.zero
+
     override func hitTest(_ point: NSPoint) -> NSView? {
+        // Native controls keep their own hits while SwiftUI animates the pill.
         let hit = super.hitTest(point)
-        return hit === self ? nil : hit
+        guard hit === self else { return hit }
+        let inside = convert(point, from: superview)
+        // SwiftUI buttons can be hit on the hosting view itself.
+        return Capsule().path(in: pillFrame).contains(inside) ? hit : nil
+    }
+}
+
+/// A card that places itself by its offset from the page's top-left, in a
+/// host as large as the page. A hosting view centres what it holds: the
+/// card alone, offset from the centre, came out down and to the right of
+/// its box — off the page for a box half way down — and the click meant for
+/// it went to the page. Pinned to the top-left, the offset is from there.
+struct FromTopLeft<Content: View>: View {
+    static var space: String { "PaneStage.card" }
+    let content: Content
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .coordinateSpace(.named(Self.space))
+    }
+}
+
+/// The accounts' box is the whole page, so the list can hang anywhere on it;
+/// the list itself is a small card under the sign-in box. A press on the
+/// card picks an account; anywhere else it is the page's, as if the box
+/// weren't there — the sign-in box itself above all.
+/// The code card's host: as large as the page, but only the card takes a
+/// click; the rest of the page is the page's.
+private final class PairingHost: NSHostingView<FromTopLeft<ApplePairingCard>> {
+    /// The sign-in box, from the page's top-left (Browser.ApplePairing.spot).
+    var spot = CGRect.zero
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let inside = convert(point, from: superview)
+        // Where ApplePairingCard puts itself: under the box, as wide as it
+        // within 240–360, about as tall as its two lines and its field.
+        let card = CGRect(x: spot.minX, y: spot.maxY + 6, width: max(240, min(360, spot.width)), height: 110)
+        return card.contains(inside) ? super.hitTest(point) : nil
+    }
+}
+
+private final class AccountHost: NSHostingView<FromTopLeft<AccountList>> {
+    /// The sign-in box, from the page's top-left (Browser.Suggesting.spot).
+    var spot = CGRect.zero
+    /// Where the card is drawn, from the host's top-left (AccountList.onFrame).
+    var card = CGRect.zero
+    /// The list up now, for the bench.
+    static weak var shown: AccountHost?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { Self.shown = self }
+    }
+
+    // Never the keys' view: a press on a row leaves the caret in the page's
+    // box, as Safari's list does, so no blur of the box can take the list
+    // down under the hand before the row's click is through.
+    override var acceptsFirstResponder: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let inside = convert(point, from: superview)
+        // Only the card, where it really is.
+        return RoundedRectangle(cornerRadius: 10, style: .continuous).path(in: card).contains(inside)
+            ? super.hitTest(point) : nil
+    }
+}
+
+extension PaneStage {
+    /// The account list's card and its host, in the window, from its
+    /// top-left: for the bench, which asks whether the card hangs under the
+    /// box it was drawn for.
+    static func accountCard() -> (card: CGRect, host: CGRect)? {
+        guard let host = AccountHost.shown, let window = host.window, !host.isHidden else { return nil }
+        func top(_ r: CGRect) -> CGRect {
+            let w = host.convert(r, to: nil)
+            return CGRect(x: w.minX, y: window.frame.height - w.maxY, width: w.width, height: w.height)
+        }
+        return (top(host.card), top(host.bounds))
     }
 }

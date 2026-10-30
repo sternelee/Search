@@ -21,6 +21,19 @@ enum Palette {
     /// you are on stands out from them as a live row does from the white.
     static let pinLive = Color(nsColor: NS.pinLive)
     static let hover = Color(nsColor: NS.hover)         // the one under the pointer
+    /// Around the page's card, with the tabs down the side: the column, the
+    /// bookmarks bar and the gaps share it, a touch off the page's white, so
+    /// the card reads as one (see CardEdge).
+    static let frame = Color(nsColor: NS.frame)
+    /// The column's own greys, on that ground: the live tab, the one under the
+    /// pointer, the resting pin squares and the live pin. The white column's
+    /// wash, hover and pinLive all but vanished on it (Drice: the pins' squares
+    /// and the open tab no longer showed), so these keep the same steps of
+    /// contrast from the frame that those kept from the white.
+    static let sideWash = Color(nsColor: NS.sideWash)
+    static let sideHover = Color(nsColor: NS.sideHover)
+    static let sideTile = Color(nsColor: NS.sideTile)
+    static let sidePinLive = Color(nsColor: NS.sidePinLive)
     /// The only two that aren't grey: a connection nobody can read on the
     /// way, and one anybody can (see SiteCard.swift).
     static let safe = Color(nsColor: NS.safe)           // green-700 · green-400
@@ -37,6 +50,11 @@ enum Palette {
         static let wash = pair(0.937, 0.175)
         static let pinLive = pair(0.90, 0.21)
         static let hover = pair(0.965, 0.15)
+        static let frame = pair(0.955, 0.075)
+        static let sideWash = pair(0.895, 0.155)
+        static let sideHover = pair(0.915, 0.13)
+        static let sideTile = pair(0.925, 0.115)
+        static let sidePinLive = pair(0.86, 0.19)
         /// The resting traffic lights, drawn by hand when the app is behind.
         static let resting = pair(0.80, 0.30)
         static let safe = tint(light: (0.08, 0.50, 0.24), dark: (0.29, 0.87, 0.50))
@@ -55,6 +73,34 @@ enum Palette {
                 return NSColor(white: dim ? dark : light, alpha: 1)
             }
         }
+    }
+}
+
+/// The greys of the column's rows, pins and buttons, for the ground they lie
+/// on: the white's (the strip, a panel, the column with the page edge to
+/// edge) or the window's beside the page's card, set by the column for
+/// what is in it (see SideBar.onFrame). Read through the environment, so a
+/// row, a pin or a door is the same view on either ground.
+struct Greys {
+    let wash: Color
+    let hover: Color
+    let tile: Color
+    let pinLive: Color
+
+    static let white = Greys(wash: Palette.wash, hover: Palette.hover,
+                             tile: Palette.wash.opacity(0.55), pinLive: Palette.pinLive)
+    static let frame = Greys(wash: Palette.sideWash, hover: Palette.sideHover,
+                             tile: Palette.sideTile, pinLive: Palette.sidePinLive)
+}
+
+private struct GreysKey: EnvironmentKey {
+    static let defaultValue = Greys.white
+}
+
+extension EnvironmentValues {
+    var greys: Greys {
+        get { self[GreysKey.self] }
+        set { self[GreysKey.self] = newValue }
     }
 }
 
@@ -105,6 +151,11 @@ enum Metrics {
     /// to breathe just leaves it sitting below three buttons it used to line
     /// up with.
     static let strip: CGFloat = 52
+    /// With the tabs down the side the page is a card: this far from the
+    /// window's edges (and from the column, folded away), and its corners
+    /// this round.
+    static let cardGap: CGFloat = 8
+    static let cardRadius: CGFloat = 10
     /// Where the first tab starts. The traffic lights run from 19 to 79 —
     /// measured, not guessed — so this leaves them the same air on their right
     /// that the window gives them on their left.
@@ -114,11 +165,15 @@ enum Metrics {
     static let helm: CGFloat = 3 * 26 + 2 * 2 + 8
     /// The same three doors again, in the sidebar, where they sit right of
     /// the lights instead. The column already has 10 of horizontal padding
-    /// of its own before this even starts, so this is the lights' own edge
-    /// (79) less that padding, plus a sliver of air — not the full breathing
-    /// room a tab row gets, because the sidebar's minimum width doesn't have
-    /// it to give.
-    static let sideLights: CGFloat = 72
+    /// of its own before this even starts. 72 put the back door's box 3
+    /// points from the zoom button and its chevron 12, "a little tight"
+    /// (feedback, 22 Oct 2026): at 80 the chevron is 20 points clear of the
+    /// lights, about the 19 the window leaves on their left, as a toolbar's
+    /// first item sits in Safari. A column too narrow for that gives back
+    /// what it must (SideBar.lights), down to where it was.
+    static let sideLights: CGFloat = 80
+    /// The three doors' own width, without the air after them.
+    static let helmDoors: CGFloat = 3 * 26 + 2 * 4
     /// The band left at the top when there is no strip: just enough for the
     /// traffic lights to sit in, and nothing else.
     static let bare: CGFloat = 34
@@ -144,6 +199,35 @@ enum Metrics {
     static let sideMax: CGFloat = 440
 }
 
+/// The handle on an edge that pulls: the column's, the side panel's and the
+/// one between two pages in Split View. Not a line the edge's whole height —
+/// a short pill in the middle of it, as macOS and iPadOS draw theirs, that
+/// grows a little and darkens under the pointer and while it is held. What
+/// takes the pointer is still the whole edge; only the drawing is small.
+enum Grip {
+    static let width: CGFloat = 4
+    /// Its length at rest, and under the pointer or held.
+    static let rest: CGFloat = 28
+    static let lit: CGFloat = 40
+}
+
+/// The pill itself (see Grip). `resting`: drawn, faint, before the pointer
+/// comes; otherwise it is only there once the pointer is on the edge.
+struct EdgeGrip: View {
+    let lit: Bool
+    var resting = false
+
+    var body: some View {
+        Capsule(style: .continuous)
+            .fill(lit ? Palette.muted : Palette.faint)
+            .frame(width: Grip.width, height: lit ? Grip.lit : Grip.rest)
+            .opacity(lit || resting ? 1 : 0)
+            .animation(Motion.quick, value: lit)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 // One spring for anything that moves between two places, one for anything that
 // arrives or leaves. Using the same two everywhere is most of why a thing feels
 // like a single piece of software rather than a pile of views.
@@ -156,16 +240,53 @@ enum Motion {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
+    /// Whether the Mac is short of power: Low Power Mode is on, or it is hot
+    /// enough that macOS is holding its processors back. Then the two springs
+    /// below become a short ease-out. A spring keeps moving long after it
+    /// looks done: glide takes about 0.5 s to settle, 30 frames that SwiftUI
+    /// works out one by one on the main thread, which is the thread a busy or
+    /// slowed Mac takes time from first, and every frame it misses shows as a
+    /// stutter. 0.16 s is 10 frames, and is over before a missed one shows.
+    /// Read at the moment something moves, so it follows the switch at once.
+    /// Only once it is turned on in Settings › General (Preferences.lightMotion).
+    static var light: Bool {
+        guard Store.settings.bool(forKey: lightKey) else { return false }
+        let info = ProcessInfo.processInfo
+        return info.isLowPowerModeEnabled || info.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+    }
+
+    nonisolated static let lightKey = "motion.light"
+
     static var glide: Animation? {
-        reduced ? nil : .spring(response: 0.34, dampingFraction: 0.82)
+        reduced ? nil : light ? .easeOut(duration: 0.16) : .spring(response: 0.34, dampingFraction: 0.82)
     }
 
     static var settle: Animation? {
-        reduced ? nil : .spring(response: 0.30, dampingFraction: 0.86)
+        reduced ? nil : light ? .easeOut(duration: 0.16) : .spring(response: 0.30, dampingFraction: 0.86)
     }
 
     static var quick: Animation? {
         reduced ? nil : .easeOut(duration: 0.14)
+    }
+
+    /// How far a tab gives while it is pressed (see Give): enough to feel
+    /// under the pointer, about 3 points on a pill and 7 on a column row.
+    static let give: CGFloat = 0.97
+
+    /// The folded column or strip coming out over the page, and going back.
+    /// On glide it was slow both ways, next to Arc and Dia timed frame by
+    /// frame on the same Mac: each slides its sidebar 90% of the way out in
+    /// about 95ms and back in about 70ms, where glide took over 200ms. These
+    /// match them. Going in is damped all the way, since nothing is arriving
+    /// to settle. Fold.slide moves the window's buttons on the same numbers,
+    /// in Core Animation's terms.
+    static func fold(out: Bool) -> (response: Double, damping: Double) {
+        out ? (0.14, 0.86) : (0.13, 1)
+    }
+
+    static func folding(out: Bool) -> Animation? {
+        let spring = fold(out: out)
+        return reduced ? nil : .spring(response: spring.response, dampingFraction: spring.damping)
     }
 }
 
@@ -295,5 +416,59 @@ private struct PopoverGround: ViewModifier {
         } else {
             content.presentationBackground(Palette.ground)
         }
+    }
+}
+
+/// The page as a card in the window, with the tabs down the side: round
+/// corners, a hairline edge and a soft shadow under it. The shadow is drawn
+/// by a shape behind the page, never by the page's own layers, which would
+/// make WebKit's drawing go through it; the page's view is rounded by its own
+/// layer as well (see StageView), since a web view is AppKit's and a clip of
+/// SwiftUI's is not always carried down to it. Two pages side by side are a
+/// card each, drawn by the stage that holds them (see PaneStage).
+struct CardEdge: ViewModifier {
+    let on: Bool
+
+    // One shape of view, on or off: a page whose view were rebuilt as the
+    // card comes and goes (the tabs across the top, a video taking the
+    // screen) would be handed to a new stage just as WebKit takes it to its
+    // full screen window. Off, the clip reaches far past the page and cuts
+    // nothing, and the edge and shadow are clear.
+    func body(content: Content) -> some View {
+        content
+            .clipShape(CardShape(on: on))
+            .background {
+                CardShape(on: on)
+                    .fill(on ? Palette.ground : .clear)
+                    .shadow(color: .black.opacity(on ? CardEdge.shadow : 0), radius: 6, y: 1)
+            }
+            .overlay {
+                CardShape(on: on)
+                    .strokeBorder(Color.primary.opacity(on ? CardEdge.edge : 0), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+    }
+
+    /// How dark the shadow and the edge are, for the stage's own cards too.
+    static let shadow: Double = 0.07
+    static let edge: Double = 0.08
+}
+
+/// The card's outline: round at its corners, or, off, a rectangle reaching
+/// far past the page on every side.
+private struct CardShape: InsettableShape {
+    let on: Bool
+    var inset: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        guard on else { return Path(rect.insetBy(dx: -10_000, dy: -10_000)) }
+        return RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
+            .path(in: rect.insetBy(dx: inset, dy: inset))
+    }
+
+    func inset(by amount: CGFloat) -> CardShape {
+        var shape = self
+        shape.inset += amount
+        return shape
     }
 }

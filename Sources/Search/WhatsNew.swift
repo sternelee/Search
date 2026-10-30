@@ -35,15 +35,33 @@ enum WhatsNew {
         Toggle(title: "AI on pages", detail: "Summarize a page or ask about it. Choose where it runs in Settings › AI.",
                since: "1.0.5", get: { $0.ai }, set: { $0.ai = $1 }),
     ] : []) + [
-        Toggle(title: "Split View", detail: "Two tabs side by side: drag a tab to the edge of a page, or press ⌥⌘N.",
-               since: "1.0.5", get: { $0.splitView }, set: { $0.splitView = $1 }),
-        Toggle(title: "Search a site from the address field", detail: "The start of a site's name, then Tab: red, Tab, and your words search Reddit.",
-               since: "1.0.5", get: { $0.searchesSites }, set: { $0.searchesSites = $1 }),
-        Toggle(title: "Start with a fresh window", detail: "Your pinned tabs, and none of last time's others.",
+        Toggle(title: "Your Apple passwords", detail: "Accounts from Apple's Passwords app under the sign-in field, with a code from your Mac.",
+               since: "1.0.7", get: { $0.applePasswords }, set: { $0.applePasswords = $1 }),
+        Toggle(title: "Ask before quitting", detail: "⌘Q asks first, so a slip doesn't close every window.",
+               since: "1.0.7", get: { $0.confirmsQuit }, set: { $0.confirmsQuit = $1 }),
+        Toggle(title: "Tab numbers while ⌘ is held", detail: "See which tab ⌘1–⌘9 goes to.",
+               since: "1.0.7", get: { $0.showsTabShortcuts }, set: { $0.showsTabShortcuts = $1 }),
+        Toggle(title: "A column of icons only", detail: "The tabs as icons down the side, nothing that grows under the pointer.",
+               since: "1.0.7", get: { $0.sideIcons }, set: { $0.sideIcons = $1 }),
+        Toggle(title: "Escape twice to leave full screen", detail: "One Escape stays with the page, a second leaves full screen.",
+               since: "1.0.7", get: { $0.escapeTwice }, set: { $0.escapeTwice = $1 }),
+
+        Toggle(title: "Suggestions from your search engine", detail: "Searches suggested as you type. What you type is sent to your engine; never from a private tab.",
+               since: "1.0.6", get: { $0.engineSuggests }, set: { $0.engineSuggests = $1 }),
+        Toggle(title: "Pins keep their site", detail: "Links elsewhere open in a peek, and ⌘W takes a pin back to its page, as in Arc.",
+               since: "1.0.6", get: { $0.pinsKeepSite }, set: { $0.pinsKeepSite = $1 }),
+        Toggle(title: "Darken light pages", detail: "While Search is dark, pages with no dark look of their own are darkened.",
+               since: "1.0.6", get: { $0.darkensPages }, set: { $0.darkensPages = $1 }),
+        Toggle(title: "Roomier tabs", detail: "Taller rows and larger titles in the sidebar.",
+               since: "1.0.6", get: { $0.roomyTabs }, set: { $0.roomyTabs = $1 }),
+        Toggle(title: "New tab in a floating field", detail: "⌘T raises the address field over the page you are on, as in Arc.",
+               since: "1.0.6", get: { $0.floatingNewTab }, set: { $0.floatingNewTab = $1 }),
+
+        Toggle(title: "Pinned rows", detail: "Pins as rows with their names, under the squares, as in Arc. Right-click a tab to pin it as a row.",
+               since: "1.0.5", get: { $0.listsPins }, set: { $0.listsPins = $1 }),
+        Toggle(title: "Start with a fresh window", detail: "Your pinned tabs, tab groups and named tabs, and none of last time's others.",
                since: "1.0.5", get: { $0.startsFresh }, set: { $0.startsFresh = $1 }),
 
-        Toggle(title: "Tab groups", detail: "Named sections of tabs. Right-click a tab to start one.",
-               since: "1.0.4", get: { $0.usesTabGroups }, set: { $0.usesTabGroups = $1 }),
         Toggle(title: "Sidebar on the right", detail: "The tabs down the right edge of the window.",
                since: "1.0.4", get: { $0.sidebar && $0.sidePosition == .right },
                set: { prefs, on in
@@ -66,14 +84,17 @@ enum WhatsNew {
         Toggle(title: "Bookmarks bar", detail: "Your bookmarks in a row above the page.",
                since: "1.0.2", get: { $0.bookmarksBar }, set: { $0.bookmarksBar = $1 }),
         Toggle(title: "Float the video when you switch apps", detail: "A playing video follows you out into a small window.",
-               since: "1.0.2", get: { $0.floatsAway }, set: { $0.floatsAway = $1 }),
+               since: "1.0.2", get: { $0.floatsAway }, set: { prefs, on in if on { prefs.floatOwn = .tabsOrApps } else { prefs.floatsAway = false } }),
         Toggle(title: "Pages at 120 Hz", detail: "Smoother scrolling and animations on screens that can. Uses more battery.",
-               since: "1.0.2", get: { $0.fastPages }, set: { $0.fastPages = $1 }),
+               since: "1.0.2", get: { $0.fastPages != .never }, set: { $0.fastPages = $1 ? .onPower : .never }),
         Toggle(title: "Scroll with the middle button", detail: "Click the wheel, then move the mouse to scroll, as on Windows.",
                since: "1.0.3", get: { $0.autoScroll }, set: { $0.autoScroll = $1 }),
     ]
 
     static let releases: [Release] = [
+        Release(version: "1.0.7"),
+        Release(version: "1.0.6"),
+        Release(version: "1.0.5"),
         Release(version: "1.0.4"),
     ]
 
@@ -123,6 +144,113 @@ enum WhatsNew {
 
     /// Newest first.
     static let notes: [Notes] = [
+        Notes(
+            version: "1.0.7", date: "25 October 2026",
+            headline: "Settings as a page, profiles, page translation, Apple Passwords and YouTube without ads.",
+            new: [
+                "Settings, History, Downloads, Bookmarks and Passwords open as pages in tabs of their own; Settings is sorted into sections with ⌘F to find a setting.",
+                "Profiles: each keeps its own spaces, sign-ins, history and bookmarks, one per window.",
+                "Translate a page on your Mac, from its right-click menu; nothing is sent anywhere.",
+                "Your passwords from Apple's Passwords app, under the sign-in field.",
+                "Shield blocks YouTube's ads.",
+                "The tab you're on shows its site; plain http and look-alike names always show.",
+                "A site in the side panel, a column of icons only, ask before quitting, tab numbers while ⌘ is held.",
+                "Copy Clean Link, Fold All Groups, Move Group to Space, ⌃Tab on a key of your own, Open 2 Tabs in Split View.",
+            ],
+            better: [
+                "Fewer switches: Split View, tab groups and more are simply there; pins keep their site by default.",
+                "Drag tabs onto the pins and pins back among the tabs; small handles on the edges you resize.",
+                "A call keeps its camera and sound when you switch tabs.",
+                "Reading mode keeps pictures and charts and follows light and dark.",
+            ],
+            fixed: [
+                "Saved accounts show under the sign-in field again, and only in real sign-in fields.",
+                "Sites you allow get your location; links to other folders' files open.",
+                "Norma's and other extensions' block pages show; an extension's rules no longer blank pages.",
+                "And many more, most from your messages and pull requests.",
+            ]
+        ),
+        Notes(
+            version: "1.0.6", date: "24 October 2026",
+            headline: "A side panel, blocked pop-ups you can open, and a month of your fixes. What's new is off until you turn it on, and the card after the update offers it.",
+            new: [
+                "An extension's side panel, as in Chrome: Claude's, ChatGPT's or Sider's panel opens beside the page instead of in a tab.",
+                "A pop-up refused because no click asked for it says so beside the tab's title, with Open and Always Allow, as in Safari.",
+                "Suggestions from your search engine as you type, never from a private tab.",
+                "Extensions in private tabs, each with its own switch in Settings › Extensions.",
+                "Pins go back home and keep their site, with links elsewhere in a peek; pins can sit above every space.",
+                "Tabs can close themselves after a while, and chosen sites can stay awake.",
+                "⇧⌘W closes the window, the mouse's side buttons change space, and media keys reach the page.",
+                "New tabs at the top or the bottom, a floating ⌘T, roomier tabs, and light pages darkened in dark mode.",
+                "Select several tabs with ⌘- or ⇧-click, export a page as a PDF, and Open With from the Finder.",
+            ],
+            better: [
+                "The page as a card can be turned off, and full screen goes edge to edge.",
+                "Leaving a video's full screen happens in one move.",
+                "Pins in spaces you aren't in sleep and give their memory back.",
+                "A bookmark opens in a tab of its own, never in a pin's place.",
+                "Claude in Chrome signs in, and signs in again quietly each time Search starts.",
+                "Stylus and Vimium C work.",
+            ],
+            fixed: [
+                "A pop-up rewritten by the page that opened it is no longer offered that site's saved passwords.",
+                "Sites you allow to know your location get it.",
+                "Start with a fresh window keeps your tab groups and named tabs.",
+                "A Gmail link opens one tab, not two.",
+                "A video file opened as a page plays.",
+                "Links between files on your Mac open, and links in AI chats' answers too.",
+                "Saved accounts show with Split View on.",
+                "Dragging a tab across the top moves the tab, not the window.",
+                "And many more, most from your messages and pull requests.",
+            ]
+        ),
+        Notes(
+            version: "1.0.5", date: "14 October 2026",
+            headline: "Split View, pinned rows, notifications and screen recorders. What's new is off until you turn it on, and the card after the update offers it.",
+            new: [
+                "With the tabs down the side, the page sits in the window as a card, a little apart from the column.",
+                "Split View: two tabs side by side. Drag a tab to the left or right edge of a page, choose Open in Split View in its menu, or press ⌥⌘N.",
+                "Pinned rows, as in Arc: a pin can be a row with its name, under the squares, and Clear closes the tabs below.",
+                "Websites can send notifications and ask for your location, as in Safari, site by site.",
+                "Loom and other screen recorders work: macOS asks what to share each time, and a pill says who is recording, with Stop.",
+                "Search a site straight from the address field, as in Arc: type its name, then Tab.",
+                "Passkeys show under the sign-in field, beside your saved passwords.",
+                "Sign-ins that ask for your name first, or for a password alone, offer your saved accounts too.",
+                "Your Mac's text replacements work in pages, and Edit › Substitutions turns them, smart quotes and smart dashes on or off.",
+                "Find says “3 of 17”, paints every match, and can match case or whole words.",
+                "Downloads pause and resume.",
+                "Open Link in New Tab leaves you where you are; hold ⌥ to go to it.",
+                "Search can start with a fresh window: your pinned tabs, tab groups and named tabs, and none of last time's others.",
+                "Intel Macs get a download of their own.",
+            ],
+            better: [
+                "Search is built for size, so all of this fits in 6.8 MB, and pages that change all the time, like a chat writing its answer, stay quick.",
+                "An extension's popup window opens as a small window, as in Chrome: a password manager's vault, a sign-in.",
+                "Esc closes a new tab you haven't used, and words typed into a new tab wait for you.",
+                "Tampermonkey installs scripts from a link, and SingleFile saves pages again.",
+                "Close Group in a tab group's menu, and one ⇧⌘T brings the whole group back.",
+                "Don't Float Videos Here, in a site's card.",
+                "Bringing Arc over keeps its shape: pinned pages as pinned rows, its folders as named tab groups.",
+                "Too many pinned extensions no longer push the column off screen.",
+                "Empty a bookmark's name and it is its icon alone on the bookmarks bar.",
+            ],
+            fixed: [
+                "A live video, on X and elsewhere, no longer jumps every few seconds.",
+                "A site's icon follows the page: GitHub's in the dark, a chat's unread count, and each port of localhost its own.",
+                "Pins brought over from Arc wear their icons straight away.",
+                "The tabs come back after a video's full screen.",
+                "A folder in the bookmarks list opens whole.",
+                "Signing in with a passkey works on GitHub again.",
+                "Bitwarden's passkey window, its sync and its narrow popup.",
+                "Keys in games no longer make the Mac beep.",
+                "History keeps localhost:3000 and localhost:4000 apart.",
+                "Copy Image works on WhatsApp Web's photos.",
+                "Signing in to Claude's extension finishes on claude.ai.",
+                "The Bookmarks menu keeps its bookmarks while a tab's title keeps changing.",
+                "Popovers keep their rounded corners on macOS 15.",
+                "Security hardening from a third careful private report, and many smaller fixes.",
+            ]
+        ),
         Notes(
             version: "1.0.4", date: "27 September 2026",
             headline: "Several windows, and a lot to discover. Most of what's new is off until you turn it on, and the card after the update offers it.",
@@ -310,7 +438,7 @@ struct ReleaseNotesPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
             }
-            .frame(maxHeight: 480)
+            .listHeight(480)
         }
     }
 
