@@ -16,13 +16,26 @@ struct Bookmark: Codable, Identifiable, Hashable {
 
     var isFolder: Bool { url == nil }
 
+    /// A bookmark whose name was emptied, as in Chrome and Safari: on the
+    /// bar it is its icon alone. There is no setting; emptying it is the
+    /// choice. A folder always has a name.
+    var unnamed: Bool {
+        !isFolder && title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// What a list reads it as: its name, or for one without, its address
+    /// as the address field shows it, so the list is still readable.
+    var label: String {
+        guard unnamed else { return title }
+        return url.flatMap { URL(string: $0) }.map(Address.pretty) ?? url ?? ""
+    }
+
     var host: String? {
         url.flatMap { URL(string: $0)?.host()?.lowercased() }
     }
 
-    /// Its site, as its icon is kept: the host, and the port when there is one.
-    var site: String? {
-        url.flatMap { URL(string: $0) }.flatMap(Favicons.site)
+    var address: URL? {
+        url.flatMap { URL(string: $0) }
     }
 
     static func site(_ title: String, _ url: URL) -> Bookmark {
@@ -41,6 +54,7 @@ final class Bookmarks: ObservableObject {
             revision &+= 1
             kept = preparedKept ?? Set(Bookmarks.urls(roots).map(\.absoluteString))
             preparedKept = nil
+            sites = nil
         }
     }
     private var revision = 0
@@ -50,7 +64,22 @@ final class Bookmarks: ObservableObject {
     /// button, which fills in on a page that is kept.
     private var kept: Set<String> = []
 
-    init() { load() }
+    /// Its file: bookmarks.json for Personal, one of its own for each other
+    /// profile (see Profiles.swift).
+    private let fileName: String
+    /// Its profile deleted: nothing more is written.
+    private var retired = false
+
+    init(file: String = "bookmarks.json") {
+        fileName = file
+        load()
+    }
+
+    /// Its profile deleted: its file removed, and nothing written again.
+    func retire() {
+        retired = true
+        Disk.remove(file)
+    }
 
     var isEmpty: Bool { roots.isEmpty }
 
@@ -92,6 +121,67 @@ final class Bookmarks: ObservableObject {
             }
         }
         return walk(roots, [])
+    }
+
+    // MARK: - in the address field
+
+    /// A site as the address field looks for it: its name and its address,
+    /// lowercased once, the address without its scheme or www, as the field
+    /// matches history (History.stripped).
+    private struct Site {
+        /// As it reads in the list.
+        let name: String
+        let title: String
+        let address: String
+        let url: URL
+    }
+
+    /// Every site, folders opened, made once after each change of the list
+    /// and kept: the field asks on every key, and walking a tree of a few
+    /// thousand imported bookmarks to lowercase each again was work thrown
+    /// away each time.
+    private var sites: [Site]?
+
+    /// The sites for what is typed in the address field, the best `limit`
+    /// first: every word, in any order, in the name or the address. Kept to
+    /// two letters and more: one letter is in nearly every name, and the
+    /// field finishes a single letter only towards a site you have been to.
+    func places(for typed: String, limit: Int) -> [Suggestion] {
+        let needle = typed.trimmingCharacters(in: .whitespaces).lowercased()
+        let words = needle.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard needle.count >= 2, let first = words.first else { return [] }
+        let bare = History.stripped(needle)
+        if sites == nil {
+            sites = Bookmarks.sites(roots)
+        }
+        // The address starting with what was typed first, then the name,
+        // then a word anywhere; among equals, the shorter address.
+        var best: [(site: Site, score: Int)] = []
+        for site in sites ?? [] {
+            guard words.allSatisfy({ site.title.contains($0) || site.address.contains($0) }) else { continue }
+            let score = site.address.hasPrefix(bare) ? 3
+                : site.title.hasPrefix(needle) || site.title.split(separator: " ").contains(where: { $0.hasPrefix(first) }) ? 2
+                : 1
+            let at = best.firstIndex {
+                score > $0.score || (score == $0.score && site.address.count < $0.site.address.count)
+            } ?? best.endIndex
+            guard at < limit else { continue }
+            best.insert((site, score), at: at)
+            if best.count > limit { best.removeLast() }
+        }
+        return best.map { found in
+            Suggestion(key: Address.editable(found.site.url), title: found.site.name, url: found.site.url, kind: .bookmark)
+        }
+    }
+
+    private static func sites(_ nodes: [Bookmark]) -> [Site] {
+        nodes.flatMap { node -> [Site] in
+            if node.isFolder { return sites(node.children ?? []) }
+            // Only places to go: a bookmarklet's javascript: is no address.
+            guard let url = node.address, ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else { return [] }
+            let title = node.unnamed ? "" : node.title
+            return [Site(name: title, title: title.lowercased(), address: History.stripped(url.absoluteString), url: url)]
+        }
     }
 
     /// The folders `id` sits in, outermost first; empty at the top level,
@@ -239,7 +329,7 @@ final class Bookmarks: ObservableObject {
 
     /// `id` is `node` itself, or somewhere inside it — also used by the
     /// outline to keep a folder out of its own "move to" list.
-    fileprivate static func holds(_ id: Bookmark.ID, _ node: Bookmark) -> Bool {
+    static func holds(_ id: Bookmark.ID, _ node: Bookmark) -> Bool {
         node.id == id || (node.children ?? []).contains { holds(id, $0) }
     }
 
@@ -420,7 +510,7 @@ final class Bookmarks: ObservableObject {
                 } else {
                     folders[node.title] = nodes.count
                     nodes.append(node)
-                    added += try fileCount([node], control: control)
+                    added += try Bookmarks.fileCount([node], control: control)
                 }
             } else if pages.contains(node.url ?? "") {
                 already += 1
@@ -483,7 +573,7 @@ final class Bookmarks: ObservableObject {
 
     // MARK: - the file
 
-    private static var file: URL { Store.file("bookmarks.json") }
+    private var file: URL { Store.file(fileName) }
 
     // MARK: - for extensions
 
@@ -524,6 +614,40 @@ final class Bookmarks: ObservableObject {
         }
     }
 
+    /// A name of your own for a bookmark or a folder, asked for the way a
+    /// space's is: the page's title is what a bookmark starts with, and a
+    /// folder brought in from another browser is called after it. The name
+    /// it has arrives in the field. An empty one changes nothing for a
+    /// folder; a bookmark left without one is its icon alone on the bar.
+    func askRename(_ node: Bookmark) {
+        if node.isFolder {
+            Ask.name("Rename Folder", placeholder: node.title, initial: node.title, confirm: "Rename") {
+                self.update(node.id, title: $0, url: nil)
+            }
+        } else {
+            Ask.name("Rename Bookmark", detail: "Without a name, the bookmarks bar shows its icon alone.",
+                     placeholder: node.label, initial: node.title, confirm: "Rename", empty: true) {
+                self.update(node.id, title: $0, url: nil)
+            }
+        }
+    }
+
+    /// A bookmark's address, changed by hand and read the way the address
+    /// field reads what is typed. What that refuses, a bookmarklet or a
+    /// word, isn't saved: the question comes back with it in the field and a
+    /// line on why, and Cancel keeps the address the bookmark had.
+    func askAddress(_ node: Bookmark, typed: String? = nil) {
+        guard let current = node.url else { return }
+        let detail = typed.map { "Search can\u{2019}t open \u{201C}\($0)\u{201D} as a page. Cancel keeps the address the bookmark has." }
+        Ask.name("Edit Address", detail: detail, placeholder: "https://example.com", initial: typed ?? current, confirm: "Save") { typed in
+            guard let url = Address.url(from: typed) else {
+                DispatchQueue.main.async { self.askAddress(node, typed: typed) }
+                return
+            }
+            self.update(node.id, title: nil, url: url.absoluteString)
+        }
+    }
+
     /// A new title or address for one that is kept. chrome.bookmarks.update,
     /// and Rename… in the list's right-click menu.
     func update(_ id: Bookmark.ID, title: String?, url: String?) {
@@ -550,18 +674,19 @@ final class Bookmarks: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: Bookmarks.file) else { return }
+        guard let data = try? Data(contentsOf: file) else { return }
         guard let list = try? JSONDecoder().decode([Bookmark].self, from: data) else {
-            Store.quarantine(Bookmarks.file)
+            Store.quarantine(file)
             return
         }
         roots = list
     }
 
     private func save() {
+        guard !retired else { return }
         let snapshot = roots
         // One after another, the newest last (see Disk).
-        Disk.write(Bookmarks.file) { try? JSONEncoder().encode(snapshot) }
+        Disk.write(file) { try? JSONEncoder().encode(snapshot) }
     }
 }
 
@@ -629,7 +754,7 @@ struct BookmarkOutline: View {
                 toggle: node.isFolder ? { toggle(node.id) } : nil,
                 moveTargets: Bookmarks.folders(bookmarks.roots).filter { !Bookmarks.holds($0.node.id, node) },
                 moveTo: { bookmarks.move(node.id, into: $0) },
-                rename: { rename(node) },
+                rename: { bookmarks.askRename(node) },
                 newFolder: node.isFolder ? {
                     bookmarks.askNewFolder(in: node.id) { _ in expanded.insert(node.id) }
                 } : nil,
@@ -692,16 +817,6 @@ struct BookmarkOutline: View {
 
     private func toggle(_ id: Bookmark.ID) {
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
-    }
-
-    /// A name of your own for a bookmark or a folder, asked for the way a
-    /// space's is: the page's title is what a bookmark starts with, and a
-    /// folder brought in from another browser is called after it. The name
-    /// it has arrives in the field; an empty one changes nothing.
-    private func rename(_ node: Bookmark) {
-        Ask.name(node.isFolder ? "Rename Folder" : "Rename Bookmark", placeholder: node.title, initial: node.title, confirm: "Rename") {
-            bookmarks.update(node.id, title: $0, url: nil)
-        }
     }
 
     /// A folder can't go above, below or into anything inside itself.
@@ -857,11 +972,12 @@ struct BookmarkOutline: View {
                         )
                 } else {
                     if arrows { Spacer().frame(width: 10) }
-                    Mark(icon: Favicons.shared.cached(node.site ?? ""), letter: String((node.host ?? "•").prefix(1)).uppercased(), size: 15)
+                    Mark(icon: Favicons.shared.cached(for: node.address), letter: String((node.host ?? "•").prefix(1)).uppercased(), size: 15)
                 }
-                Text(node.title)
+                // One without a name reads as its address, a shade lighter.
+                Text(node.label)
                     .font(.system(size: 12.5))
-                    .foregroundStyle(Palette.ink)
+                    .foregroundStyle(node.unnamed ? Palette.muted : Palette.ink)
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 if node.isFolder, let kids = node.children, !kids.isEmpty {
@@ -981,7 +1097,8 @@ struct BookmarkCard: View {
 
             VStack(spacing: 8) {
                 line("Name") {
-                    TextField("", text: $title)
+                    // Emptied, the field shows what the lists will read.
+                    TextField(bookmarks.bookmark(id)?.url.flatMap(URL.init(string:)).map(Address.pretty) ?? "", text: $title)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
                         .foregroundStyle(Palette.ink)
@@ -1070,10 +1187,16 @@ struct BookmarkCard: View {
         }
     }
 
-    /// An empty name keeps the one it had.
+    /// An empty name is kept as empty: the bookmarks bar then shows the
+    /// bookmark's icon alone, as Chrome's and Safari's do.
     private func rename(_ typed: String) {
+        BookmarkCard.rename(id, typed, in: bookmarks)
+    }
+
+    /// The same, for the bench.
+    static func rename(_ id: Bookmark.ID, _ typed: String, in bookmarks: Bookmarks) {
         let name = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != bookmarks.bookmark(id)?.title else { return }
+        guard name != bookmarks.bookmark(id)?.title else { return }
         bookmarks.update(id, title: name, url: nil)
     }
 
@@ -1229,7 +1352,7 @@ struct BookmarksPanel: View {
                             }
                             .padding(.bottom, 2)
                         }
-                        .frame(maxHeight: 440)
+                        .listHeight(440)
                         // A bookmark found is shown where it lives, which
                         // may be below what shows. This list is only made
                         // as the search is cleared for it, with the row to
@@ -1248,10 +1371,7 @@ struct BookmarksPanel: View {
                 Text("Bring in from")
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.muted)
-                Pill("Bring in…") {
-                    browser.bookmarking = false
-                    browser.bringingIn = ""
-                }
+                Pill("Bring in…") { browser.lead(to: InternalPage(.importing)) }
                 Pill("File…") { browser.importFile() }
                 Spacer()
                 Pill("New Folder…") { bookmarks.askNewFolder(in: nil) }
@@ -1286,7 +1406,7 @@ struct BookmarksPanel: View {
                 }
                 .padding(.bottom, 2)
             }
-            .frame(maxHeight: 440)
+            .listHeight(440)
         }
     }
 
@@ -1325,12 +1445,12 @@ struct BookmarksPanel: View {
                     Mark(icon: nil, letter: "", size: 16)
                         .overlay(Image(systemName: "folder.fill").font(.system(size: 9.5)).foregroundStyle(Palette.muted))
                 } else {
-                    Mark(icon: Favicons.shared.cached(node.site ?? ""), letter: String((node.host ?? "•").prefix(1)).uppercased(), size: 16)
+                    Mark(icon: Favicons.shared.cached(for: node.address), letter: String((node.host ?? "•").prefix(1)).uppercased(), size: 16)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(node.title)
+                    Text(node.label)
                         .font(.system(size: 13))
-                        .foregroundStyle(Palette.ink)
+                        .foregroundStyle(node.unnamed ? Palette.muted : Palette.ink)
                         .lineLimit(1)
                     Text(whereabouts)
                         .font(.system(size: 11.5))
@@ -1422,6 +1542,9 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
 
     private var menu: NSMenu? { NSApp.mainMenu?.items.first(where: { $0.title == "Bookmarks" })?.submenu }
 
+    /// The window in front's: its profile's bookmarks (see Profiles.swift).
+    private var shown: Browser? { Browsers.front.flatMap { !$0.isPopup ? $0 : nil } ?? browser }
+
     /// Looks, while the menu is open, after each turn of the run loop.
     private var looking: CFRunLoopObserver?
 
@@ -1472,7 +1595,7 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
     private func fill(_ menu: NSMenu) {
         for item in menu.items where item.tag == Self.mark { menu.removeItem(item) }
         folders = [:]
-        guard let roots = browser?.bookmarks.roots, !roots.isEmpty else { return }
+        guard let roots = shown?.bookmarks.roots, !roots.isEmpty else { return }
         let line = NSMenuItem.separator()
         line.tag = Self.mark
         menu.addItem(line)
@@ -1504,15 +1627,21 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
                 folders[ObjectIdentifier(sub)] = node.children ?? []
                 item.submenu = sub
             } else if let text = node.url, let url = URL(string: text) {
-                item = NSMenuItem(title: node.title, action: #selector(open(_:)), keyEquivalent: "")
+                // One without a name reads as its address here.
+                item = NSMenuItem(title: node.label, action: #selector(open(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = url
                 // The site's icon, as the bar wears it: a folder opened from
-                // the bar, or the Bookmarks menu, had none (idea 183).
-                if let icon = Favicons.shared.cached(node.site ?? "") {
+                // the bar, or the Bookmarks menu, had none (idea 183). A site
+                // whose icon isn't kept yet (brought in, never visited) wears
+                // the bar's letter in its place, rather than nothing and its
+                // title out of line with the others'.
+                if let icon = Favicons.shared.cached(for: node.address) {
                     let small = icon.copy() as? NSImage ?? icon
                     small.size = NSSize(width: 16, height: 16)
                     item.image = small
+                } else {
+                    item.image = BookmarkMenu.letter(String((node.host ?? "•").prefix(1)).uppercased())
                 }
             } else {
                 return nil
@@ -1520,6 +1649,36 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
             item.tag = Self.mark
             return item
         }
+    }
+
+    /// The bar's Mark with no icon, for a menu: the letter, muted, on a
+    /// faint square, drawn as the menu draws so it follows light and dark.
+    private static func letter(_ letter: String) -> NSImage {
+        let size: CGFloat = 16
+        return NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            Palette.NS.ink.withAlphaComponent(0.06).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: size * 0.22, yRadius: size * 0.22).fill()
+            let text = NSAttributedString(string: letter, attributes: [
+                .font: NSFont.systemFont(ofSize: size * 0.56, weight: .medium),
+                .foregroundColor: Palette.NS.muted,
+            ])
+            let drawn = text.size()
+            text.draw(at: NSPoint(x: rect.midX - drawn.width / 2, y: rect.midY - drawn.height / 2))
+            return true
+        }
+    }
+
+    /// What a folder of the bar holds as its menu: every item, its folders
+    /// opened as a click would, deepest last. For the bench.
+    func walk(_ folder: Bookmark) -> [(depth: Int, item: NSMenuItem)] {
+        func down(_ items: [NSMenuItem], _ depth: Int) -> [(depth: Int, item: NSMenuItem)] {
+            items.flatMap { item -> [(depth: Int, item: NSMenuItem)] in
+                guard let sub = item.submenu else { return [(depth, item)] }
+                menuNeedsUpdate(sub)
+                return [(depth, item)] + down(sub.items, depth + 1)
+            }
+        }
+        return down(items(for: folder.children ?? []), 0)
     }
 
     /// A folder, opening.
@@ -1537,7 +1696,7 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
 
     @objc private func open(_ item: NSMenuItem) {
         guard let url = item.representedObject as? URL else { return }
-        browser?.visit(url)
+        shown?.openBookmark(url)
     }
 
     /// SwiftUI's delegate, with the bookmarks put in after its update.

@@ -26,6 +26,8 @@ struct WelcomePanel: View {
     @State private var isDefault = Links.isDefault
     @State private var asked = false
 
+    private var importsPasswords: Bool { (source ?? ImportSource.installed().first)?.importsPasswords ?? false }
+
     private let pages = 4
 
     var body: some View {
@@ -83,12 +85,12 @@ struct WelcomePanel: View {
             let sources = ImportSource.installed()
             let unreadable = Chromium.unreadable()
             if sources.isEmpty {
-                Text(unreadable.isEmpty
-                     ? "No other browser found on this Mac — nothing to bring."
-                     : unreadable.map { "\($0.source.name) is on this Mac, but nothing of it was found in \($0.looked)." }.joined(separator: "\n"))
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.faint)
-                    .fixedSize(horizontal: false, vertical: true)
+                if unreadable.isEmpty {
+                    Text("No other browser found on this Mac — nothing to bring.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Palette.faint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     if sources.count > 1 {
@@ -101,14 +103,19 @@ struct WelcomePanel: View {
                             .font(.system(size: 13))
                             .foregroundStyle(Palette.muted)
                     }
-                    Choice("Passwords", "macOS will ask once for that browser's keychain key", on: $wantsPasswords)
+                    if importsPasswords {
+                        Choice("Passwords", "macOS will ask once for that browser's keychain key", on: $wantsPasswords)
+                    } else {
+                        Text("Passwords from \((source ?? sources[0]).name) aren't supported yet.")
+                            .font(.system(size: 13)).foregroundStyle(Palette.muted)
+                    }
                     Choice("Bookmarks", "Folders and all, behind the bookmark button", on: $wantsBookmarks)
                     Choice("History", "The last few thousand places, for finishing addresses", on: $wantsHistory)
                 }
 
                 HStack(spacing: 12) {
                     Big(bringing ? "Bringing…" : "Bring them in", filled: true) { bringAll() }
-                        .disabled(bringing || brought != nil || !(wantsPasswords || wantsHistory || wantsBookmarks))
+                        .disabled(bringing || brought != nil || !((importsPasswords && wantsPasswords) || wantsHistory || wantsBookmarks))
                     if bringing { Ring(size: 10) }
                     if let brought {
                         Text(brought)
@@ -118,6 +125,13 @@ struct WelcomePanel: View {
                     }
                 }
                 .animation(Motion.settle, value: brought)
+            }
+
+            if !unreadable.isEmpty {
+                Text(unreadable.map(\.message).joined(separator: "\n"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.faint)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             // Safari, a browser on another Mac, one Search can't read: what
@@ -181,10 +195,20 @@ struct WelcomePanel: View {
                     .padding(.top, 6)
                 Key("⌘T", "A new tab. Type a place, or words to search.")
                 Key("⌘K", "Every open tab, by name.")
-                Key("⌘,", "Settings, including passwords and updates.")
-                Key("⌃1", "Spaces: separate tabs and sign-ins. Turn them on in Settings › Tabs.")
-                Key("⌥⌘N", "Split a page in two; ⌃⌘← and ⌃⌘→ go from one page to the other. Turn Split View on in Settings › Tabs.")
-                Key("⌘O", "Links from other apps can open in a small window. Settings › General.")
+                Key("⌘,", "Settings, including passwords and updates. ⌘F there finds any setting.")
+                Key("⌃1", "Spaces: separate tabs and sign-ins. Turn them on in Settings › Spaces & Pins, or Set Up Like Arc there.")
+                Key("⌥⌘N", "Split a page in two, or drag a tab onto a page; ⌃⌘← and ⌃⌘→ go from one page to the other.")
+                Key("⌘O", "Links from other apps can open in a small window. Settings › Browsing.")
+                Key("⌘L", "Suggestions from your search engine as you type — off until you turn them on in Settings › Browsing.")
+                Key("⌘", "Held, it can show each tab's number for ⌘1–9. Settings › Tabs.")
+                Key("⌘1", "Pressed again on its pin, back to where you were.")
+                Key("⇧⌘P", "Float a video in Search's window, or in macOS's picture in picture. Settings › Browsing.")
+                Key("⌃-click", "Claude or ChatGPT in a side panel beside the page: right-click a tab › Open in Side Panel, or View › Side Panel.")
+                Key("⌘Q", "Search can ask before it quits. Settings › General.")
+                Key("⌘,", "Your Apple passwords, under the sign-in field — Settings › Passwords.")
+                if PageTranslator.available {
+                    Key("⌃-click", "Translate a page into your language, on this Mac — nothing is sent anywhere. Right-click the page › Translate Page.")
+                }
                 if AI.shipped {
                     Key("⌘,", "AI summaries and questions about a page — off until you turn it on in Settings › AI.")
                 }
@@ -234,7 +258,7 @@ struct WelcomePanel: View {
         bringing = true
         var lines: [String] = []
         let group = DispatchGroup()
-        if wantsPasswords {
+        if wantsPasswords && source.importsPasswords {
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
                 let outcome = Result { try source.read(profile: profile) }
@@ -243,7 +267,7 @@ struct WelcomePanel: View {
                     case .success(let found):
                         let kept = browser.keep(found)
                         ImportRecords.note(source.name, passwords: kept)
-                        lines.append("\(kept) passwords")
+                        lines.append("\(kept) passwords" + (found.undecrypted > 0 ? " (\(found.undecrypted) couldn't be decrypted)" : ""))
                     case .failure(Chromium.Trouble.noPassphrase):
                         lines.append("passwords: macOS didn't hand over the key — allow it and try again")
                     case .failure(Mozilla.Trouble.primaryPassword):

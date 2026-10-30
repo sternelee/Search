@@ -1,190 +1,236 @@
-import SwiftUI
+import Foundation
 import XCTest
 @testable import Search
 
-// The agent's answer in markdown, split to its blocks and read to its
-// inline marks (see Markdown.swift): the blocks the model writes — a
-// heading, a list, a code block, paragraphs — each named for what it
-// is, and the marks inside a paragraph — bold, italic, code, links —
-// parsed by the system's own reader, not by hand.
-
-@MainActor
 final class MarkdownTests: XCTestCase {
-    override class func setUp() {
-        setenv("SEARCH_PROBE", "markdown-\(getpid())", 1)
-        super.setUp()
+    private let base = URL(string: "https://docs.example.test/guide/start.md")
+
+    private func html(_ text: String) -> String {
+        Markdown.page(text, base: base).html
     }
 
-    // MARK: - the blocks
+    // MARK: - the title
 
-    func testParagraphsSplitOnBlankLines() {
-        let blocks = markdownBlocks(of: "One paragraph\nover two lines.\n\nAnother.")
-        XCTAssertEqual(blocks.count, 2)
-        XCTAssertEqual(blocks[0].words, "One paragraph\nover two lines.")
-        XCTAssertEqual(blocks[1].words, "Another.")
+    func testFirstHeadingBecomesTheTitleAndLeavesTheBody() {
+        let page = Markdown.page("# Getting *started*\n\nHello.", base: base)
+        XCTAssertEqual(page.title, "Getting started")
+        XCTAssertEqual(page.html, "<p>Hello.</p>")
     }
 
-    func testHeadingsAreNamedAndLevelled() {
-        let blocks = markdownBlocks(of: "# A title\n\n## A smaller one\n\nWords.")
-        XCTAssertEqual(blocks.count, 3)
-        XCTAssertEqual(blocks[0].kind, .heading(level: 1))
-        XCTAssertEqual(blocks[0].words, "A title")
-        XCTAssertEqual(blocks[1].kind, .heading(level: 2))
-        XCTAssertEqual(blocks[1].words, "A smaller one")
-        XCTAssertEqual(blocks[2].kind, .paragraph)
+    func testHeadingBelowASectionIsNotTheTitle() {
+        let page = Markdown.page("## Setup\n\n# Later\n", base: base)
+        XCTAssertNil(page.title)
+        XCTAssertTrue(page.html.contains("<h1 id=\"later\">Later</h1>"))
     }
 
-    func testBulletsSplitToItems() {
-        let blocks = markdownBlocks(of: "A list:\n\n- one\n- two\n\n* a star\n\n1. a number\n2. another")
-        let kinds = blocks.map(\.kind)
-        XCTAssertEqual(kinds, [.paragraph, .bullet, .bullet, .bullet, .bullet, .bullet])
-        XCTAssertEqual(blocks[1].words, "one")
-        XCTAssertEqual(blocks[3].words, "a star")
-        XCTAssertEqual(blocks[4].words, "a number")
+    func testFrontMatterGivesTheTitleAndIsNotShown() {
+        let page = Markdown.page("---\ntitle: \"Intro to Things\"\nurl: https://x.test\n---\n\nBody text.", base: base)
+        XCTAssertEqual(page.title, "Intro to Things")
+        XCTAssertEqual(page.html, "<p>Body text.</p>")
     }
 
-    func testANumberedListKeepsItsNumbers() {
-        // A list of steps read 1, 2, 3 is a list of steps: the mark the
-        // model wrote is the mark drawn, not a dot for every item.
-        let blocks = markdownBlocks(of: "1. first\n2. second\n10. tenth")
-        XCTAssertEqual(blocks.map(\.kind), [.bullet, .bullet, .bullet])
-        XCTAssertEqual(blocks.map(\.mark), ["1.", "2.", "10."])
-        XCTAssertEqual(blocks.map(\.words), ["first", "second", "tenth"])
-        // A bracket after the number is the model's way too, and keeps it.
-        XCTAssertEqual(markdownBlocks(of: "1) first").first?.mark, "1)")
+    func testNoteToAgentsAboutLlmsTxtIsDropped() {
+        let page = Markdown.page("""
+        > ## Documentation Index
+        > Fetch the complete documentation index at: https://docs.example.test/llms.txt
+
+        # Quickstart
+
+        > A real quote.
+        """, base: base)
+        XCTAssertEqual(page.title, "Quickstart")
+        XCTAssertFalse(page.html.contains("llms.txt"))
+        XCTAssertEqual(page.html, "<blockquote><p>A real quote.</p></blockquote>")
     }
 
-    func testADashAndAStarAreTheSameMark() {
-        // A dash and a star both mean "an item": one dot, as this app
-        // draws an item — the point is that it's an item, not the glyph.
-        let blocks = markdownBlocks(of: "- a dash\n* a star\n+ a plus")
-        XCTAssertEqual(blocks.map(\.mark), ["•", "•", "•"])
+    // MARK: - nothing gets through as markup of its own
+
+    func testRawScriptIsDropped() {
+        let out = html("<script>alert(1)</script>\n\nText <script>x()</script> here")
+        XCTAssertFalse(out.lowercased().contains("<script"))
     }
 
-    func testANestedItemSitsUnderItsItem() {
-        // An item under an item is indented under it, the way it was
-        // written: flattened to the top, which item belongs to which is
-        // lost, and a nested list reads as one list of peers.
-        let blocks = markdownBlocks(of: "- top\n  - under it\n    - under that\n- top again")
-        XCTAssertEqual(blocks.map(\.depth), [0, 1, 2, 0])
-        XCTAssertEqual(blocks.map(\.words), ["top", "under it", "under that", "top again"])
-        // A tab counts as two spaces, the way models indent; and an
-        // indent past what a narrow panel can draw stops at it.
-        XCTAssertEqual(markdownBlocks(of: "\t- a tab\n            - nine spaces").map(\.depth), [1, 5])
+    func testDangerousAddressesAreNotLinked() {
+        let out = html("[click](javascript:alert(1)) ![x](data:text/html,hi) <a href=\"javascript:bad()\">a</a>")
+        XCTAssertFalse(out.contains("javascript:"))
+        XCTAssertFalse(out.contains("data:"))
+        XCTAssertTrue(out.contains("click"))
     }
 
-    func testCodeBlockKeepsItsWordsWhole() {
-        // A code block holds its own words: nothing inside it is read as
-        // a mark — a fence inside a fence stays, a heading stays.
-        let text = """
-        Before.
+    func testAttributesAreTrimmedToTheSafeOnes() {
+        let out = html("<img src=\"/a.png\" onerror=\"steal()\" alt=\"A\">")
+        XCTAssertEqual(out, "<img alt=\"A\" src=\"https://docs.example.test/a.png\" loading=\"lazy\">")
+    }
+
+    func testTextIsEscaped() {
+        XCTAssertEqual(html("1 < 2 & \"so\" 3 > 2"), "<p>1 &lt; 2 &amp; &quot;so&quot; 3 &gt; 2</p>")
+    }
+
+    func testEntitiesPassThrough() {
+        XCTAssertEqual(html("AT&amp;T &copy; &#8212;"), "<p>AT&amp;T &copy; &#8212;</p>")
+    }
+
+    // MARK: - addresses
+
+    func testRelativeAddressesResolveAgainstTheTwin() {
+        let out = html("[next](next.md) [root](/pricing) [here](#setup) ![pic](img/a.png)")
+        XCTAssertTrue(out.contains("href=\"https://docs.example.test/guide/next.md\""))
+        XCTAssertTrue(out.contains("href=\"https://docs.example.test/pricing\""))
+        XCTAssertTrue(out.contains("href=\"#setup\""))
+        XCTAssertTrue(out.contains("src=\"https://docs.example.test/guide/img/a.png\""))
+    }
+
+    func testEmptyPictureIsLeftOut() {
+        XCTAssertEqual(html("Before ![]() after"), "<p>Before  after</p>")
+    }
+
+    func testReferenceLinks() {
+        let out = html("See [the docs][d] and [Docs].\n\n[d]: https://x.test/a \"Title\"\n[docs]: https://x.test/b")
+        XCTAssertTrue(out.contains("<a href=\"https://x.test/a\" title=\"Title\">the docs</a>"))
+        XCTAssertTrue(out.contains("<a href=\"https://x.test/b\">Docs</a>"))
+    }
+
+    func testBareAddressesAreLinkedWithoutTheirFullStop() {
+        let out = html("Go to https://example.test/a_b. Or www.example.test!")
+        XCTAssertTrue(out.contains("<a href=\"https://example.test/a_b\">https://example.test/a_b</a>."))
+        XCTAssertTrue(out.contains("<a href=\"https://www.example.test\">www.example.test</a>!"))
+    }
+
+    // MARK: - inline
+
+    func testEmphasis() {
+        XCTAssertEqual(html("*a* **b** _c_ __d__ ~~e~~"),
+                       "<p><em>a</em> <strong>b</strong> <em>c</em> <strong>d</strong> <del>e</del></p>")
+    }
+
+    func testUnderscoresInsideWordsAndStarsInsideCodeStayPut() {
+        XCTAssertEqual(html("snake_case_name and `a*b*c` and 2 * 3 * 4"),
+                       "<p>snake_case_name and <code>a*b*c</code> and 2 * 3 * 4</p>")
+    }
+
+    func testEscapedPunctuation() {
+        XCTAssertEqual(html(#"\*not em\* and \[not a link\]"#), "<p>*not em* and [not a link]</p>")
+    }
+
+    func testHardBreaks() {
+        XCTAssertEqual(html("one  \ntwo\\\nthree\nfour"), "<p>one<br>two<br>\nthree\nfour</p>")
+    }
+
+    // MARK: - blocks
+
+    func testFencedCodeKeepsItsTextAndLanguage() {
+        let out = html("```bash theme={null}\necho \"<hi>\" *x*\n```")
+        XCTAssertEqual(out, "<pre><code class=\"language-bash\">echo &quot;&lt;hi&gt;&quot; *x*</code></pre>")
+    }
+
+    func testFourSpacesIsNotCode() {
+        XCTAssertEqual(html("    Indented, as MDX does."), "<p>Indented, as MDX does.</p>")
+    }
+
+    func testTightAndLooseLists() {
+        XCTAssertEqual(html("- a\n- b"), "<ul><li>a</li><li>b</li></ul>")
+        XCTAssertEqual(html("- a\n\n- b"), "<ul><li><p>a</p></li><li><p>b</p></li></ul>")
+    }
+
+    func testNestedAndOrderedLists() {
+        let out = html("3. three\n4. four\n   - inner\n   - more\n5. five")
+        XCTAssertEqual(out, "<ol start=\"3\"><li>three</li><li>four\n<ul><li>inner</li><li>more</li></ul></li><li>five</li></ol>")
+    }
+
+    func testCodeInsideAListItem() {
+        let out = html("1. Run:\n\n   ```bash\n   mint dev \\\n     --port 3000\n   ```\n2. Done")
+        XCTAssertTrue(out.contains("<pre><code class=\"language-bash\">mint dev \\\n  --port 3000</code></pre>"))
+        XCTAssertTrue(out.hasPrefix("<ol><li><p>Run:</p>"))
+    }
+
+    func testTaskList() {
+        let out = html("- [ ] todo\n- [x] done")
+        XCTAssertEqual(out, "<ul><li><input type=\"checkbox\" disabled> todo</li><li><input type=\"checkbox\" checked disabled> done</li></ul>")
+    }
+
+    func testSentenceEndingInANumberIsNotAList() {
+        XCTAssertEqual(html("It began\n1984. Then it ended."), "<p>It began\n1984. Then it ended.</p>")
+    }
+
+    func testTable() {
+        let out = html("| Name | Cost |\n| :--- | ---: |\n| `a|b` | **1** |")
+        XCTAssertEqual(out, "<div class=\"office-wide\"><table><thead><tr><th style=\"text-align:left\">Name</th><th style=\"text-align:right\">Cost</th></tr></thead><tbody><tr><td style=\"text-align:left\"><code>a|b</code></td><td style=\"text-align:right\"><strong>1</strong></td></tr></tbody></table></div>")
+    }
+
+    func testSetextHeadingsAndRules() {
+        let page = Markdown.page("Title\n=====\n\nSub\n---\n\n***", base: base)
+        XCTAssertEqual(page.title, "Title")
+        XCTAssertEqual(page.html, "<h2 id=\"sub\">Sub</h2>\n<hr>")
+    }
+
+    func testRepeatedHeadingsGetTheirOwnIds() {
+        XCTAssertEqual(html("## Setup\n## Setup"), "<h2 id=\"setup\">Setup</h2>\n<h2 id=\"setup-1\">Setup</h2>")
+    }
+
+    func testCommentsAreDropped() {
+        XCTAssertEqual(html("<!-- a\nb -->\nText <!-- c --> end"), "<p>Text  end</p>")
+    }
+
+    // MARK: - what docs sites write
+
+    func testComponentsGiveTheirTitlesAndStepAside() {
+        let out = html("""
+        <Steps>
+          <Step title="Make your first call">
+            Install the SDK and send a message.
+
+            [Go to the quickstart](/get-started)
+          </Step>
+        </Steps>
+        """)
+        XCTAssertEqual(out, """
+        <p class="office-part"><strong>Make your first call</strong></p>
+        <p>Install the SDK and send a message.</p>
+        <p><a href="https://docs.example.test/get-started">Go to the quickstart</a></p>
+        """.replacingOccurrences(of: "\n\n", with: "\n"))
+    }
+
+    func testCardTitleLinksWhereTheCardGoes() {
+        let out = html("<Card\n  title=\"Pricing\"\n  href=\"/pricing\"\n  icon=\"coins\"\n>\n  How it's billed.\n</Card>")
+        XCTAssertTrue(out.hasPrefix("<p class=\"office-part\"><a href=\"https://docs.example.test/pricing\"><strong>Pricing</strong></a></p>"))
+        XCTAssertTrue(out.contains("<p>How it&#39;s billed.</p>"))
+    }
+
+    func testCalloutsBecomeQuotes() {
+        let out = html("<Note>\n  Looking to chat? Visit [the app](https://app.test).\n</Note>")
+        XCTAssertEqual(out, "<blockquote>\n<p>Looking to chat? Visit <a href=\"https://app.test\">the app</a>.</p>\n</blockquote>")
+    }
+
+    func testInlineHtmlThatIsKnownIsKept() {
+        XCTAssertEqual(html("[<u>Markdown</u>](https://x.test) <kbd>⌘R</kbd> <span>plain</span>"),
+                       "<p><a href=\"https://x.test\"><u>Markdown</u></a> <kbd>⌘R</kbd> plain</p>")
+    }
+
+    func testDetailsSurvive() {
+        let out = html("<details>\n<summary>More</summary>\n\nHidden text.\n\n</details>")
+        XCTAssertEqual(out, "<details>\n<summary>More</summary>\n<p>Hidden text.</p>\n</details>")
+    }
+
+    // MARK: - size
+
+    func testALargeDocumentRendersQuickly() {
+        let section = """
+        ## Section
+
+        Some **bold** text with a [link](https://example.test/page) and `code`, and more words to read.
+
+        - one
+        - two with *emphasis*
 
         ```swift
-        func greet() -> String {
-            return "hi"   // **not bold**
-        }
+        let x = 1
         ```
 
-        After.
         """
-        let blocks = markdownBlocks(of: text)
-        XCTAssertEqual(blocks.count, 3)
-        XCTAssertEqual(blocks[0].kind, .paragraph)
-        XCTAssertEqual(blocks[1].kind, .code(language: "swift"))
-        XCTAssertEqual(blocks[1].words, "func greet() -> String {\n    return \"hi\"   // **not bold**\n}")
-        XCTAssertEqual(blocks[2].kind, .paragraph)
-    }
-
-    func testCodeBlockOpenToTheEndStillShows() {
-        // An answer that stops mid-code still shows the words it held.
-        let blocks = markdownBlocks(of: "Intro:\n\n```\nlet a = 1")
-        XCTAssertEqual(blocks.count, 2)
-        XCTAssertEqual(blocks[1].kind, .code(language: nil))
-        XCTAssertEqual(blocks[1].words, "let a = 1")
-    }
-
-    func testIndentedCodeBlocksWithoutFenceStayParagraphs() {
-        // Four spaces of indent is a fenced block in books, but models
-        // indent for plain reasons too: shown as a paragraph, not a
-        // code block.
-        let blocks = markdownBlocks(of: "    just an indented line")
-        XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(blocks[0].kind, .paragraph)
-    }
-
-    // MARK: - the inline marks
-
-    func testBoldIsSemiBold() throws {
-        let read = markdownInline("plain **bold** plain", size: 13)
-        var sawBold = false
-        for run in read.runs {
-            if run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
-                sawBold = true
-                // A bold run takes the app's semibold, not the system's
-                // own choice of face (see markdownInline).
-                let words = String(read[run.range].characters)
-                XCTAssertEqual(words, "bold")
-                XCTAssertNotNil(run.font)
-            }
-        }
-        XCTAssertTrue(sawBold, "the bold run was not found in: \(read)")
-    }
-
-    func testCodeIsMono() {
-        let read = markdownInline("the `code` word", size: 13)
-        var sawMono = false
-        for run in read.runs {
-            if run.inlinePresentationIntent?.contains(.code) == true {
-                sawMono = true
-                let words = String(read[run.range].characters)
-                XCTAssertEqual(words, "code")
-            }
-        }
-        XCTAssertTrue(sawMono, "the code run was not found in: \(read)")
-    }
-
-    func testLinkIsUnderlinedInk() {
-        let read = markdownInline("see [the docs](https://example.com) now", size: 13)
-        var sawLink = false
-        for run in read.runs {
-            if let link = run.link {
-                sawLink = true
-                XCTAssertEqual(link.absoluteString, "https://example.com")
-                XCTAssertEqual(run.underlineStyle, .single)
-            }
-        }
-        XCTAssertTrue(sawLink, "the link run was not found in: \(read)")
-    }
-
-    func testUnparseableParagraphShowsAsWritten() {
-        // A paragraph the reader declines is not lost: shown as written.
-        let read = markdownInline("just words, no marks", size: 13)
-        XCTAssertEqual(String(read.characters), "just words, no marks")
-    }
-
-    // MARK: - the view holds it all
-
-    func testTheViewDrawsEveryKindOfBlock() throws {
-        let text = """
-        # The answer
-
-        A **bold** point and [a link](https://example.com).
-
-        - first
-          - under it
-        - second
-
-        1. a step
-        2. another
-
-        ```js
-        console.log("hi")
-        ```
-        """
-        let view = MarkdownText(open: { _ in }, text: text, size: 13)
-        let host = NSHostingView(rootView: view)
-        host.layout()
-        XCTAssertGreaterThan(host.fittingSize.width, 0)
-        XCTAssertGreaterThan(host.fittingSize.height, 0)
+        let text = String(repeating: section, count: 2_000)
+        let start = Date()
+        let page = Markdown.page(text, base: base)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3)
+        XCTAssertTrue(page.html.contains("id=\"section-1999\""))
     }
 }

@@ -13,6 +13,13 @@ extension ObservableObject {
     var objectWillChange: ChangePublisher { ChangePublisher() }
 }
 
+// History tells the icons when an address goes; this runner keeps none.
+@MainActor
+final class Favicons {
+    static let shared = Favicons()
+    func forget(_ url: URL) {}
+}
+
 enum AddressCommand {
     case settings
 
@@ -56,3 +63,6 @@ enum Disk {
         try? data.write(to: file, options: .atomic)
     }
 }
+
+/// Address.swift names Search's own pages' scheme (see InternalPages.swift).
+enum InternalPage { static let scheme = "search" }

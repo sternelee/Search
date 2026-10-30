@@ -34,7 +34,8 @@ struct KeyCombo: Codable, Hashable {
     init?(event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let named = KeyCombo.names[event.keyCode] ?? ContentView.digits[event.keyCode].map(String.init)
-        guard let key = named ?? event.characters(byApplyingModifiers: [])?.lowercased(), !key.isEmpty else { return nil }
+        let key = named ?? event.shortcutKey
+        guard !key.isEmpty else { return nil }
         self.init(key, command: flags.contains(.command), shift: flags.contains(.shift),
                   option: flags.contains(.option), control: flags.contains(.control))
     }
@@ -55,6 +56,16 @@ struct KeyCombo: Codable, Hashable {
     var display: String {
         (control ? "⌃" : "") + (option ? "⌥" : "") + (shift ? "⇧" : "") + (command ? "⌘" : "")
             + (KeyCombo.symbols[key] ?? key.uppercased())
+    }
+
+    /// `combo` pressed against the switcher's `key`: nil when it isn't that
+    /// key, true when it is with ⇧ added (back through the switcher).
+    static func recentSwitch(_ combo: KeyCombo, key: KeyCombo?) -> Bool? {
+        guard let key else { return nil }
+        if combo == key { return false }
+        var unshifted = combo
+        unshifted.shift = false
+        return combo.shift && !key.shift && unshifted == key ? true : nil
     }
 
     private var isFunctionKey: Bool { key.count > 1 && key.hasPrefix("f") && Int(key.dropFirst()) != nil }
@@ -90,8 +101,10 @@ struct KeyCombo: Codable, Hashable {
     }
 
     /// macOS's own, the ones every text field relies on, and the ones Search
-    /// keeps for itself: ⌘1–⌘9 for tabs, ⌃1–⌃9 for spaces, Tab and Escape
-    /// with anything. Not ours to give, and so never taken from the Mac.
+    /// keeps for itself: ⌘1–⌘9 for tabs, Tab alone, with ⇧ or with ⌘, and
+    /// Escape with anything. Not ours to give, and so never taken from the
+    /// Mac. Tab with ⌃ or ⌥ is a key like another: ⌃Tab is the recent-tabs
+    /// switcher's until it is given to something else, as in Arc.
     static func isReserved(_ combo: KeyCombo) -> Bool {
         let system: Set<KeyCombo> = [
             KeyCombo("q"), KeyCombo("q", option: true), KeyCombo("q", control: true),
@@ -102,9 +115,10 @@ struct KeyCombo: Codable, Hashable {
             KeyCombo("space"), KeyCombo("space", command: false, control: true),
             KeyCombo("space", option: true), KeyCombo("space", command: false, option: true, control: true),
         ]
-        if system.contains(combo) || combo.key == "tab" || combo.key == "escape" { return true }
+        if system.contains(combo) || combo.key == "escape" { return true }
+        if combo.key == "tab", combo.command || !(combo.control || combo.option) { return true }
         let digit = combo.key.count == 1 && ("1"..."9").contains(combo.key)
-        return digit && !combo.option && !combo.shift && (combo.command != combo.control)
+        return digit && !combo.option && !combo.shift && combo.command && !combo.control
     }
 
     /// Keys an extension never has, wherever Search's own commands are:
@@ -119,7 +133,7 @@ struct KeyCombo: Codable, Hashable {
 /// A menu command, and the key it has unless you give it another.
 struct Command: Identifiable {
     enum Section: String, CaseIterable {
-        case app = "Search", file = "File", edit = "Edit", view = "View", tabs = "Tabs", bookmarks = "Bookmarks", history = "History"
+        case app = "Search", file = "File", edit = "Edit", view = "View", tabs = "Tabs", spaces = "Spaces", bookmarks = "Bookmarks", history = "History"
     }
 
     let id: String
@@ -141,30 +155,41 @@ struct Command: Identifiable {
 
     /// The same commands, keys and order as the menus (see App.swift).
     static let all: [Command] = [
-        Command("app.settings", "Settings…", .app, KeyCombo(",")) { $0.tuning.toggle() },
+        Command("app.settings", "Settings…", .app, KeyCombo(",")) { $0.tuning = true },
         Command("app.welcome", "Welcome…", .app, nil) { $0.welcoming = true },
         Command("app.passwords", "Passwords…", .app, KeyCombo("l", option: true)) { $0.managing = true },
 
         Command("file.newWindow", "New Window", .file, KeyCombo("n")) { _ in Browsers.newWindow() },
-        Command("file.newTab", "New Tab", .file, KeyCombo("t")) { $0.newTab() },
+        Command("file.newTab", "New Tab", .file, KeyCombo("t")) { $0.launch() },
         Command("file.newPrivateTab", "New Private Tab", .file, KeyCombo("n", shift: true)) { $0.newShyTab() },
         Command("file.reopen", "Reopen Closed Tab", .file, KeyCombo("t", shift: true)) { $0.reopen() },
         Command("file.openAddress", "Open Address…", .file, KeyCombo("l")) { $0.edit() },
         Command("file.closeTab", "Close Tab", .file, KeyCombo("w")) { $0.closeFront() },
+        Command("file.closeWindow", "Close Window", .file, KeyCombo("w", shift: true)) { $0.closeWindow() },
         Command("file.import", "Bring Things Over…", .file, nil) { $0.bringingIn = "" },
         Command("file.share", "Share…", .file, nil) { $0.share() },
+        Command("file.savePage", "Save Page As…", .file, nil) { $0.savePage() },
+        Command("file.exportPDF", "Export as PDF…", .file, nil) { $0.exportPDF() },
         Command("file.print", "Print…", .file, KeyCombo("p")) { $0.printPage() },
 
         Command("edit.find", "Find on Page…", .edit, KeyCombo("f")) { $0.openFind() },
         Command("edit.findNext", "Find Next", .edit, KeyCombo("g")) { $0.look(forward: true) },
         Command("edit.findPrevious", "Find Previous", .edit, KeyCombo("g", shift: true)) { $0.look(forward: false) },
+        Command("edit.copyCleanLink", "Copy Clean Link", .edit, KeyCombo("c", shift: true, option: true)) { $0.copyCleanLink() },
 
         Command("view.sidebar", "Show Tabs in Sidebar", .view, KeyCombo("s", shift: true)) { $0.toggleSidebar() },
         Command("view.fold", "Hide Sidebar or Tab Bar", .view, KeyCombo("s")) { $0.toggleFold() },
+        // Every tab group of the space at once, as Arc's folders (⌥⌘[ and ⌥⌘],
+        // beside ⌘[ and ⌘], which go back and forward).
+        Command("view.foldGroups", "Fold All Groups", .view, KeyCombo("[", option: true)) { $0.foldAllGroups(true) },
+        Command("view.unfoldGroups", "Unfold All Groups", .view, KeyCombo("]", option: true)) { $0.foldAllGroups(false) },
         Command("view.reload", "Reload Page", .view, KeyCombo("r")) { $0.reload() },
         Command("view.reloadOrigin", "Reload Page From Origin", .view, KeyCombo("r", option: true)) { $0.reload(fromOrigin: true) },
         Command("view.reader", "Reading Mode", .view, KeyCombo("r", shift: true)) { $0.toggleReader() },
         Command("view.float", "Float Video", .view, KeyCombo("p", shift: true)) { $0.toggleFloat() },
+        Command("view.sitePanel", "Show Side Panel", .view, nil) { $0.toggleSitePanel() },
+        Command("view.dusk", "Darken This Site", .view, KeyCombo("d", shift: true)) { $0.toggleDusk() },
+        Command("view.duskPause", "Pause Darkening", .view, KeyCombo("d", shift: true, option: true)) { $0.pauseDusk() },
         Command("view.summarize", "Summarize Page", .view, nil) { $0.summarizePage() },
         Command("view.ask", "Ask About This Page…", .view, nil) { $0.askAboutPage() },
         Command("view.bot", "Bot on This Page…", .view, KeyCombo("b", option: true)) { $0.openBot() },
@@ -180,6 +205,13 @@ struct Command: Identifiable {
         Command("tabs.back", "Back", .tabs, KeyCombo("[")) { $0.back() },
         Command("tabs.forward", "Forward", .tabs, KeyCombo("]")) { $0.forward() },
         Command("tabs.next", "Next Tab", .tabs, KeyCombo("]", shift: true)) { $0.step(1) },
+        // ⌃Tab's switcher, most recently used first, on a key of your own
+        // (Arc lets you move it). Held, its ⌃, ⌥ or ⌘ keeps the switcher up;
+        // with ⇧ too it walks back. No menu line: the key is read before the
+        // menus (see ContentView.take and ShortcutStore.recentSwitch).
+        Command(Command.recentTabs, "Switch to Recent Tab", .tabs, KeyCombo("tab", command: false, control: true)) {
+            $0.switchTabs(backwards: false)
+        },
         Command("tabs.previous", "Previous Tab", .tabs, KeyCombo("[", shift: true)) { $0.step(-1) },
         Command("tabs.search", "Search Tabs…", .tabs, KeyCombo("k")) { browser in
             if browser.editing, !browser.offers.isEmpty { browser.stepSummon() } else { browser.summon() }
@@ -228,11 +260,16 @@ struct Command: Identifiable {
             withAnimation(Motion.glide) { browser.prefs.bookmarksBar.toggle() }
         },
 
-        Command("history.show", "Show History…", .history, KeyCombo("y")) { $0.recalling.toggle() },
-        Command("history.downloads", "Downloads…", .history, KeyCombo("j", shift: true)) { $0.hoarding.toggle() },
-        Command("history.clearData", "Clear Browsing Data…", .history, KeyCombo("delete", shift: true)) { $0.recallMode = .clearing },
+        Command("history.show", "Show History…", .history, KeyCombo("y")) { $0.recalling = true },
+        Command("history.downloads", "Downloads…", .history, KeyCombo("j", shift: true)) { $0.hoarding = true },
+        Command("history.clearData", "Clear Browsing Data…", .history, KeyCombo("delete", shift: true)) { $0.clearBrowsingData() },
         Command("history.clear", "Clear History", .history, nil) { $0.clearHistory() },
-    ]
+    ] + (1...9).map { number in
+        Command("spaces.\(number)", "Space \(number)", .spaces,
+                KeyCombo(String(number), command: false, control: true)) { browser in
+            browser.switchSpace(index: number - 1)
+        }
+    }
 }
 
 /// What you've changed, on top of the defaults: a new key, or none. One for
@@ -251,7 +288,7 @@ final class ShortcutStore: ObservableObject {
     /// (see `adopt`), by its id here: "ext:" + extension + ":" + command.
     private var manifest: [String: Override] = [:]
 
-    private init() {
+    init() {
         // Read with the same rules the Settings box keeps: a key that isn't
         // ours to give stays the Mac's, whatever the file says.
         let saved = Store.settings.data(forKey: "shortcuts")
@@ -275,11 +312,35 @@ final class ShortcutStore: ObservableObject {
     }
 
     func isChanged(_ id: String) -> Bool { changed[id] != nil }
+
+    /// A press of the recent-tabs switcher's key, and whether it walks back:
+    /// its key as set, or the same with ⇧ added. Nil for any other key.
+    func recentSwitch(_ event: NSEvent) -> Bool? {
+        guard event.type == .keyDown, let combo = KeyCombo(event: event) else { return nil }
+        return KeyCombo.recentSwitch(combo, key: key(for: Command.recentTabs))
+    }
+
+    /// The modifiers its key is held with — ⌃ for ⌃Tab — which keep the
+    /// switcher up until one is let go of.
+    var recentHold: NSEvent.ModifierFlags {
+        key(for: Command.recentTabs)?.flags.intersection([.command, .option, .control]) ?? .control
+    }
+
+    /// Whether the switcher's modifiers are all still down.
+    func recentHeld(_ flags: NSEvent.ModifierFlags) -> Bool {
+        flags.intersection(.deviceIndependentFlagsMask).isSuperset(of: recentHold)
+    }
+
+    /// Exactly the switcher's modifiers held, ⇧ aside: the arrows and the
+    /// card keys move through it then.
+    func recentOnly(_ flags: NSEvent.ModifierFlags) -> Bool {
+        flags.intersection([.command, .option, .control]) == recentHold
+    }
     var anyChanged: Bool { !changed.isEmpty }
 
-    /// A command you gave `combo`, for the key monitor to run.
-    func changedCommand(on combo: KeyCombo) -> Command? {
-        Command.all.first { changed[$0.id] != nil && key(for: $0.id) == combo }
+    /// Changed commands, and Space keys which have no menu to handle their defaults.
+    func customCommand(on combo: KeyCombo) -> Command? {
+        Command.all.first { (changed[$0.id] != nil || $0.section == .spaces) && key(for: $0.id) == combo }
     }
 
     /// A key an extension may not have: one of the Mac's, or one of
@@ -320,9 +381,8 @@ final class ShortcutStore: ObservableObject {
     func clear(_ id: String) { set(nil, for: id) }
 
     func reset(_ id: String) {
-        changed[id] = nil
-        save()
-        applyExtensions()
+        if let key = defaultKey(for: id) { assign(key, to: id) }
+        else { set(nil, for: id) }
     }
 
     func resetAll() {
@@ -429,10 +489,15 @@ extension View {
 }
 
 extension Command {
+    /// The recent-tabs switcher's id (⌃Tab unless changed).
+    static let recentTabs = "tabs.recent"
+
     /// Split View's commands: with it off, not listed, and their keys go on
     /// to the page.
     static let split: Set<String> = ["tabs.split", "tabs.focusLeftPane", "tabs.focusRightPane", "tabs.focusOtherPane",
                                      "tabs.swapSplit", "tabs.separateSplit"]
     /// The AI add-on's: with it off, not listed.
     static let ai: Set<String> = ["view.summarize", "view.ask"]
+    /// Dark pages': with them off, not listed, and their keys go on to the page.
+    static let dusk: Set<String> = ["view.dusk", "view.duskPause"]
 }

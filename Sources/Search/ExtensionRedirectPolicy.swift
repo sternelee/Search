@@ -3,10 +3,45 @@ import Foundation
 /// A website may return only to an extension page its manifest exposes.
 /// Unsupported declarations are refused, never made more permissive.
 enum ExtensionRedirectPolicy {
-    static func allows(target: URL, sourceOrigin: URL, manifest: [String: Any]) -> Bool {
+    /// A declarativeNetRequest redirect to an extension's own file arrives
+    /// with its `?` and `#` escaped into the path: WebKit sets the rule's
+    /// extensionPath as a path, where Chrome reads "/blocked.html#site" as a
+    /// file and a fragment. The first escaped one is put back as Chrome
+    /// reads it, so the page gets its query and fragment and the file is
+    /// the one the extension ships. Anything else is left as it is.
+    static func ruleTarget(_ target: URL) -> URL {
+        guard var components = URLComponents(url: target, resolvingAgainstBaseURL: false),
+              components.percentEncodedQuery == nil, components.percentEncodedFragment == nil
+        else { return target }
+        let path = components.percentEncodedPath
+        let lower = path.lowercased()
+        let query = lower.range(of: "%3f"), fragment = lower.range(of: "%23")
+        guard let first = [query, fragment].compactMap({ $0 }).min(by: { $0.lowerBound < $1.lowerBound }) else { return target }
+        let at = path.index(path.startIndex, offsetBy: lower.distance(from: lower.startIndex, to: first.lowerBound))
+        let rest = String(path[path.index(at, offsetBy: 3)...])
+        components.percentEncodedPath = String(path[..<at])
+        if first == query {
+            if let hash = rest.lowercased().range(of: "%23") {
+                let split = rest.index(rest.startIndex, offsetBy: rest.lowercased().distance(from: rest.lowercased().startIndex, to: hash.lowerBound))
+                components.percentEncodedQuery = String(rest[..<split])
+                components.percentEncodedFragment = String(rest[rest.index(split, offsetBy: 3)...])
+            } else {
+                components.percentEncodedQuery = rest
+            }
+        } else {
+            components.percentEncodedFragment = rest
+        }
+        return components.url ?? target
+    }
+
+    /// `fromRule`: an extension's own declarativeNetRequest rule sent the
+    /// tab there, not the site, and Chrome's rule then applies to plain
+    /// http sites too: the file has to be exposed to the site, by scheme.
+    static func allows(target: URL, sourceOrigin: URL, manifest: [String: Any], fromRule: Bool = false) -> Bool {
+        let sourceScheme = sourceOrigin.scheme?.lowercased() ?? ""
         guard target.scheme?.lowercased() == "chrome-extension",
               target.host != nil, target.user == nil, target.password == nil, target.port == nil,
-              sourceOrigin.scheme?.lowercased() == "https",
+              sourceScheme == "https" || (fromRule && sourceScheme == "http"),
               sourceOrigin.host != nil, sourceOrigin.user == nil, sourceOrigin.password == nil,
               let components = URLComponents(url: target, resolvingAgainstBaseURL: false)
         else { return false }
@@ -36,9 +71,15 @@ enum ExtensionRedirectPolicy {
               let rules = manifest["web_accessible_resources"] as? [[String: Any]]
         else { return false }
         return rules.contains { rule in
-            // Dynamic extension origins need separate handling; refuse them here.
+            // Dynamic extension origins need separate handling; refuse them
+            // here, but for the extension's own rule's redirect. A dynamic
+            // URL keeps a site from probing for the file; a rule's redirect
+            // is the extension's doing (WebKit marks it, a page can't), the
+            // site's page is gone, and Chrome shows the file: uBlock Origin
+            // Lite's strictblock.html, its warning for a known-bad site,
+            // left the tab blank instead (#709).
             if let dynamic = rule["use_dynamic_url"] {
-                guard let enabled = dynamic as? Bool, !enabled else { return false }
+                guard let enabled = dynamic as? Bool, !enabled || fromRule else { return false }
             }
             guard let resources = rule["resources"] as? [String],
                   let origins = rule["matches"] as? [String],
@@ -63,12 +104,13 @@ enum ExtensionRedirectPolicy {
     }
 
     private static func origin(_ source: URL, matches pattern: String) -> Bool {
-        // Only HTTPS callers are accepted by allows(). MV3 origin patterns
-        // have a /* path. Unsupported syntax is deliberately rejected.
+        // HTTPS callers, and http ones only for a rule's redirect (see
+        // allows()). MV3 origin patterns have a /* path. Unsupported
+        // syntax is deliberately rejected.
         if pattern == "<all_urls>" { return true }
         guard let separator = pattern.range(of: "://"), let host = source.host?.lowercased() else { return false }
         let scheme = String(pattern[..<separator.lowerBound]).lowercased()
-        guard scheme == "https" || scheme == "*" else { return false }
+        guard scheme == source.scheme?.lowercased() || scheme == "*" else { return false }
         let remainder = String(pattern[separator.upperBound...])
         guard let slash = remainder.firstIndex(of: "/"), remainder[slash...] == "/*" else { return false }
         let allowed = String(remainder[..<slash]).lowercased()

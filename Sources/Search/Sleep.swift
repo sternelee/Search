@@ -15,23 +15,80 @@ import WebKit
 // were doing: the one on screen, pinned tabs (those are put down by hand,
 // with ⌘W), a tab playing sound, on a call, sending a download, holding its
 // video out in the little window, or holding something typed and not sent.
+// A pin stays awake only in the space on screen: in a space you aren't in it
+// sleeps after the same wait as the tabs beside it, unless its site may send
+// notifications, which a page asleep couldn't (#569). Five spaces of five
+// pins was twenty-five pages that never let go.
 //
-// When macOS says memory is short, the half hour shrinks: to five minutes on
-// a warning, to nothing when it is critical.
+// With the last window closed and the app still running, there is nothing
+// on screen to wait for: the tabs the same rules let go sleep at once (see
+// sleepShut), and the ones on screen wake when the window comes back.
+//
+// Half an hour is Normal. Settings › Tabs › How soon tabs sleep makes it
+// two hours (Later) or ten minutes (Sooner).
+//
+// When macOS says memory is short, the wait shrinks, whatever was chosen: to
+// five minutes on a warning, to nothing when it is critical.
 
-extension Browser {
-    /// How long a tab has to go without being looked at. Half an hour, or
-    /// `sleep.after` in seconds — for the bench and the measurements.
-    static var sleepAfter: TimeInterval {
-        let set = Store.settings.double(forKey: "sleep.after")
-        return set > 0 ? set : 30 * 60
+/// How soon tabs sleep, as chosen in Settings. Three levels rather than
+/// numbers: what someone decides is how much a waking tab bothers them, not
+/// how many minutes.
+enum SleepPace: String, CaseIterable, Identifiable {
+    case later, normal, sooner
+
+    nonisolated static let key = "tabs.sleep.pace"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .later: return "Later"
+        case .normal: return "Normal"
+        case .sooner: return "Sooner"
+        }
     }
 
-    /// Started once, at launch.
+    /// Away this long, a tab sleeps.
+    var wait: TimeInterval {
+        switch self {
+        case .later: return 2 * 60 * 60
+        case .normal: return 30 * 60
+        case .sooner: return 10 * 60
+        }
+    }
+
+    /// What the line in Settings says under the choice.
+    var detail: String {
+        switch self {
+        case .later: return "After two hours away."
+        case .normal: return "After half an hour away."
+        case .sooner: return "After ten minutes away."
+        }
+    }
+
+    /// The one chosen, Normal until someone chooses.
+    nonisolated static var chosen: SleepPace {
+        Store.settings.string(forKey: key).flatMap(SleepPace.init) ?? .normal
+    }
+}
+
+extension Browser {
+    /// How long a tab has to go without being looked at: the chosen pace's
+    /// wait, or `sleep.after` in seconds — for the bench and the measurements.
+    static var sleepAfter: TimeInterval {
+        let set = Store.settings.double(forKey: "sleep.after")
+        return set > 0 ? set : SleepPace.chosen.wait
+    }
+
+    /// Started once, at launch. The same look closes the tabs left alone
+    /// longest, when tabs close themselves (see Closing.swift).
     func watchForSleep() {
         let every = min(60, max(5, Browser.sleepAfter / 4))
         let timer = Timer(timeInterval: every, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.sleepIdle() }
+            MainActor.assumeIsolated {
+                self?.sleepIdle()
+                self?.closeLeftAlone()
+            }
         }
         timer.tolerance = every / 4
         RunLoop.main.add(timer, forMode: .common)
@@ -61,21 +118,87 @@ extension Browser {
         for tab in idle { self.sleep(tab) }
     }
 
+    /// The last window closed with the app running (Browsers.closing):
+    /// nothing is on screen any more, so every tab the rules here let go
+    /// sleeps now rather than half an hour on, as Safari and Chrome close
+    /// theirs. The tabs stay, with their history, place and picture, for
+    /// the window that comes back (see `shut`). One playing sound, on a
+    /// call, downloading, with its video out or holding something typed
+    /// stays awake, as it would at any other time. A page still loading is
+    /// looked at once more a little later.
+    func sleepShut(again: Bool = true) {
+        guard prefs.sleepsTabs, shut else { return }
+        var loading = false
+        for tab in tabs + parkedTabs {
+            if awake(because: tab) == "still loading" { loading = true }
+            sleep(tab)
+        }
+        guard again, loading else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in self?.sleepShut(again: false) }
+    }
+
+    /// The window back after `sleepShut`: the tabs it shows wake, the others
+    /// wait to be looked at, as after a launch.
+    func wakeShown() {
+        for tab in tabs where visibleTabIDs.contains(tab.id) { _ = tab.wake() }
+    }
+
     /// Why a tab has to stay awake — nil when nothing keeps it. The clock is
     /// the caller's business; this is everything else.
     func awake(because tab: Tab) -> String? {
-        if visibleTabIDs.contains(tab.id) { return "on screen" }
-        if tab.pin != nil { return "pinned" }
+        // With the last window closed (`shut`) nothing is on screen.
+        if !shut, visibleTabIDs.contains(tab.id) { return "on screen" }
+        if tab.pin != nil, let kept = pinKept(tab) { return kept }
         if tab.bench { return "a bench tab" }
         if tab.isBlank { return "blank" }
         if tab.asleep { return "already asleep" }
-        guard let web = tab.built else { return "no page" }
+        guard tab.built != nil else { return "no page" }
         if tab.loading { return "still loading" }
+        return busy(tab)
+    }
+
+    func keepsAwake(_ tab: Tab) -> Bool {
+        guard prefs.keepsSitesAwake, let host = tab.awakeHost else { return false }
+        return (tab.shy ? tab.awakeSites : prefs.awakeSites).contains(host)
+    }
+
+    func keepAwake(_ on: Bool, for tab: Tab) {
+        guard let host = tab.awakeHost else { return }
+        if tab.shy {
+            if on { tab.awakeSites.insert(host) } else { tab.awakeSites.remove(host) }
+        } else {
+            if on { prefs.awakeSites.insert(host) } else { prefs.awakeSites.remove(host) }
+        }
+    }
+
+    /// Why a pin stays awake: always in the space on screen; in one you
+    /// aren't in, or with the last window closed, only while its site may
+    /// send notifications.
+    private func pinKept(_ tab: Tab) -> String? {
+        guard shut || parked.values.contains(where: { $0.tabs.contains { $0 === tab } }) else { return "pinned" }
+        return mayNotify(tab) ? "pinned, and its site may send notifications" : nil
+    }
+
+    /// Whether the site on the tab is allowed to send notifications (see
+    /// Notifications.swift): answered yes, with notifications on in Settings.
+    func mayNotify(_ tab: Tab) -> Bool {
+        guard prefs.siteNotifications, !tab.shy, let url = tab.address,
+              let scheme = url.scheme, let host = url.host(), !host.isEmpty else { return false }
+        let site = Browser.origin(scheme, host, url.port ?? 0)
+        return Store.settings.object(forKey: SiteNotifications.key(site)) as? Bool == true
+    }
+
+    /// What the page is in the middle of that letting it go would cut off:
+    /// the part of staying awake that closing a tab asks too (Closing.swift).
+    func busy(_ tab: Tab) -> String? {
+        if keepsAwake(tab) { return "kept awake for this site" }
         if tab.noisy { return "playing sound" }
         if tab.floating || floating == tab.id { return "its video is out" }
-        if web.cameraCaptureState != .none || web.microphoneCaptureState != .none { return "on a call" }
-        if #available(macOS 15.4, *), ExtensionCapture.screen(web) { return "recording the screen" }
-        if downloading.contains(where: { $0.webView === web }) { return "downloading" }
+        if let web = tab.built {
+            if web.cameraCaptureState != .none || web.microphoneCaptureState != .none { return "on a call" }
+            if #available(macOS 15.4, *), ExtensionCapture.screen(web) { return "recording the screen" }
+            if downloading.contains(where: { $0.webView === web }) { return "downloading" }
+        }
         if heldDialogs[tab.id]?.isEmpty == false || paneQuestions.contains(where: { $0.tab == tab.id }) {
             return "a question waiting"
         }

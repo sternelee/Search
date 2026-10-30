@@ -32,7 +32,6 @@ struct ExtensionsPage: View {
                                 .foregroundStyle(Palette.ink)
                             Spacer(minLength: 8)
                             Pill("Open the Store") {
-                                browser.tuning = false
                                 browser.open(Browser.webStore, foreground: true)
                             }
                         }
@@ -69,19 +68,9 @@ struct ExtensionsPage: View {
                 Card {
                     Line("From another browser", "What Chrome, Arc, Brave and the others added from the Chrome Web Store — installed fresh from the store, you say yes to each one") {
                         Pill("Bring them over…") {
-                            browser.tuning = false
                             browser.bringingExtensions = true
-                            browser.bringingIn = ""
+                            browser.lead(to: InternalPage(.importing))
                         }
-                    }
-                }
-
-                Card {
-                    Line("Allow on private tabs", "Off by default - a private tab keeps nothing, extensions included") {
-                        Switch(on: Binding(
-                            get: { browser.prefs.extensionsInPrivate },
-                            set: { browser.prefs.extensionsInPrivate = $0 }
-                        ))
                     }
                 }
 
@@ -94,6 +83,10 @@ struct ExtensionsPage: View {
                             Row(item: item, extensions: extensions)
                         }
                     }
+                    Text("Each extension stays out of private tabs until you allow it in its … menu. One you allow can tell which tabs are private, but may still keep what you visit in them.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Recorders()
@@ -177,6 +170,7 @@ struct ExtensionsPage: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .accessibilityLabel("More for \(item.name)")
                 .help("More for \(item.name)")
                 Switch(on: Binding(get: { item.enabled }, set: { extensions.setEnabled(item.id, $0) }))
             }
@@ -193,10 +187,9 @@ struct ExtensionsPage: View {
                 extensions.setPinned(item.id, !(item.pinned ?? false))
             }
             if context?.overrideNewTabPageURL != nil {
-                let on = Store.settings.object(forKey: "extensions.newtab.\(item.id)") as? Bool == true
+                let on = extensions.newTabPageID == item.id
                 Button(on ? "Stop Showing in New Tabs" : "Show in New Tabs") {
-                    Store.settings.set(!on, forKey: "extensions.newtab.\(item.id)")
-                    extensions.objectWillChange.send()
+                    extensions.setNewTabPage(on ? nil : item.id)
                 }
             }
             if context?.optionsPageURL != nil {
@@ -204,6 +197,19 @@ struct ExtensionsPage: View {
             }
             if item.source != nil || !item.fromStore {
                 Button("Reload") { extensions.reload(item.id) }
+            }
+            if let context {
+                Divider()
+                if (context.webExtension.manifest["incognito"] as? String) == "not_allowed" {
+                    Text("Private Tabs Aren’t Supported")
+                } else {
+                    Toggle("Allow in Private Tabs", isOn: Binding(
+                        get: { context.hasAccessToPrivateData },
+                        set: { extensions.setPrivate(item.id, $0) }
+                    ))
+                    .accessibilityLabel("Allow \(item.name) in private tabs")
+                    .help("Private tabs opened before any extension was allowed need reopening. Turned off, a script already running in one stops only when the page reloads.")
+                }
             }
             Divider()
             Button("Remove", role: .destructive) { extensions.remove(item.id) }
@@ -218,10 +224,11 @@ struct ExtensionsPage: View {
         private func detail(_ context: WKWebExtensionContext?) -> String {
             var parts = ["Version \(item.version)", item.fromStore ? "Chrome Web Store" : folder]
             if item.enabled, context == nil { parts.append("couldn't start") }
-            if context?.overrideNewTabPageURL != nil, Store.settings.object(forKey: "extensions.newtab.\(item.id)") as? Bool == true {
+            if extensions.newTabPageID == item.id {
                 parts.append("shows in new tabs")
             }
-            if let errors = context?.errors, !errors.isEmpty { parts.append("\(errors.count) warning\(errors.count == 1 ? "" : "s")") }
+            if context?.hasAccessToPrivateData == true { parts.append("allowed in private tabs") }
+            if let errors = context.map(Extensions.errors(of:)), !errors.isEmpty { parts.append("\(errors.count) warning\(errors.count == 1 ? "" : "s")") }
             return parts.joined(separator: " · ")
         }
     }
@@ -283,5 +290,53 @@ struct StoreOffer: View {
         let host = url.host()?.lowercased() ?? ""
         return host == "chromewebstore.google.com"
             || (host == "chrome.google.com" && url.path.hasPrefix("/webstore"))
+    }
+}
+
+/// Settings › Browsing › Searching › Home page: what a new tab opens to, while an
+/// extension offers a page for it. Search's own page with the address field
+/// ready, or the page of an extension that asked to take its place, and
+/// the way back from one that did. With nothing offered there is nothing to
+/// pick, so the line isn't there at all, and neither is its hairline.
+struct HomePageLine: View {
+    var body: some View {
+        if #available(macOS 15.4, *) {
+            Chooser(extensions: .shared)
+        }
+    }
+
+    @available(macOS 15.4, *)
+    private struct Chooser: View {
+        @ObservedObject var extensions: Extensions
+
+        var body: some View {
+            let askers = extensions.newTabAskers
+            let current = extensions.newTabPageID
+            if !askers.isEmpty {
+                Rule()
+                SettingRow(icon: "house", title: "Home page", detail: detail(askers, current)) {
+                    Picker("", selection: Binding(
+                        get: { current ?? "" },
+                        set: { extensions.setNewTabPage($0.isEmpty ? nil : $0) }
+                    )) {
+                        Text("Search's own").tag("")
+                        Divider()
+                        ForEach(askers) { Text($0.name).tag($0.id) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                }
+            }
+        }
+
+        private func detail(_ askers: [Installed], _ current: String?) -> String {
+            if let current, let name = askers.first(where: { $0.id == current })?.name {
+                return "New tabs show \(name)'s page, since you let it replace them"
+            }
+            return askers.count == 1
+                ? "New tabs open blank. \(askers[0].name) asked to show its page instead"
+                : "New tabs open blank. \(askers.count) extensions asked to show their page instead"
+        }
     }
 }

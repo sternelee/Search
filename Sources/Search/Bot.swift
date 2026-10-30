@@ -1555,10 +1555,11 @@ final class Loop {
     /// Where the person has been, as the model reads it: the history the
     /// address field draws on (see History), most recent first, a hundred
     /// pages at most. Only read — the model never goes there without the
-    /// person seeing an act for it.
+    /// person seeing an act for it. The space on screen's own, since each
+    /// profile keeps its history (see Profiles.history).
     private func showHistory(_ count: Int) {
         let wanted = min(max(count, 1), 100)
-        let pages = Shared.history.everything().prefix(wanted)
+        let pages = Profiles.history(Spaces.profile(of: Spaces.current)).everything().prefix(wanted)
         var block = pages
             .map { "· \($0.address) · \($0.title.isEmpty ? "no title" : $0.title) (\($0.count) time\($0.count == 1 ? "" : "s"), last \(Bot.day.string(from: $0.last)))" }
             .joined(separator: "\n")
