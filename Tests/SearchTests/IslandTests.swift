@@ -709,10 +709,11 @@ final class IslandTests: XCTestCase {
 
     /// A finished card says its message under the line rather than in it:
     /// the line is who it is and that it finished, and the message — the
-    /// thing a person came to the bar to read — gets the card's whole width
-    /// and as many lines as a notch may hold, five piled and twelve
-    /// straightened. A working card names the tool it's on, and stands a
-    /// line tall when it has nothing to say under it.
+    /// thing a person came to the bar to read — gets the card's whole width.
+    /// The card being read (the front of the pile, or the one under the
+    /// pointer) gets all of it; every other card gets a glance. A working
+    /// card names the tool it's on, and stands a line tall when it has
+    /// nothing to say under it.
     func testAFinishedCardSaysItsMessageUnderTheLine() {
         func session(_ part: Island.Session.Part, tool: String?, words: String?) -> Island.Session {
             Island.Session(
@@ -724,12 +725,38 @@ final class IslandTests: XCTestCase {
         let done = session(.done, tool: "Bash", words: said)
         XCTAssertEqual(IslandPlace.doing(done), "", "a finished card names no tool — nothing is running")
         XCTAssertEqual(IslandPlace.under(done), said, "the message is under the line, whole")
-        XCTAssertEqual(IslandPlace.lines(done), 5, "five lines of it piled")
-        XCTAssertEqual(IslandPlace.lines(done, over: true), 12, "and twelve once the bar is straightened")
+        XCTAssertEqual(IslandPlace.lines(done), 5, "five lines of it when it is a glance")
+
+        // The card being read holds the whole message: as many lines as the
+        // message needs at the width it is drawn at, measured rather than
+        // guessed — and never fewer than the glance it would have got.
+        let wide: CGFloat = 336
+        let whole = IslandPlace.lines(done, whole: true, wide: wide)
+        XCTAssertGreaterThan(whole, 5, "the whole message is more than a glance at it")
         XCTAssertEqual(
-            IslandPlace.card(done, over: true) - IslandPlace.card(done),
-            IslandPlace.wide - IslandPlace.read,
-            "the straightened card is taller by the room the message was given"
+            IslandPlace.said(done, whole: true, wide: wide),
+            CGFloat(whole) * IslandPlace.lineHeight,
+            "the frame is the lines it holds, from the one number that decides both"
+        )
+        XCTAssertEqual(
+            IslandPlace.card(done, whole: true, wide: wide) - IslandPlace.card(done),
+            IslandPlace.said(done, whole: true, wide: wide) - IslandPlace.read,
+            "the read card is taller by the room the whole message was given"
+        )
+        // A taller frame is a frame the text fits in, so it is rounded up:
+        // the room asked for is never less than the text measured.
+        XCTAssertGreaterThanOrEqual(
+            IslandPlace.said(done, whole: true, wide: wide), IslandPlace.fitted(said, wide: wide),
+            "the frame is at least as tall as the message drawn in it"
+        )
+        // Never taller than the bar may open: a card as tall as the window
+        // it is drawn over is not a card, so the cap holds and the tooltip
+        // carries the rest.
+        let capped = IslandPlace.lines(done, whole: true, wide: wide, most: 84)
+        XCTAssertEqual(capped, 6, "the cap is the room divided into lines, and no more")
+        XCTAssertGreaterThan(
+            IslandPlace.lines(done, whole: true, wide: wide / 2), whole,
+            "the same message at half the width takes more lines to say"
         )
 
         let work = session(.working, tool: "Bash", words: nil)
@@ -738,6 +765,10 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(
             IslandPlace.card(work), IslandPlace.card(false),
             "a card with nothing under it is a line and its breath"
+        )
+        XCTAssertEqual(
+            IslandPlace.card(work, whole: true, wide: wide), IslandPlace.card(false),
+            "and no taller for being read: there is nothing under it to open"
         )
 
         // Between tools — one finished and the next hasn't begun — the card
@@ -820,7 +851,7 @@ final class IslandTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(all.count, 3, "this test's own cards are held")
 
         let open = try height(true)
-        XCTAssertEqual(open, IslandPlace.opened(all.map { IslandPlace.card($0, over: true) }, room: 800),
+        XCTAssertEqual(open, IslandPlace.opened(all.map { IslandPlace.card($0) }, room: 800),
                        accuracy: 1, "open, the bar is every card whole with the air between them")
 
         let closed = try height(false)

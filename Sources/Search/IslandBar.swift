@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // The island's bar: what the agents are doing, floating over the top of
@@ -14,7 +15,9 @@ import SwiftUI
 // are lifted above it and tipped back into the screen — a real
 // projection, one vanishing point, so a glance says there is a pile
 // here and how deep it is. Hovering straightens the whole thing into a
-// list where every card is read square on. One agent is one card, said
+// list where every card is read square on, and the card the pointer is
+// on — or the front of the pile, when the pointer is on none of them —
+// opens to its whole message. One agent is one card, said
 // over as the agent says more of itself — a run's tools are one line of
 // work, not one line each — so a long run never fills the notch with
 // its own noise. Each card is named by who it is and where it works —
@@ -74,39 +77,82 @@ enum IslandPlace {
     /// height is arithmetic on a card (below), and arithmetic needs a
     /// card that is the height it says it is.
     static let line: CGFloat = 16
-    /// The height of what a card says under that line: two lines of it,
-    /// pinned for the same reason. A card says either its line alone or
-    /// its line and this.
+    /// The height of what a card says under that line when it is only
+    /// being glanced at: two lines of it, pinned for the same reason as
+    /// the line above. A card says either its line alone or its line and
+    /// this.
     static let words: CGFloat = 28
+    /// How tall one line of what a card says stands, in points: the font's
+    /// own, pinned here so that a card's height is arithmetic on the lines
+    /// it holds rather than a guess about them. The frame the text is given
+    /// and the cut the text is given are both worked out from this one
+    /// number (see `said` and `lines`), so they cannot disagree — a frame
+    /// that cut a line the text needed, or a cut that left room nothing was
+    /// going to fill.
+    static let lineHeight: CGFloat = 14
     /// The height of the words on a card that has stopped to be read —
     /// finished, or waiting on a person. Five lines rather than two: the
     /// message is the whole reason that card is there, and a message cut
     /// to two lines is a message nobody can act on.
     static let read: CGFloat = 70
-    /// And twelve lines of it once the pile is straightened: a card read
-    /// square on is a card being read, and the message is what it is being
-    /// read for. Twelve rather than as many as it takes — the card is a
-    /// notch over a page, and a card as tall as the window is no longer
-    /// one; past twelve lines the tooltip carries the rest, whole.
-    static let wide: CGFloat = 164
 
-    /// How tall the words stand on this card: a working or asking one is a
-    /// glance at what it is on, a finished or waiting one is the news.
-    static func said(_ session: Island.Session, over: Bool = false) -> CGFloat {
+    /// How many lines a card gives its words when it is only being glanced
+    /// at: two for one at work or asking — what it is on, not what it said
+    /// — and five for one that has stopped to be read.
+    static func glance(_ session: Island.Session) -> Int {
         switch session.part {
-        case .asking, .working: return words
-        case .waiting, .done: return over ? wide : read
+        case .asking, .working: return Int(words / lineHeight)
+        case .waiting, .done: return Int(read / lineHeight)
         }
     }
 
-    /// How many lines that is, said as lines rather than as points: the
-    /// text is cut where the card's height cuts it, so the drawing and the
-    /// sum are the same answer and neither can drift from the other.
-    static func lines(_ session: Island.Session, over: Bool = false) -> Int {
-        switch session.part {
-        case .asking, .working: return 2
-        case .waiting, .done: return over ? 12 : 5
-        }
+    /// How tall a message stands drawn whole, at the width the card gives
+    /// it: measured in the font it is drawn in, before it is drawn. A
+    /// height guessed from the length of the message would clip its last
+    /// line or leave a gap under it, and a card that measured itself after
+    /// it was drawn would grow under the pointer that was reading it — so
+    /// the number is worked out here, from the text, and both the frame and
+    /// the cut are worked out from the number.
+    static func fitted(_ message: String, wide: CGFloat) -> CGFloat {
+        guard wide > 0 else { return lineHeight * 3 }
+        let box = (message as NSString).boundingRect(
+            with: NSSize(width: wide, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: NSFont.systemFont(ofSize: 11)]
+        )
+        return box.height
+    }
+
+    /// How many lines of its words this card holds. The card being read —
+    /// the front of the pile, or the one under the pointer — holds the
+    /// whole message, as many lines as it takes; every other card holds a
+    /// glance at it (`glance`). Rounded up, so the frame is always at least
+    /// as tall as the text, and never taller than the bar may open (`most`):
+    /// a card as tall as the window it is drawn over is not a card any more,
+    /// and past that the tooltip carries the rest.
+    static func lines(
+        _ session: Island.Session,
+        whole read: Bool = false,
+        wide: CGFloat = 0,
+        most: CGFloat = .infinity
+    ) -> Int {
+        guard read, let message = under(session) else { return glance(session) }
+        let needed = Int((fitted(message, wide: wide) / lineHeight).rounded(.up))
+        // No cap said is no cap: infinity is not a number of lines to
+        // convert, so the room is only counted when there is one.
+        let room = most.isFinite ? Int(max(0, most) / lineHeight) : needed
+        return max(1, min(needed, room))
+    }
+
+    /// The room those lines take: what the text is framed to, and what the
+    /// pile's arithmetic counts on, from the one number that decides both.
+    static func said(
+        _ session: Island.Session,
+        whole read: Bool = false,
+        wide: CGFloat = 0,
+        most: CGFloat = .infinity
+    ) -> CGFloat {
+        CGFloat(lines(session, whole: read, wide: wide, most: most)) * lineHeight
     }
 
     /// How tall a card stands: its breath, its own line, and the lines of
@@ -120,8 +166,13 @@ enum IslandPlace {
     /// the view, so the pile's arithmetic and the cards themselves are
     /// the same answer — the bar is exactly as tall as what it holds,
     /// and the drawing can't drift from the sum without a test failing.
-    static func card(_ session: Island.Session, over: Bool = false) -> CGFloat {
-        card(under(session) != nil, said(session, over: over))
+    static func card(
+        _ session: Island.Session,
+        whole read: Bool = false,
+        wide: CGFloat = 0,
+        most: CGFloat = .infinity
+    ) -> CGFloat {
+        card(under(session) != nil, said(session, whole: read, wide: wide, most: most))
     }
 
     /// What a card's own line names: the tool it's on while it's at work,
@@ -349,6 +400,12 @@ struct IslandBar: View {
     /// back must not close it on the way in.
     @State private var cursor = false
 
+    /// Which card the pointer is resting on, if any. The pile straightens
+    /// for the whole of it, but only one card at a time is the one being
+    /// read — the pointer's, or the front of the pile — and only that one
+    /// shows its whole message (see `reading`).
+    @State private var hovered: String?
+
     /// Whether the pile stands straightened: what a cursor says, unless
     /// the one who drew the bar said otherwise (see `opened`).
     private var over: Bool { opened ?? cursor }
@@ -374,7 +431,34 @@ struct IslandBar: View {
     /// the same thing the cards themselves are pinned to, so the bar is
     /// exactly as tall as what it holds.
     private var heights: [CGFloat] {
-        shown.map { IslandPlace.card($0, over: over) }
+        shown.enumerated().map { place, session in
+            IslandPlace.card(
+                session, whole: reading(place, session), wide: wordsWide, most: wordsMost
+            )
+        }
+    }
+
+    /// Whether this card is the one being read, and so the one that shows
+    /// its whole message: the front of the pile — the newest news is what
+    /// a glance at the bar is for, and it is the card nothing covers — and
+    /// whichever card the pointer is resting on, since a pointer resting on
+    /// a card is a person asking to read that one and not the rest of them.
+    private func reading(_ level: Int, _ session: Island.Session) -> Bool {
+        level == 0 || hovered == session.id
+    }
+
+    /// The width a card's words are drawn at: the bar's own, less the
+    /// breath inside the card at each edge. The number the message is
+    /// measured at and the width it is drawn at, from the one place.
+    private var wordsWide: CGFloat { max(0, width - 24) }
+
+    /// The tallest a card's words may stand and the bar still be a notch:
+    /// the room's own open height, less the card's chrome — its breath, its
+    /// line, and the air under it. The same cap the bar itself opens to
+    /// (IslandPlace.open), so a card can never be taller than the bar that
+    /// holds it.
+    private var wordsMost: CGFloat {
+        IslandPlace.open(room.height) - IslandPlace.pad * 2 - IslandPlace.line - IslandPlace.gap
     }
 
     /// How tall the bar stands: the pile's own arithmetic while it's
@@ -481,6 +565,9 @@ struct IslandBar: View {
             // where it settles.
             .animation(Motion.settle, value: held.count)
             .animation(Motion.settle, value: island.holds.count)
+            // A card opening to its whole message is a card being read: it
+            // grows where it stands rather than jumping a paragraph taller.
+            .animation(Motion.settle, value: hovered)
             // The pile says where a card is, so a card that changes
             // place — a new one on top, the rest pushed back — is
             // followed there rather than jumping: the news is a
@@ -500,7 +587,9 @@ struct IslandBar: View {
     /// own top edge — and shows only its own first slice, the rest
     /// being behind the card in front of it. Once the pile is
     /// straightened every card is level 0 and whole, which is what
-    /// opening it is for.
+    /// opening it is for. A card that is whole is not always a card that
+    /// is opened: its words are a glance unless it is the one being read
+    /// (see `reading`).
     private func card(_ session: Island.Session, level: Int) -> some View {
         let deck = IslandPlace.deck(over ? 0 : level)
         let buried = !over && level > 0
@@ -547,17 +636,26 @@ struct IslandBar: View {
             // reply is the point of a card, and half a reply beside a
             // tool's name is no reply at all. Not on a card buried in
             // the pile — a slice is a name and a tool, not a paragraph.
+            //
+            // The one card being read holds the whole message; the rest
+            // hold a glance at it (IslandPlace.lines), so a notch never
+            // grows to the height of the window for a message nobody
+            // asked to read yet.
             if !buried, let words = IslandPlace.under(session) {
+                let whole = reading(level, session)
                 Text(words)
                     .font(.system(size: 11))
                     .foregroundColor(Palette.muted)
-                    .lineLimit(IslandPlace.lines(session, over: over))
+                    .lineLimit(IslandPlace.lines(session, whole: whole, wide: wordsWide, most: wordsMost))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     // As many lines of it as this card holds, and the same
                     // number the pile counts on (IslandPlace.said): a card
                     // is the height the arithmetic says it is, whether it
                     // had a word to wrap or not.
-                    .frame(height: IslandPlace.said(session, over: over), alignment: .topLeading)
+                    .frame(
+                        height: IslandPlace.said(session, whole: whole, wide: wordsWide, most: wordsMost),
+                        alignment: .topLeading
+                    )
             }
         }
         .padding(.horizontal, 12)
@@ -570,6 +668,12 @@ struct IslandBar: View {
         )
         .shadow(color: .black.opacity(0.08), radius: 16, y: 5)
         .contentShape(Rectangle())
+        // Which card the pointer is on, said per card: the pile straightens
+        // for the whole of the bar, but the message a card opens to is the
+        // pointer's card alone — reading one card must not unfold the rest.
+        .onHover { inside in
+            hovered = inside ? session.id : (hovered == session.id ? nil : hovered)
+        }
         .onTapGesture { island.visit(session) }
         // The whole of what it said, for the cursor that rests on the card:
         // a card holds as many lines as a notch may (IslandPlace.lines),
