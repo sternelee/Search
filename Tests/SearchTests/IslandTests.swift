@@ -76,14 +76,13 @@ final class IslandTests: XCTestCase {
 
     /// What a hook says is said at a length the bar can hold: the words
     /// kept to one glance, whatever the run said.
-    func testTheWordsAreCutToTheBar() {
-        let long = String(repeating: "a", count: 300)
-        let said = IslandRead.event(
-            body: json(["hook_event_name": "Stop", "session_id": "r", "last_assistant_message": long]),
+    func testTheWordsAreKeptWhole() {
+        let said = String(repeating: "a", count: 300)
+        let read = IslandRead.event(
+            body: json(["hook_event_name": "Stop", "session_id": "r", "last_assistant_message": said]),
             source: nil, tty: nil
         )
-        XCTAssertEqual(said?.words?.count, 160, "the bar keeps 160, the one line of it")
-        XCTAssertTrue(said?.words?.hasSuffix("…") ?? false, "the cut says it was cut")
+        XCTAssertEqual(read?.words, said, "a message is kept whole — it is what the card is for")
         XCTAssertNil(
             IslandRead.event(
                 body: json(["hook_event_name": "Stop", "session_id": "r", "last_assistant_message": "   "]),
@@ -91,6 +90,17 @@ final class IslandTests: XCTestCase {
             )?.words,
             "whitespace-only words are nothing"
         )
+        // A message long enough to be a document is cut where it stops
+        // being one, and says it was cut; a tool's name is still cut to a
+        // line, since that is all the line it goes in holds.
+        let essay = String(repeating: "b", count: 5_000)
+        let cut = IslandRead.event(
+            body: json(["hook_event_name": "Stop", "session_id": "r", "last_assistant_message": essay]),
+            source: nil, tty: nil
+        )
+        XCTAssertEqual(cut?.words?.count, 4_000, "an essay is cut to what a message may be")
+        XCTAssertTrue(cut?.words?.hasSuffix("…") ?? false, "the cut says it was cut")
+        XCTAssertEqual(IslandRead.say(String(repeating: "c", count: 300))?.count, 160, "a tool's name keeps its line")
     }
 
     // MARK: - the shape
@@ -224,6 +234,10 @@ final class IslandTests: XCTestCase {
         XCTAssertEqual(one()?.part, .working, "a session is made from its work when it starts unsaid")
         XCTAssertEqual(one()?.tool, "Bash", "the tool is what the bar says of the work")
 
+        island.heard(said(["hook_event_name": "PostToolUse", "session_id": "run-9", "tool_name": "Bash"])!)
+        XCTAssertNil(one()?.tool, "a tool that has finished is not what the agent is doing any more")
+        XCTAssertEqual(one()?.part, .working, "the run goes on without it")
+
         island.heard(said(["hook_event_name": "UserPromptSubmit", "session_id": "run-9", "prompt": "go"])!)
         XCTAssertEqual(one()?.part, .working, "starting is starting, whatever was said before")
         XCTAssertNil(one()?.tool, "a new run says nothing yet of a tool")
@@ -244,6 +258,73 @@ final class IslandTests: XCTestCase {
 
         island.heard(said(["hook_event_name": "PreToolUse", "session_id": "run-9", "tool_name": "Bash"])!)
         island.heard(said(["hook_event_name": "SessionEnd", "session_id": "run-9"])!)
+        XCTAssertNil(one(), "the run over, the session goes with it")
+    }
+
+    /// A tool that finishes takes its own line down, and no one else's. Two
+    /// calls run side by side — agents run tools in parallel — and a card
+    /// names one of them, so the step that comes back is matched by the
+    /// agent's own id for the call: the one still running keeps its line,
+    /// and the card never says a tool is running after it has come back.
+    /// What a step may not undo is an ask it is parked on, or a turn that
+    /// has already finished.
+    @MainActor
+    func testAFinishedToolTakesDownItsOwnLine() {
+        let island = Island.shared
+        let said = { (fields: [String: Any]) in
+            IslandRead.event(body: self.json(fields), source: "claude", tty: "/dev/ttys004")
+        }
+        func one() -> Island.Session? { island.sessions.first { $0.id == "claude/run-pair" } }
+
+        island.heard(said([
+            "hook_event_name": "PreToolUse", "session_id": "run-pair",
+            "tool_name": "Bash", "tool_use_id": "call-1", "tool_input": ["command": "sleep 9"],
+        ])!)
+        island.heard(said([
+            "hook_event_name": "PreToolUse", "session_id": "run-pair",
+            "tool_name": "Read", "tool_use_id": "call-2", "tool_input": ["file_path": "/tmp/a"],
+        ])!)
+        XCTAssertEqual(one()?.tool, "Read", "the newest call is the one the card names")
+
+        island.heard(said([
+            "hook_event_name": "PostToolUse", "session_id": "run-pair",
+            "tool_name": "Bash", "tool_use_id": "call-1",
+        ])!)
+        XCTAssertEqual(one()?.tool, "Read", "a step that isn't the call up leaves it up")
+
+        island.heard(said([
+            "hook_event_name": "PostToolUse", "session_id": "run-pair",
+            "tool_name": "Read", "tool_use_id": "call-2",
+        ])!)
+        XCTAssertNil(one()?.tool, "the call that comes back is the one taken down")
+        XCTAssertEqual(one()?.part, .working, "and the run goes on")
+
+        // An ask is not undone by a tool finishing: the question is what
+        // the card is there for, and it is still being waited on.
+        island.held(IslandServer.Hold(
+            event: IslandEvent(
+                source: "claude", name: "PermissionRequest", session: "run-pair",
+                tty: "/dev/ttys004", cwd: nil, tool: "Bash", call: "rm -rf /", prompt: nil, words: nil
+            ),
+            answer: { _ in }
+        ))
+        XCTAssertEqual(one()?.part, .asking, "the ask is up")
+        island.heard(said([
+            "hook_event_name": "PostToolUse", "session_id": "run-pair", "tool_name": "Bash",
+        ])!)
+        XCTAssertEqual(one()?.part, .asking, "a step coming back does not answer a question")
+        XCTAssertEqual(one()?.tool, "Bash", "and the card still names what is being asked about")
+
+        // Nor is a finished turn made to look busy again by a step that
+        // arrives late: done is done until the next turn.
+        island.heard(said(["hook_event_name": "Stop", "session_id": "run-pair", "last_assistant_message": "did it"])!)
+        island.heard(said([
+            "hook_event_name": "PostToolUse", "session_id": "run-pair", "tool_name": "Bash",
+        ])!)
+        XCTAssertEqual(one()?.part, .done, "a late step does not un-finish a turn")
+        XCTAssertEqual(one()?.words, "did it", "and the message it finished on stays")
+
+        island.heard(said(["hook_event_name": "SessionEnd", "session_id": "run-pair"])!)
         XCTAssertNil(one(), "the run over, the session goes with it")
     }
 
@@ -626,6 +707,78 @@ final class IslandTests: XCTestCase {
         XCTAssertTrue(IslandPlace.doing(silent).isEmpty, "an empty saying leaves the line to the name alone")
     }
 
+    /// A finished card says its message under the line rather than in it:
+    /// the line is who it is and that it finished, and the message — the
+    /// thing a person came to the bar to read — gets the card's whole width.
+    /// The card being read (the front of the pile, or the one under the
+    /// pointer) gets all of it; every other card gets a glance. A working
+    /// card names the tool it's on, and stands a line tall when it has
+    /// nothing to say under it.
+    func testAFinishedCardSaysItsMessageUnderTheLine() {
+        func session(_ part: Island.Session.Part, tool: String?, words: String?) -> Island.Session {
+            Island.Session(
+                id: "claude/shape", source: "claude", part: part, tool: tool,
+                words: words, tty: nil, cwd: nil, at: Date()
+            )
+        }
+        let said = String(repeating: "the answer ", count: 40)
+        let done = session(.done, tool: "Bash", words: said)
+        XCTAssertEqual(IslandPlace.doing(done), "", "a finished card names no tool — nothing is running")
+        XCTAssertEqual(IslandPlace.under(done), said, "the message is under the line, whole")
+        XCTAssertEqual(IslandPlace.lines(done), 5, "five lines of it when it is a glance")
+
+        // The card being read holds the whole message: as many lines as the
+        // message needs at the width it is drawn at, measured rather than
+        // guessed — and never fewer than the glance it would have got.
+        let wide: CGFloat = 336
+        let whole = IslandPlace.lines(done, whole: true, wide: wide)
+        XCTAssertGreaterThan(whole, 5, "the whole message is more than a glance at it")
+        XCTAssertEqual(
+            IslandPlace.said(done, whole: true, wide: wide),
+            CGFloat(whole) * IslandPlace.lineHeight,
+            "the frame is the lines it holds, from the one number that decides both"
+        )
+        XCTAssertEqual(
+            IslandPlace.card(done, whole: true, wide: wide) - IslandPlace.card(done),
+            IslandPlace.said(done, whole: true, wide: wide) - IslandPlace.read,
+            "the read card is taller by the room the whole message was given"
+        )
+        // A taller frame is a frame the text fits in, so it is rounded up:
+        // the room asked for is never less than the text measured.
+        XCTAssertGreaterThanOrEqual(
+            IslandPlace.said(done, whole: true, wide: wide), IslandPlace.fitted(said, wide: wide),
+            "the frame is at least as tall as the message drawn in it"
+        )
+        // Never taller than the bar may open: a card as tall as the window
+        // it is drawn over is not a card, so the cap holds and the tooltip
+        // carries the rest.
+        let capped = IslandPlace.lines(done, whole: true, wide: wide, most: 84)
+        XCTAssertEqual(capped, 6, "the cap is the room divided into lines, and no more")
+        XCTAssertGreaterThan(
+            IslandPlace.lines(done, whole: true, wide: wide / 2), whole,
+            "the same message at half the width takes more lines to say"
+        )
+
+        let work = session(.working, tool: "Bash", words: nil)
+        XCTAssertEqual(IslandPlace.doing(work), "Bash", "a working card names the tool it's on")
+        XCTAssertNil(IslandPlace.under(work), "and says nothing under it when it said nothing")
+        XCTAssertEqual(
+            IslandPlace.card(work), IslandPlace.card(false),
+            "a card with nothing under it is a line and its breath"
+        )
+        XCTAssertEqual(
+            IslandPlace.card(work, whole: true, wide: wide), IslandPlace.card(false),
+            "and no taller for being read: there is nothing under it to open"
+        )
+
+        // Between tools — one finished and the next hasn't begun — the card
+        // is working and names nothing: "is running" with nothing after it
+        // is a bar that lost its place.
+        let between = session(.working, tool: nil, words: nil)
+        XCTAssertEqual(IslandPlace.doing(between), "", "a card between tools names no tool")
+        XCTAssertEqual(IslandPlace.card(between), IslandPlace.card(false), "and stands a line tall")
+    }
+
     /// The bar as it's drawn, with no window and no cursor: the closed
     /// stack is one card and a sliver of each one under it, the open one
     /// is every card whole, and both are the same numbers the shape is
@@ -698,12 +851,12 @@ final class IslandTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(all.count, 3, "this test's own cards are held")
 
         let open = try height(true)
-        XCTAssertEqual(open, IslandPlace.opened(all.map(IslandPlace.card), room: 800), accuracy: 1,
-                       "open, the bar is every card whole with the air between them")
+        XCTAssertEqual(open, IslandPlace.opened(all.map { IslandPlace.card($0) }, room: 800),
+                       accuracy: 1, "open, the bar is every card whole with the air between them")
 
         let closed = try height(false)
         let deep = Array(all.prefix(IslandPlace.showing(all.count)))
-        XCTAssertEqual(closed, IslandPlace.closed(deep.map(IslandPlace.card)),
+        XCTAssertEqual(closed, IslandPlace.closed(deep.map { IslandPlace.card($0) }),
                        accuracy: 1, "closed, the bar is the front card and a slice of each one behind it")
     }
 

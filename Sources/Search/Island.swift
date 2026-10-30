@@ -15,6 +15,11 @@ struct IslandEvent {
     var tty: String?
     var cwd: String?
     var tool: String?
+    /// The agent's own name for the call this step is about: the id a
+    /// tool is begun under, and the one its finish comes back with. It's
+    /// what tells the step that finishes from a call running beside it —
+    /// agents run tools in parallel, and a card says one of them.
+    var use: String?
     var call: String?
     var prompt: String?
     var words: String?
@@ -42,9 +47,12 @@ enum IslandRead {
             tty: tty ?? say(raw["_tty"]),
             cwd: say(raw["cwd"]),
             tool: say(raw["tool_name"]),
+            // Claude's own word for it, pi's, and the bare camelCase one
+            // a bridge that passes a payload through untouched carries.
+            use: say(raw["tool_use_id"]) ?? say(raw["tool_call_id"]) ?? say(raw["toolCallId"]),
             call: call(raw["tool_input"]),
             prompt: say(raw["prompt"]),
-            words: say(raw["last_assistant_message"]) ?? say(raw["message"])
+            words: message(raw["last_assistant_message"]) ?? message(raw["message"])
         )
     }
 
@@ -100,12 +108,28 @@ enum IslandRead {
     /// things in and cut to what a bar can hold. Not a string, or an
     /// empty one: nothing, so the caller can tell said from unsaid.
     static func say(_ value: Any?) -> String? {
+        cut(value, to: 160)
+    }
+
+    /// What an agent said, whole: a message is the thing a person came to
+    /// the bar to read, and a message cut to the width of a tool's name is
+    /// no message at all. Cut only where a message would stop being one —
+    /// a reply that long is a reply to be read in the terminal it was said
+    /// in, not in a notch over a page.
+    static func message(_ value: Any?) -> String? {
+        cut(value, to: 4_000)
+    }
+
+    /// A string's own saying, trimmed of the whitespace hooks wrap things
+    /// in and cut to `most` — one rule for both, so a saying and a message
+    /// are trimmed the same way and only differ in how much of them is
+    /// kept.
+    private static func cut(_ value: Any?, to most: Int) -> String? {
         guard let text = value as? String else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard trimmed.count > 160 else { return trimmed }
-        let cut = trimmed.prefix(159)
-        return cut + "…"
+        guard trimmed.count > most else { return trimmed }
+        return trimmed.prefix(most - 1) + "…"
     }
 }
 
@@ -143,6 +167,11 @@ final class Island: ObservableObject {
         let source: String
         var part: Part
         var tool: String?
+        /// The call that tool is: the agent's own id for it, so the step
+        /// that finishes can be told from one running beside it. Nothing
+        /// for a payload that carries no id (a bridge that says only that
+        /// some tool is done), which is taken as finishing the one up.
+        var use: String? = nil
         var words: String?
         var tty: String?
         var cwd: String?
@@ -237,8 +266,35 @@ final class Island: ObservableObject {
             // the work. A session that starts mid-run (its start was
             // never said, or was said before the app came up) is made
             // here, from what it's doing.
-            grow(id, event) { $0.part = .working; $0.tool = event.tool; $0.words = nil }
-        case "PostToolUse", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Interrupt":
+            grow(id, event) {
+                $0.part = .working
+                $0.tool = event.tool
+                $0.use = event.use
+                $0.words = nil
+            }
+        case "PostToolUse", "PostToolUseFailure":
+            // A tool that has finished is not what the agent is doing any
+            // more. The run goes on — an agent is a run of tools — so the
+            // card goes back to saying it's working rather than naming a
+            // tool that is already done with: a bar that says "is running
+            // Bash" long after the command came back is a bar nobody
+            // believes, and the one thing a person glances at it for is
+            // what is true now.
+            //
+            // Three things it may not undo. An ask it is parked on: a tool
+            // finishing is not an answer, and dropping the card to working
+            // would take the question off the bar. A turn already finished:
+            // a step arriving after the end of it must not un-finish it.
+            // And a call running beside the one that finished — agents run
+            // tools in parallel, and a card names one — which is a step
+            // whose id is not the id up.
+            grow(id, event) { session in
+                guard session.part == .working else { return }
+                if let up = session.use, let done = event.use, done != up { return }
+                session.tool = nil
+                session.use = nil
+            }
+        case "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Interrupt":
             // The work goes on; nothing new to say of it.
             break
         case "Notification":
@@ -282,6 +338,7 @@ final class Island: ObservableObject {
         grow(id, hold.event) {
             $0.part = .asking
             $0.tool = hold.event.tool
+            $0.use = hold.event.use
             $0.words = hold.event.call
         }
         holds.append(hold)
