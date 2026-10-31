@@ -516,6 +516,9 @@ final class Terminal: ObservableObject, Identifiable {
         /// The colour the program gave the caret (OSC 12), or `.plain`
         /// for the theme's own.
         var cursorInk: Paint = .plain
+        /// The shape the program asked for (DECSCUSR), or `nil` when the
+        /// user's own preference stands.
+        var cursorShape: CursorShape? = nil
         /// The block a prompt is being built in, if the last mark the shell
         /// printed began one and nothing has ended it since: where the
         /// prompt's first row is, by place. The input dock holds this
@@ -697,7 +700,7 @@ extension Screen {
             // The first line's place: the lift is clamped to the scrollback
             // above, so this is a row that is really there.
             top: place(0) - lifted,
-            links: links, cursorInk: cursorInk,
+            links: links, cursorInk: cursorInk, cursorShape: cursorShape,
             // The prompt being built, if there is one: the last mark the
             // shell printed began a block and nothing has run it yet.
             prompt: blocks.last(where: { $0.state == .prompt }).map { $0.first }

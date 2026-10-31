@@ -158,6 +158,12 @@ enum DockLedger {
 /// curves (TerminalField), which is Metalterm's caret to the number.
 @MainActor
 final class TerminalDock {
+    /// A selection range in the dock's text, as character indices.
+    struct Selection: Equatable {
+        let start: Int
+        let end: Int
+    }
+
     /// What one frame wants drawn.
     struct Model {
         /// Whether the dock owns the input — the veil's question.
@@ -171,6 +177,8 @@ final class TerminalDock {
         var text = ""
         var cursor = 0
         var suggestion = ""
+        /// A selection in the text. Nil when nothing is selected.
+        var selection: Selection?
         /// One arrival per glyph, `DockLedger.settled` for the ones no
         /// frame owes anything.
         var arrivals: [CFTimeInterval] = []
@@ -192,6 +200,8 @@ final class TerminalDock {
     private(set) var cursor = 0
     private var suggestion = ""
     private var arrivals: [CFTimeInterval] = []
+    /// A selection in the dock's text. Nil when nothing is selected.
+    private(set) var selection: Selection?
 
     /// The line is leaving: the empty report after the line was accepted,
     /// fading out where it stood over the window the find panel leaves in.
@@ -273,6 +283,10 @@ final class TerminalDock {
             cursor = min(max(0, at), said.count)
             suggestion = ghost
             owns = true
+            // The text changed: any selection the dock held is stale, because
+            // the shell's editor just rewrote the line. Clear it rather than
+            // let a delete key erase the wrong range.
+            selection = nil
             // The caret: settled the first time it is seen, and after that
             // a column that moved is a leg on the warp's curves, and a
             // line that changed — a keystroke — bleeds it once, wherever
@@ -312,7 +326,41 @@ final class TerminalDock {
         cursor = 0
         suggestion = ""
         arrivals = []
+        selection = nil
         caret.settle(0, wide: 0)
+    }
+
+    // MARK: - the selection
+
+    /// Set the selection range. Start and end are character indices; the
+    /// smaller one becomes start, the larger becomes end. A nil or inverted
+    /// range clears the selection.
+    func select(from: Int, to: Int) {
+        guard from != to, from >= 0, to >= 0, from <= text.count, to <= text.count else {
+            selection = nil
+            return
+        }
+        selection = Selection(start: min(from, to), end: max(from, to))
+    }
+
+    /// Clear the selection without moving the cursor.
+    func clearSelection() {
+        selection = nil
+    }
+
+    /// Whether a delete key should send the selection to the shell rather
+    /// than a single character erase: the dock owns the input and a
+    /// selection is held.
+    var shouldDeleteSelection: Bool {
+        owns && selection != nil
+    }
+
+    /// The selection as a range the shell can delete, or nil when nothing
+    /// is selected. Sent as CSI 27;9;88~<start>;<end>~.
+    func takeSelection() -> Selection? {
+        guard let sel = selection else { return nil }
+        selection = nil
+        return sel
     }
 
     // MARK: - what a frame is
@@ -406,6 +454,7 @@ final class TerminalDock {
         model.text = text
         model.cursor = cursor
         model.suggestion = suggestion
+        model.selection = selection
         model.arrivals = arrivals
         model.caret = caret.advance(at: now)
         return model
@@ -452,6 +501,7 @@ final class TerminalDockPlate: NSView {
         var text = ""
         var cursor = 0
         var suggestion = ""
+        var selection: TerminalDock.Selection?
         var arrivals: [CFTimeInterval] = []
         var head: CGFloat = 0
         var tail: CGFloat = 0
@@ -616,6 +666,7 @@ final class TerminalDockPlate: NSView {
         next.text = model.text
         next.cursor = model.cursor
         next.suggestion = model.suggestion
+        next.selection = model.selection
         next.arrivals = model.arrivals
         next.head = model.caret.head
         next.tail = model.caret.tail
@@ -688,6 +739,15 @@ final class TerminalDockPlate: NSView {
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSBezierPath(rect: NSRect(x: textX, y: 0, width: max(0, band), height: bounds.height)).addClip()
+        // The selection: a highlight behind the selected range, drawn before
+        // the glyphs so the text sits on top.
+        if let sel = p.selection, sel.start < sel.end, sel.end <= textPositions.count - 1 {
+            let startX = textX + textPositions[sel.start] - shift
+            let endX = textX + textPositions[sel.end] - shift
+            let selRect = NSRect(x: startX, y: caretMid - inkH / 2, width: endX - startX, height: inkH)
+            ink.withAlphaComponent(0.25 * shown).setFill()
+            selRect.fill()
+        }
         for (index, char) in p.text.enumerated() {
             let x = textX + textPositions[index] - shift
             let width = textPositions[index + 1] - textPositions[index]

@@ -984,6 +984,10 @@ struct SettingsPanel: View {
                 Line("Synchronized output", "A program drawing a frame says when it is whole, and the terminal waits rather than showing half of it") {
                     Switch(on: $prefs.terminalSync)
                 }
+                Rule()
+                Line("Confirm close", "Ask before closing a pane whose shell is still running") {
+                    Switch(on: $prefs.terminalConfirmClose)
+                }
             }
             Card {
                 Line(

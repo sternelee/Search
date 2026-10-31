@@ -625,7 +625,7 @@ final class TerminalSplits: NSView, ObservableObject {
     @discardableResult
     func closeFocusedPane() -> Bool {
         guard panes.count > 1 else { return false }
-        if panes[focused]?.terminal.exit == nil {
+        if TerminalLook.confirmClose, panes[focused]?.terminal.exit == nil {
             Ask.sure("Close Pane?",
                      detail: "Closing the pane will terminate its terminal session.",
                      confirm: "Close Pane") { [weak self] in self?.closePane() }

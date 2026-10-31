@@ -689,6 +689,10 @@ final class Preferences: ObservableObject {
     @Published var terminalSync: Bool {
         didSet { store.set(terminalSync, forKey: "terminal.sync"); terminalLookChanged() }
     }
+    /// Whether closing a pane with a live shell asks for confirmation.
+    @Published var terminalConfirmClose: Bool {
+        didSet { store.set(terminalConfirmClose, forKey: "terminal.confirmClose"); terminalLookChanged() }
+    }
 
     /// The terminal's look, handed over to the terminals already open: they
     /// read it from TerminalLook and not from here, so every change has to
@@ -710,6 +714,7 @@ final class Preferences: ObservableObject {
         TerminalLook.takesClipboard = terminalClipboard
         TerminalLook.opensLinks = terminalLinks
         TerminalLook.syncsOutput = terminalSync
+        TerminalLook.confirmClose = terminalConfirmClose
         TerminalLook.announce()
     }
 
@@ -850,6 +855,7 @@ final class Preferences: ObservableObject {
         terminalClipboard = store.object(forKey: "terminal.clipboard") as? Bool ?? true
         terminalLinks = store.object(forKey: "terminal.links") as? Bool ?? true
         terminalSync = store.object(forKey: "terminal.sync") as? Bool ?? true
+        terminalConfirmClose = store.object(forKey: "terminal.confirmClose") as? Bool ?? true
         floatingNewTab = store.bool(forKey: "newtab.floating")
         // No property observer runs in an initializer, so the first answer
         // has to be given by hand. On for everyone who never touched it

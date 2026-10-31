@@ -122,17 +122,19 @@ final class TerminalParseTests: XCTestCase {
 
     func testSGRWithSubParameters() {
         // A colon speaks the sub-parameter's semicolon (4:3 the curly
-        // underline, 4:4 the dotted one — kept as an underline, though
-        // the screen draws the two of them the same heavy way).
+        // underline, 4:4 the dotted one — each drawn as itself on screen).
         feed("\u{1b}[4:3mX")
         XCTAssertTrue(screen.rows[0].cells[0].ink.underline)
-        XCTAssertTrue(screen.rows[0].cells[0].ink.curl, "4:3 is the curly underline")
+        XCTAssertEqual(screen.rows[0].cells[0].ink.underlineStyle, .curly, "4:3 is the curly underline")
         feed("\u{1b}[4:4mY")
         XCTAssertTrue(screen.rows[0].cells[1].ink.underline, "4:4 is still an underline")
-        XCTAssertFalse(screen.rows[0].cells[1].ink.curl, "4:4 is dotted, not curly")
+        XCTAssertEqual(screen.rows[0].cells[1].ink.underlineStyle, .dotted, "4:4 is dotted")
+        feed("\u{1b}[4:5mZ")
+        XCTAssertTrue(screen.rows[0].cells[2].ink.underline, "4:5 is still an underline")
+        XCTAssertEqual(screen.rows[0].cells[2].ink.underlineStyle, .dashed, "4:5 is dashed")
         feed("\u{1b}[24m.")
         XCTAssertFalse(screen.ink.underline)
-        XCTAssertFalse(screen.ink.curl, "24 takes the line away, whatever its style")
+        XCTAssertEqual(screen.ink.underlineStyle, .none, "24 takes the line away, whatever its style")
     }
 
     /// SGR 21 is the double underline — the one it was taken for in the
@@ -142,10 +144,10 @@ final class TerminalParseTests: XCTestCase {
         feed("\u{1b}[1mb\u{1b}[21mu")
         XCTAssertTrue(screen.rows[0].cells[0].ink.bold, "21 leaves bold alone")
         XCTAssertTrue(screen.rows[0].cells[1].ink.underline, "21 is the double underline")
-        XCTAssertFalse(screen.rows[0].cells[1].ink.curl, "21 is double, not curly")
+        XCTAssertEqual(screen.rows[0].cells[1].ink.underlineStyle, .double_, "21 is double")
         feed("\u{1b}[4:3mc\u{1b}[21mv")
         XCTAssertTrue(screen.rows[0].cells[3].ink.underline)
-        XCTAssertFalse(screen.rows[0].cells[3].ink.curl, "21 replaces the curly style with the double one")
+        XCTAssertEqual(screen.rows[0].cells[3].ink.underlineStyle, .double_, "21 replaces the curly style with the double one")
     }
 
     /// SGR 58: the line under (or through) the words gets a colour of its
@@ -522,5 +524,58 @@ final class TerminalParseTests: XCTestCase {
         feed("C")
         XCTAssertEqual(screen.x, 1, "and the sequence went on to its final anyway")
         XCTAssertEqual(screen.rows[0].text, "abcd")
+    }
+
+    // MARK: DECSCUSR — the cursor's shape and blink
+
+    func testDecscusrSetsCursorShapeAndBlink() {
+        XCTAssertNil(screen.cursorShape, "no shape until a program asks")
+        XCTAssertNil(screen.cursorBlinks, "no blink rule until a program asks")
+
+        feed("\u{1b}[1 q")
+        XCTAssertEqual(screen.cursorShape, .block)
+        XCTAssertEqual(screen.cursorBlinks, true, "1: block, blinking")
+
+        feed("\u{1b}[2 q")
+        XCTAssertEqual(screen.cursorShape, .block)
+        XCTAssertEqual(screen.cursorBlinks, false, "2: block, steady")
+
+        feed("\u{1b}[3 q")
+        XCTAssertEqual(screen.cursorShape, .underline)
+        XCTAssertEqual(screen.cursorBlinks, true, "3: underline, blinking")
+
+        feed("\u{1b}[4 q")
+        XCTAssertEqual(screen.cursorShape, .underline)
+        XCTAssertEqual(screen.cursorBlinks, false, "4: underline, steady")
+
+        feed("\u{1b}[5 q")
+        XCTAssertEqual(screen.cursorShape, .bar)
+        XCTAssertEqual(screen.cursorBlinks, true, "5: bar, blinking")
+
+        feed("\u{1b}[6 q")
+        XCTAssertEqual(screen.cursorShape, .bar)
+        XCTAssertEqual(screen.cursorBlinks, false, "6: bar, steady")
+    }
+
+    func testDecscusrZeroResetsToDefault() {
+        feed("\u{1b}[5 q")
+        XCTAssertEqual(screen.cursorShape, .bar)
+        feed("\u{1b}[0 q")
+        XCTAssertEqual(screen.cursorShape, .block, "0 resets to the default block")
+        XCTAssertEqual(screen.cursorBlinks, true, "0 resets to blinking")
+    }
+
+    func testDecscusrDamagesTheFrame() {
+        _ = screen.take()
+        feed("\u{1b}[5 q")
+        XCTAssertTrue(screen.take().moved, "a cursor shape change is a frame owed")
+    }
+
+    func testResetClearsCursorShape() {
+        feed("\u{1b}[5 q")
+        XCTAssertEqual(screen.cursorShape, .bar)
+        feed("\u{1b}c")
+        XCTAssertNil(screen.cursorShape, "ESC c puts the shape back to the user's own")
+        XCTAssertNil(screen.cursorBlinks, "and the blink rule with it")
     }
 }

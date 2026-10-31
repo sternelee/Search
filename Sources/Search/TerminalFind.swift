@@ -76,6 +76,16 @@ extension TerminalView {
         field.selectText(self)
     }
 
+    /// The find opens with the given text already in the field, the first
+    /// match stepped to. A selection (⌘E/⌘J) that is empty opens the panel
+    /// without a search; one that is not fills the field and searches at once.
+    func openFind(with text: String) {
+        openFind()
+        guard let field = findField, !text.isEmpty else { return }
+        field.stringValue = text
+        research()
+    }
+
     /// One match to the next, forward or back, around the end, and the
     /// view carried to it.
     func stepFind(forward: Bool) {

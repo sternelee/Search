@@ -21,6 +21,13 @@ enum Paint: Equatable {
     case rgb(UInt8, UInt8, UInt8)
 }
 
+/// The shape of the line under a cell's words. SGR 4:1 straight, 4:3 curly,
+/// 4:4 dotted, 4:5 dashed, and SGR 21 double. Each style is drawn as it
+/// names itself; a program that asks what it set gets back what it set.
+enum UnderlineStyle: UInt16, Equatable {
+    case none = 0, straight = 1, double_ = 2, curly = 3, dotted = 4, dashed = 5
+}
+
 /// The ink of one character: two paints and the few ways a cell can differ
 /// from the words alone.
 struct Ink: Equatable {
@@ -30,14 +37,11 @@ struct Ink: Equatable {
     var faint = false
     var italic = false
     var underline = false
-    /// SGR 21 — double — and SGR 4:3, curly, land here as styles; 4:4 is
-    /// dotted, 4:5 dashed, 4:1 straight. Styles other than straight and
-    /// curly are not told apart on screen — every terminal draws them a
-    /// little differently, so the two that carry the style's weight (the
-    /// line, and the doubled one) are the ones drawn; the rest answer the
-    /// pen honestly, so a program that asks what it set gets back what it
-    /// set, which is a fuller truth than the screen's.
-    var curl = false
+    /// The style of the line under the words: straight (4:1), curly (4:3),
+    /// dotted (4:4), dashed (4:5), or double (SGR 21). Each is drawn as
+    /// itself on screen — a fuller truth than the old shorthand that drew
+    /// them all as straight.
+    var underlineStyle: UnderlineStyle = .none
     var strike = false
     var blink = false
     var inverse = false
@@ -134,6 +138,19 @@ enum MouseMode: Equatable {
     }
 }
 
+/// The cursor's shape, set by DECSCUSR (`CSI Ps SP q`). The program asks
+/// for one of three shapes; each may be steady or blinking. The user's own
+/// preference (TerminalLook.cursor) is the default the terminal starts with;
+/// a program that asks for a different shape overrides it until it asks back
+/// or the terminal resets.
+enum CursorShape: UInt8, Equatable {
+    case block = 0, bar = 1, underline = 2
+
+    /// The word the shader reads: the same numbering as TerminalCursor, so
+    /// the two can be passed to the frame without translation.
+    var word: UInt32 { UInt32(rawValue) }
+}
+
 /// The screen's modes as one small word: what a frame has to know to draw
 /// it, and what the keyboard and the hand have to know to talk to it.
 /// Carried with the damage rather than read off the screen, so a keystroke
@@ -157,6 +174,15 @@ struct Modes: Equatable {
     /// touching any of them — the mark of a thing that belongs in a frame,
     /// not in a record, and the reason the word carries it here.
     var reversed = false
+    /// DECSCUSR: the shape the program asked for. Nil until a program has
+    /// said — the user's own preference (TerminalLook.cursor) stands until
+    /// then. A program that asks for a bar cursor in its input field, and
+    /// a block cursor at its prompt, drives this.
+    var cursorShape: CursorShape?
+    /// DECSCUSR: whether the program asked for a blinking cursor (odd Ps)
+    /// or a steady one (even Ps). Nil until a program has said — the user's
+    /// own preference (TerminalLook.blinks) stands until then.
+    var cursorBlinks: Bool?
 }
 
 /// What feeding the screen changed, for whoever draws it: the rows by
@@ -405,6 +431,16 @@ final class Screen {
     var cursorInk: Paint = .plain {
         didSet { if cursorInk != oldValue { damage.moved = true } }
     }
+    /// The shape the program asked for (DECSCUSR). Nil until a program has
+    /// said — the user's own preference stands until then.
+    var cursorShape: CursorShape? {
+        didSet { if cursorShape != oldValue { damage.moved = true } }
+    }
+    /// Whether the program asked for a blinking cursor (DECSCUSR odd Ps)
+    /// or a steady one (even Ps). Nil until a program has said.
+    var cursorBlinks: Bool? {
+        didSet { if cursorBlinks != oldValue { damage.moved = true } }
+    }
 
     /// The modes as one small word, for whoever has to act on them with no
     /// screen in hand (see Modes).
@@ -413,7 +449,8 @@ final class Screen {
             mouse: mouse, mouseFormat: mouseFormat, applicationCursor: applicationCursor,
             applicationKeypad: applicationKeypad,
             focus: focusReporting, sync: syncOutput, visible: visible, alternate: alternate,
-            reversed: reverseVideo
+            reversed: reverseVideo,
+            cursorShape: cursorShape, cursorBlinks: cursorBlinks
         )
     }
 
@@ -812,6 +849,8 @@ final class Screen {
         y = 0
         ink = .plain
         cursorInk = .plain
+        cursorShape = nil
+        cursorBlinks = nil
         linkNow = 0
         links.removeAll()
         linkAt.removeAll()
