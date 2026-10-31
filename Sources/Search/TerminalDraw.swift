@@ -376,20 +376,22 @@ final class TerminalDraw {
             // ground in a window that has lost the keyboard, which is what
             // the background pass does to the block.
             let tint = TerminalDraw.tint(scene.cursorInk, theme: theme, strong: strong)
-            switch TerminalLook.cursor {
-            case .block:
-                break                       // the background pass has it
-            case .bar:
+            switch frame.cursorStyle {
+            case 0:
+                break                       // block: the background pass has it
+            case 1:
                 stripes.append(Rect(
                     place: SIMD4(Swift.Float(caret.x), Swift.Float(caret.y), Swift.Float(2 / cell.width), 1),
                     tint: tint
                 ))
-            case .underline:
+            case 2:
                 let high = Swift.Float(max(2 / cell.height, 0.06))
                 stripes.append(Rect(
                     place: SIMD4(Swift.Float(caret.x), Swift.Float(caret.y) + 1 - high, 1, high),
                     tint: tint
                 ))
+            default:
+                break
             }
         }
         rectCount = stripes.count
