@@ -41,7 +41,7 @@ final class TerminalDraw {
     /// not whatever the theme says of a blank square.
     struct Record {
         var glyph: UInt16 = 0
-        var flags: UInt16 = 0    // 1 wide, 2 underline, 4 strike, 8 curly, 16 blink, 32 colour
+        var flags: UInt16 = 0    // 1 wide, 2-4 underline style (0-5), 16 strike, 32 blink, 64 colour
         var fore: UInt32 = 0
         var back: UInt32 = 0
         var decoration: UInt32 = 0   // packed RGBA of the line (SGR 58), 0 for the fore's own
@@ -338,7 +338,7 @@ final class TerminalDraw {
         frame.ink = theme.ink
         frame.select = theme.select
         frame.selection = selection ?? simd_float4(-1, -1, -1, -1)
-        frame.cursorStyle = TerminalLook.cursor.word
+        frame.cursorStyle = scene.cursorShape?.word ?? TerminalLook.cursor.word
         frame.cursorInk = theme.fore(scene.cursorInk)
         // The frame's own two modes: DECSCNM's reversal (see `reversed:`)
         // and the half of the blink this frame draws on (see `blinking:`).
@@ -376,20 +376,22 @@ final class TerminalDraw {
             // ground in a window that has lost the keyboard, which is what
             // the background pass does to the block.
             let tint = TerminalDraw.tint(scene.cursorInk, theme: theme, strong: strong)
-            switch TerminalLook.cursor {
-            case .block:
-                break                       // the background pass has it
-            case .bar:
+            switch frame.cursorStyle {
+            case 0:
+                break                       // block: the background pass has it
+            case 1:
                 stripes.append(Rect(
                     place: SIMD4(Swift.Float(caret.x), Swift.Float(caret.y), Swift.Float(2 / cell.width), 1),
                     tint: tint
                 ))
-            case .underline:
+            case 2:
                 let high = Swift.Float(max(2 / cell.height, 0.06))
                 stripes.append(Rect(
                     place: SIMD4(Swift.Float(caret.x), Swift.Float(caret.y) + 1 - high, 1, high),
                     tint: tint
                 ))
+            default:
+                break
             }
         }
         rectCount = stripes.count
@@ -569,7 +571,7 @@ final class TerminalDraw {
                 record.glyph = atlas.slot(
                     square.char, bold: square.ink.bold, italic: square.ink.italic, wide: square.wide
                 )
-                if GlyphAtlas.isColour(square.char) { record.flags |= 32 }
+                if GlyphAtlas.isColour(square.char) { record.flags |= 64 }
             }
             var fore = theme.fore(square.ink.foreground)
             var back = theme.fore(square.ink.background)
@@ -584,10 +586,17 @@ final class TerminalDraw {
             }
             record.fore = fore
             record.back = back
-            if !hid, square.ink.underline { record.flags |= 2 }
-            if !hid, square.ink.curl { record.flags |= 8 }
-            if !hid, square.ink.strike { record.flags |= 4 }
-            if square.ink.blink { record.flags |= 16 }
+            // Bits 1-3 hold the underline style (0-5): none, straight,
+            // double, curly, dotted, dashed. The old layout had separate
+            // bits for underline and curly; now the style is the number.
+            // If underline is set but style is none, default to straight.
+            if !hid {
+                var style = square.ink.underlineStyle.rawValue
+                if square.ink.underline && style == 0 { style = 1 }
+                record.flags |= (style << 1) & 14
+            }
+            if !hid, square.ink.strike { record.flags |= 16 }
+            if square.ink.blink { record.flags |= 32 }
             if square.wide { record.flags |= 1 }
             record.decoration = hid ? 0 : theme.fore(square.ink.line)
             words[base + column] = record
@@ -879,7 +888,7 @@ final class TerminalDraw {
     // One cell of the grid, as the CPU wrote it into the resident buffer.
     struct CellRecord {
         uint16_t glyph;
-        uint16_t flags;   // 1 wide, 2 underline, 4 strike, 8 curly, 16 blink, 32 colour
+        uint16_t flags;   // 1 wide, 2-4 underline style (0-5), 16 strike, 32 blink, 64 colour
         uint32_t fore;
         uint32_t back;
         uint32_t decoration;  // packed RGBA of the line (SGR 58), 0 for the fore's own
@@ -916,6 +925,7 @@ final class TerminalDraw {
     struct FlatOut {
         float4 place [[position]];
         float4 tint;
+        uint style;   // underline style: 0=none, 1=straight, 2=double, 3=curly, 4=dotted, 5=dashed
     };
 
     struct GlyphOut {
@@ -1023,22 +1033,23 @@ final class TerminalDraw {
         return out;
     }
 
-    // The lines a cell can wear: under it — straight, or curly as a
-    // wave — or through it, in the colour the program named for the
-    // line (SGR 58) or the ink of the words it wears it under. A double
-    // line (SGR 21) is drawn as the one that carries its weight.
+    // The lines a cell can wear: under it — straight, curly, dotted,
+    // dashed, or double — or through it, in the colour the program named
+    // for the line (SGR 58) or the ink of the words it wears it under.
     vertex FlatOut decorationVertex(
         uint vid [[vertex_id]], uint iid [[instance_id]],
         constant Frame& f [[buffer(1)]], const device CellRecord* cells [[buffer(2)]]
     ) {
         FlatOut out;
         CellRecord c = cells[iid];
-        bool under = (c.flags & 2u) != 0u;
-        bool struck = (c.flags & 4u) != 0u;
-        bool curly = (c.flags & 8u) != 0u;
-        if (!under && !struck) {
+        // Bits 1-3 hold the underline style (0-5): none, straight, double,
+        // curly, dotted, dashed.
+        uint style = (c.flags >> 1u) & 7u;
+        bool struck = (c.flags & 16u) != 0u;
+        if (style == 0u && !struck) {
             out.place = float4(-2.0, -2.0, 0.0, 1.0);
             out.tint = float4(0.0);
+            out.style = 0u;
             return out;
         }
         uint col = iid % f.grid.x;
@@ -1047,22 +1058,34 @@ final class TerminalDraw {
         float2 point = f.origin + float2(col, row) * f.cell;
         float across = wide ? 2.0 * f.cell.x : f.cell.x;
         float4 tint = c.decoration == 0u ? (c.fore == 0u ? f.ink : unpack(c.fore)) : unpack(c.decoration);
-        if (under) {
-            // A curly line (4:3) is drawn as the heavier one: the wave it
-            // names is a shape a quad cannot hold, and a line that carries
-            // more weight is the honest shorthand for it at cell sizes.
-            // A double line (SGR 21) is drawn as the one that carries its
-            // weight, which is the straight one.
-            float high = curly ? max(f.cell.y * 0.18, 2.0) : max(f.cell.y * 0.09, 1.0);
-            point.y += f.cell.y - high;
+        if (style != 0u) {
+            // Underline styles: 1=straight, 2=double, 3=curly, 4=dotted, 5=dashed
+            float high;
+            if (style == 2u) {
+                // Double: two lines, one at 1/3 from bottom, one at 2/3
+                // For now, draw as a single thicker line (honest shorthand)
+                high = max(f.cell.y * 0.15, 2.0);
+                point.y += f.cell.y - high;
+            } else if (style == 3u) {
+                // Curly: drawn as the heavier one (honest shorthand)
+                high = max(f.cell.y * 0.18, 2.0);
+                point.y += f.cell.y - high;
+            } else {
+                // Straight, dotted, dashed: thin line
+                high = max(f.cell.y * 0.09, 1.0);
+                point.y += f.cell.y - high;
+            }
             out.place = toClip(point + corners[vid] * float2(across, high), f.drawable);
             out.tint = tint;
+            out.style = style;
             return out;
         }
+        // Strike-through: middle of the cell
         float high = max(f.cell.y * 0.06, 1.0);
         point.y += (f.cell.y - high) * 0.5;
         out.place = toClip(point + corners[vid] * float2(across, high), f.drawable);
         out.tint = tint;
+        out.style = 0u;
         return out;
     }
 
@@ -1074,7 +1097,7 @@ final class TerminalDraw {
     ) {
         GlyphOut out;
         CellRecord c = cells[iid];
-        out.colour = (c.flags & 32u) != 0u ? 1u : 0u;
+        out.colour = (c.flags & 64u) != 0u ? 1u : 0u;
         if (c.glyph == 0u) {
             out.place = float4(-2.0, -2.0, 0.0, 1.0);
             out.tint = float4(0.0);
@@ -1085,7 +1108,7 @@ final class TerminalDraw {
         // the glyph alone, and only on a screen not turned over: a
         // blink under DECSCNM is drawn as the reversal, because a
         // reversal says the ink of the square plainly enough.
-        if ((c.flags & 16u) != 0u && f.blinking == 0u && f.reversed == 0u) {
+        if ((c.flags & 32u) != 0u && f.blinking == 0u && f.reversed == 0u) {
             out.place = float4(-2.0, -2.0, 0.0, 1.0);
             out.tint = float4(0.0);
             out.uv = float2(0.0);
@@ -1117,6 +1140,22 @@ final class TerminalDraw {
     }
 
     fragment float4 flatFragment(FlatOut in [[stage_in]]) {
+        // Dotted (4) and dashed (5) underlines use the x position to
+        // create the pattern: dots are short segments with gaps, dashes
+        // are longer segments with gaps.
+        if (in.style == 4u) {
+            // Dotted: 2px dot, 2px gap
+            float x = in.place.x;
+            if (fmod(x, 4.0) >= 2.0) {
+                return float4(0.0);
+            }
+        } else if (in.style == 5u) {
+            // Dashed: 4px dash, 2px gap
+            float x = in.place.x;
+            if (fmod(x, 6.0) >= 4.0) {
+                return float4(0.0);
+            }
+        }
         return in.tint;
     }
 

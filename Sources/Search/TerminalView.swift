@@ -81,6 +81,9 @@ final class TerminalView: NSView, NSTextInputClient {
     private var pick: ((Int, Int), (Int, Int))?
     /// The anchor a drag is picking from.
     private var anchor = (column: 0, row: 0)
+    /// A drag in the dock, as the column where it started. Nil when the
+    /// last mouseDown was not on the dock.
+    private var dockDragStart: Int?
 
     /// A search of the scrollback (⌘F — the field, the matches, the one
     /// being stood on: see TerminalFind, where it all happens). The plate
@@ -477,7 +480,7 @@ final class TerminalView: NSView, NSTextInputClient {
         // the blink is drawn).
         if dock.owns, dockPlate != nil {
             if dock.blinkClock(at: CACurrentMediaTime()) { pacer.want(.caret) }
-        } else if TerminalLook.blinks, window?.firstResponder === self, caretIsLive {
+        } else if modes.cursorBlinks != false, TerminalLook.blinks, window?.firstResponder === self, caretIsLive {
             pacer.want(.caret)
         } else {
             pacer.settleCaret()
@@ -859,6 +862,16 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func keyDown(with event: NSEvent) {
         let marks = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // A delete or backspace while the dock holds a selection: send the
+        // shell the selection's bounds so it can erase the range in one
+        // edit, rather than character by character. The shell's own hook
+        // (TerminalShell, _search_delete_selection) does the BUFFER surgery.
+        if dock.shouldDeleteSelection, event.keyCode == 51 || event.keyCode == 117 {
+            if let sel = dock.takeSelection() {
+                terminal.send("\u{1b}[27;9;88~\(sel.start);\(sel.end)~")
+            }
+            return
+        }
         if marks.contains(.command) {
             switch event.charactersIgnoringModifiers {
             case "c", "C":
@@ -870,6 +883,16 @@ final class TerminalView: NSView, NSTextInputClient {
                 if let held = NSPasteboard.general.string(forType: .string) {
                     terminal.paste(held)
                 }
+            // ⌘E: find with the selection, forward. ⌘J: the same, back.
+            // A selection already on the clipboard is the needle; no
+            // selection, the panel opens empty. Both keys are idle in the
+            // terminal — the app's own ⌘E/⌘J do not reach here.
+            case "e", "E":
+                openFind(with: selected ?? "")
+                stepFind(forward: true)
+            case "j", "J":
+                openFind(with: selected ?? "")
+                stepFind(forward: false)
             default:
                 break
             }
@@ -1117,9 +1140,13 @@ final class TerminalView: NSView, NSTextInputClient {
         // editing through the dock.
         if dock.owns, let plate = dockPlate, plate.frame.contains(point) {
             let col = plate.column(at: convert(point, to: plate))
+            dockDragStart = col
+            dock.clearSelection()
             terminal.send("\u{1b}[27;9;71~\(dock.text.count);\(col)~")
+            present()
             return
         }
+        dockDragStart = nil
         guard let spot = square(of: point) else { return }
         // ⌘ over a link opens it. Nothing else in here is reached: a click
         // that opens a page is not also the start of a selection.
@@ -1141,6 +1168,13 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        // A drag on the dock: track the selection in the dock's text.
+        if let start = dockDragStart, dock.owns, let plate = dockPlate {
+            let col = plate.column(at: convert(point, to: plate))
+            dock.select(from: start, to: col)
+            present()
+            return
+        }
         guard let spot = square(of: point) else { return }
         // 1000 is the presses alone; 1002 and 1003 want the moves between
         // them as well.
@@ -1154,6 +1188,7 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     override func mouseUp(with event: NSEvent) {
+        dockDragStart = nil
         if taken(event), let spot = heard(of: convert(event.locationInWindow, from: nil)) {
             terminal.pour(report(number(of: event), at: spot, release: true, event))
             return

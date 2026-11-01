@@ -451,8 +451,33 @@ final class Parser {
                 for what in params where what >= 0 { answer(what, private: marker == "?") }
             case ("$", "y"):
                 break               // DECRPM: an answer, never a question we asked
-            case (_, "m"):
-                break               // the cursor's style or shape, kept by the screen
+            case (" ", "q"):
+                // DECSCUSR: the cursor's shape and whether it blinks. Odd
+                // Ps blinks, even Ps is steady; 0 resets to the default
+                // (blinking block). 1/2 = block, 3/4 = underline, 5/6 = bar.
+                let ps = n(0, 1)
+                switch ps {
+                case 0, 1:
+                    screen.cursorShape = .block
+                    screen.cursorBlinks = true
+                case 2:
+                    screen.cursorShape = .block
+                    screen.cursorBlinks = false
+                case 3:
+                    screen.cursorShape = .underline
+                    screen.cursorBlinks = true
+                case 4:
+                    screen.cursorShape = .underline
+                    screen.cursorBlinks = false
+                case 5:
+                    screen.cursorShape = .bar
+                    screen.cursorBlinks = true
+                case 6:
+                    screen.cursorShape = .bar
+                    screen.cursorBlinks = false
+                default:
+                    break
+                }
             default:
                 swallowed += 1
             }
@@ -571,22 +596,31 @@ final class Parser {
             case 3: ink.italic = true
             case 4:
                 // 4:style — the style of the line, spoken as a
-                // sub-parameter. 3 is curly, the one style that carries a
-                // different weight on screen; 4 is dotted, 5 dashed, and
-                // neither of them is drawn apart from the straight one —
-                // but both answer for themselves (see DECRQM's cousin in
-                // Ink.curl), because a program that asks what it set is
-                // owed the truth, not the screen's shorthand for it.
+                // sub-parameter. 1 is straight, 3 is curly, 4 is dotted,
+                // 5 is dashed. Each is drawn as itself on screen (see
+                // TerminalDraw), so a program that sets 4:4 gets dotted,
+                // not the straight shorthand the old Ink.curl drew.
                 ink.underline = true
-                ink.curl = colon(place) == 3
+                if let sub = colon(place) {
+                    switch sub {
+                    case 1: ink.underlineStyle = .straight
+                    case 3: ink.underlineStyle = .curly
+                    case 4: ink.underlineStyle = .dotted
+                    case 5: ink.underlineStyle = .dashed
+                    default: ink.underlineStyle = .straight
+                    }
+                    place += 1
+                } else {
+                    ink.underlineStyle = .straight
+                }
             case 5: ink.blink = true
             case 7: ink.inverse = true
             case 8: ink.hidden = true
             case 9: ink.strike = true
-            case 21: ink.underline = true; ink.curl = false
+            case 21: ink.underline = true; ink.underlineStyle = .double_
             case 22: ink.bold = false; ink.faint = false
             case 23: ink.italic = false
-            case 24: ink.underline = false; ink.curl = false
+            case 24: ink.underline = false; ink.underlineStyle = .none
             case 25: ink.blink = false
             case 27: ink.inverse = false
             case 28: ink.hidden = false

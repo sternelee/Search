@@ -437,7 +437,9 @@ final class TerminalSplits: NSView, ObservableObject {
     /// Born as one pane. `onPane` is how a pane's terminal is made — given
     /// the directory it starts in — for the first pane as for every one
     /// made after; the default, when nil, is the shell the app runs.
-    init(onPane birth: ((String?) -> Terminal)? = nil) {
+    /// `directory` is the place a restored session's shell comes back in —
+    /// the cwd the tab was in when it was saved.
+    init(directory: String? = nil, onPane birth: ((String?) -> Terminal)? = nil) {
         onPane = birth
         super.init(frame: .zero)
         wantsLayer = true
@@ -454,7 +456,7 @@ final class TerminalSplits: NSView, ObservableObject {
             }
         }
 
-        makePane(id: 0, in: nil)
+        makePane(id: 0, in: directory)
         sayTitle()
     }
 
@@ -625,7 +627,7 @@ final class TerminalSplits: NSView, ObservableObject {
     @discardableResult
     func closeFocusedPane() -> Bool {
         guard panes.count > 1 else { return false }
-        if panes[focused]?.terminal.exit == nil {
+        if TerminalLook.confirmClose, panes[focused]?.terminal.exit == nil {
             Ask.sure("Close Pane?",
                      detail: "Closing the pane will terminate its terminal session.",
                      confirm: "Close Pane") { [weak self] in self?.closePane() }

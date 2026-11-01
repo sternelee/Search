@@ -500,8 +500,8 @@ final class TerminalRenderTests: XCTestCase {
     /// a quad holds for a wave at cell sizes.
     func testACurlyLineIsDrawnHeavierThanAStraightOne() throws {
         let paint = try renderer()
-        var straight = Ink(); straight.underline = true
-        var curly = straight; curly.curl = true
+        var straight = Ink(); straight.underline = true; straight.underlineStyle = .straight
+        var curly = straight; curly.underlineStyle = .curly
         var row = Row(width: 10)
         for column in 0..<5 { row.cells[column] = Cell(char: "i", ink: straight) }
         for column in 5..<10 { row.cells[column] = Cell(char: "i", ink: curly) }

@@ -140,6 +140,10 @@ enum TerminalLook {
     /// comes, which is what the mode exists to avoid — and what a terminal
     /// that ever got stuck mid-hold would want.
     static var syncsOutput = true
+    /// Whether closing a pane with a live shell asks for confirmation.
+    /// Off, the pane closes without a word — what someone who does not
+    /// want to be asked about every ⌘W wants.
+    static var confirmClose = true
 
     /// Said whenever any of the above changes. A terminal on screen listens
     /// for it and takes the new look (see TerminalView); nothing else needs

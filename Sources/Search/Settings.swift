@@ -991,6 +991,10 @@ struct SettingsPanel: View {
                 Line("Synchronized output", "A program drawing a frame says when it is whole, and the terminal waits rather than showing half of it") {
                     Switch(on: $prefs.terminalSync)
                 }
+                Rule()
+                Line("Confirm close", "Ask before closing a pane whose shell is still running") {
+                    Switch(on: $prefs.terminalConfirmClose)
+                }
             }
             Card {
                 Line(
@@ -1184,11 +1188,15 @@ struct SettingsPanel: View {
 
     /// One row of the island's list: the agent's name, where its
     /// settings are and whether ours are in them, and the switch that
-    /// puts them in or takes them back out.
+    /// puts them in or takes them back out. The tick is read so the
+    /// row rebuilds when a switch flips — the hooked check is a file
+    /// read, not a property, so SwiftUI needs the nudge to re-evaluate.
     @ViewBuilder
     private func islandRow(_ agent: IslandAgent) -> some View {
-        Line(agent.name, islandDetail(agent.home, agent.file, agent.hooked(islandBridge))) {
-            Pill(agent.hooked(islandBridge) ? "Remove" : "Install", filled: !agent.hooked(islandBridge)) {
+        let _ = islandTick
+        let hooked = agent.hooked(islandBridge)
+        Line(agent.name, islandDetail(agent.home, agent.file, hooked)) {
+            Pill(hooked ? "Remove" : "Install", filled: !hooked) {
                 islandSwitch(agent)
             }
         }
