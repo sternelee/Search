@@ -326,10 +326,15 @@ final class Tab: ObservableObject, Identifiable {
     /// about itself (its title, its directory, what ⌘F searches) is the
     /// focused pane's, and the panes are the container's.
     private(set) var madeShell: TerminalSplits?
+    /// The directory a restored terminal should start in, set by `restore`
+    /// from the session file's saved cwd (OSC 7). Cleared once the shell is
+    /// made — it is a one-time handoff, not a permanent anchor.
+    private var restoreDirectory: String?
     var console: TerminalSplits? {
         guard runsShell else { return nil }
         if let madeShell { return madeShell }
-        let made = TerminalSplits()
+        let made = TerminalSplits(directory: restoreDirectory)
+        restoreDirectory = nil
         title = made.title
         made.$title
             .receive(on: RunLoop.main)
@@ -1489,10 +1494,12 @@ final class Tab: ObservableObject, Identifiable {
 
     /// A shell brought back the same way: its name in the row, and nothing
     /// started — the shell is started with its view (see console), never
-    /// for the row alone.
-    func restore(title: String, name: String? = nil) {
+    /// for the row alone. `directory` is the cwd the shell was in when the
+    /// session was saved, so it comes back in the same place.
+    func restore(title: String, name: String? = nil, directory: String? = nil) {
         self.title = title
         self.name = name
+        self.restoreDirectory = directory
     }
 
     /// True for a tab that has a place and an address but is holding no page —

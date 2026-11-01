@@ -5194,11 +5194,14 @@ final class Browser: NSObject, ObservableObject {
         var bySavedIndex: [Int: Tab] = [:]
         for (savedIndex, entry) in saved.tabs.enumerated() {
             // A shell comes back as a shell — a new one, in the same place in
-            // the row, with the name it was given.
+            // the row, with the name it was given. The URL is the cwd the
+            // shell was in when the session was saved (OSC 7), so it comes
+            // back in the same directory.
             if entry.terminal == true {
                 let tab = Tab(configuration: Web.configuration(space: space), terminal: true)
                 prepare(tab)
-                tab.restore(title: entry.title, name: entry.name)
+                let directory = URL(string: entry.url)?.path
+                tab.restore(title: entry.title, name: entry.name, directory: directory)
                 tab.groupID = entry.pin == nil && groups.contains(where: { $0.id == entry.groupID })
                     ? entry.groupID : nil
                 row.append(tab)
