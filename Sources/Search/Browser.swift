@@ -3697,9 +3697,10 @@ final class Browser: NSObject, ObservableObject {
     }
 
     /// ⌘W closes what is in front: a peek, then a card over the page (What's
-    /// New), then the tab. Settings, History and the rest are tabs of their
-    /// own, as in Chrome, and ⌘W on one closes it. Escape puts things away
-    /// in the same order, so the two keys agree on what is in front.
+    /// New), then the tabs picked in the column, or else the tab. Settings,
+    /// History and the rest are tabs of their own, as in Chrome, and ⌘W on
+    /// one closes it. Escape puts things away in the same order, so the two
+    /// keys agree on what is in front.
     ///
     /// A terminal with panes loses them one at a time — the room shrinks
     /// before the tab does, and it is the room that knows whether it had
@@ -3711,6 +3712,7 @@ final class Browser: NSObject, ObservableObject {
         if peekTab != nil { closePeek() }
         else if closePanel() { return }
         else if let tab = active, tab.closeFocusedPane() { return }
+        else if !pickedTabs.isEmpty { closePickedTabs() }
         else if let tab = active { closeTab(tab) }
     }
 
@@ -3882,8 +3884,12 @@ final class Browser: NSObject, ObservableObject {
             // a tab, so one that was never built yet actually wakes up
             // instead of sitting there blank until a manual reload. Asked
             // for, the tab viewed before this one comes first, as ⌃Tab
-            // would take you there.
-            let before = prefs.closeGoesBack ? tabBefore(tab) : nil
+            // would take you there. Search's own pages go back whatever the
+            // switch says: History or Settings is called up over what you
+            // were doing, as their cards were before 1.0.7. Closing one
+            // shouldn't leave you on its neighbour, or on the last tab when
+            // ⌘Y brought forward a History tab kept at the end of the row.
+            let before = prefs.closeGoesBack || tab.page != nil ? tabBefore(tab) : nil
             select(partner ?? before ?? tabs[min(index, tabs.count - 1)])
         }
         rememberSession()
@@ -3928,6 +3934,21 @@ final class Browser: NSObject, ObservableObject {
                 }
                 close(page)
             }
+        }
+    }
+
+    /// ⌘W, or the tab menu's Close Tabs, with tabs picked in the column (⌘-
+    /// or ⇧-click): each one closed as ⌘W closes it — a pin put down, a tab
+    /// in a group put away — and all remembered as one, so one ⇧⌘T brings
+    /// them back. The pages on screen go last: closed first, a neighbour
+    /// would wake only to be closed.
+    func closePickedTabs() {
+        let going = pickedTabs, onScreen = visibleTabIDs
+        guard !going.isEmpty else { return }
+        clearTabSelection()
+        closingTogether(.tabs) { _ in
+            for tab in going where !onScreen.contains(tab.id) { closeTab(tab) }
+            for tab in going where onScreen.contains(tab.id) { closeTab(tab) }
         }
     }
 
@@ -5463,6 +5484,21 @@ final class Browser: NSObject, ObservableObject {
         tabs.first { $0.id == id }?.web.evaluateInSearch(NativePiP.off)
     }
 
+    /// The button at the top right of macOS's picture in picture, back to the
+    /// video. WebKit puts it back into its page only once that page is seen,
+    /// and the page is most often a tab behind another one, or behind another
+    /// app: until someone shows it, the button did nothing. Its tab comes to
+    /// the front, in its window, with Search, and the tab you were on keeps
+    /// its own video where it is rather than taking the window's place.
+    @objc(_webViewFullscreenMayReturnToInline:)
+    func webViewFullscreenMayReturnToInline(_ webView: WKWebView) {
+        guard let tab = tab(for: webView) else { return }
+        if pictured == tab.id { pictured = nil }
+        select(tab, floatPrevious: false)
+        Browsers.show(self)
+        NSApp.activate()
+    }
+
     /// Everything but the video goes out of the way, and the page it lives in
     /// moves house — into a small window that stays above everything.
     /// `otherwise`: the other page of a pair, tried when this one has
@@ -5661,6 +5697,10 @@ final class Browser: NSObject, ObservableObject {
             }
         }
         tab.onImageMenu = { [weak self] tab, url in self?.showImageMenu(for: tab, at: url) }
+        tab.onImageItem = { [weak self] tab, url, copy in
+            guard let self, let web = tab.built else { return }
+            if copy { copyImage(at: url, in: tab) } else { downloadImage(at: url, from: web) }
+        }
         tab.searchName = { [weak self] in self.map { $0.prefs.engine.name(custom: $0.prefs.customEngine) } }
         tab.onSearch = { [weak self] tab, text in
             guard let self, let url = self.searchURL(for: text) else { return }
@@ -6630,6 +6670,8 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         // The link menu's Open Link in New Tab, asked for in the last second.
         // Read once: reading it takes it.
         let behind = (webView as? PageView)?.takeBehind() == true
+        // Its Open Link in Split View, the same way.
+        let beside = (webView as? PageView)?.takeBeside() == true
         let popup = windowFeatures.width != nil || windowFeatures.height != nil
             || windowFeatures.toolbarsVisibility?.boolValue == false
         // WebKit's copy of the opener's configuration still holds the
@@ -6650,7 +6692,7 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         // pop-ups, takes the tab path as before. A window sized by the page,
         // "Sign in with…", is left alone, as is a modified click, and so is
         // anything that isn't a web page (about:blank, data:, blob:).
-        if clicked, !behind, !popup, prefs.pinsPeek, peekTab == nil, opener.pin != nil,
+        if clicked, !behind, !beside, !popup, prefs.pinsPeek, peekTab == nil, opener.pin != nil,
            [.linkActivated, .other].contains(action.navigationType),
            action.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty,
            let url = action.request.url, Browser.peekable(url) {
@@ -6679,10 +6721,17 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         // ⌘-click's goes (see open(_:foreground:)).
         let destination = tabDestination
         destination.prepare(tab)
-        if behind {
+        if behind || beside {
             if prefs.usesTabGroups, !tab.shy, !tab.bench { tab.groupID = opener.groupID }
             destination.tabs.insert(tab, at: destination.placeForLink(from: opener))
             destination.noteLink(tab, from: opener)
+            // Open Link in Split View: beside the page it came from, the two
+            // as a pair, with the keys, as a peek kept beside is. Paired while
+            // it is still blank, so the pair wakes nothing WebKit is about to
+            // load into it. A pair that can't be made, or a link out of a
+            // site's own pop-up window, whose tab opens in another window,
+            // leaves it behind.
+            if beside, destination === self { pair(tab, with: opener, onLeft: false) }
         } else {
             destination.tabs.insert(tab, at: destination.placeForFront())
             if clicked, let run = destination.linkRun { destination.runBeforeScript = (tab.id, run) }
