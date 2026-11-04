@@ -549,16 +549,19 @@ struct ContentView: View {
     // Page that is never rebuilt from one tab to the next (see Stage.swift).
     @ViewBuilder
     private var stage: some View {
-        if browser.prefs.splitView {
+        // A chat tab comes first, Split View on or off: it is a talk, not a
+        // page, and the split's stage draws pages only — a chat tab through
+        // it is a pageless tab and the stage is white. It can never be half
+        // of a pair (see Browser.canSplit), so nothing of a split is lost
+        // by filling the stage with the talk.
+        if let tab = browser.active, tab.chat, let bot = browser.chatBots[tab.id] {
+            // A tab that is a talk, not a page: the chat fills the stage
+            // and nothing of a page's chrome is drawn over it.
+            ChatStage(browser: browser, bot: bot)
+        } else if browser.prefs.splitView {
             SplitStage(browser: browser, corner: cards ? Metrics.cardRadius : 0, immersed: fullscreenTab?.id)
         } else if let tab = browser.active {
-            if tab.chat, let bot = browser.chatBots[tab.id] {
-                // A tab that is a talk, not a page: the chat fills the stage
-                // and nothing of a page's chrome is drawn over it.
-                ChatStage(browser: browser, bot: bot)
-            } else {
-                pageStage(tab)
-            }
+            pageStage(tab)
         } else {
             Palette.ground
         }

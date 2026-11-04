@@ -147,6 +147,29 @@ private struct PaneLayers: View {
         // (PaneStage.showPairing).
         .overlay(alignment: .topTrailing) { whose }
         .animation(Motion.quick, value: hovered)
+        // The assistant and the bot over the page that asked: the same
+        // panels pageStage draws when Split View is off (see App.swift),
+        // drawn here for each pane — since Split View stopped being a
+        // choice, a panel opened over a page of a pair was made and
+        // heard from, but never drawn.
+        .overlay(alignment: .topTrailing) {
+            if let assistant = browser.assisting, assistant.tab == tab.id {
+                AssistantPanel(browser: browser, assistant: assistant)
+                    .padding(.top, browser.finding && focused ? 64 : 14)
+                    .padding(.trailing, 14)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(Motion.settle, value: browser.assisting?.id)
+        .overlay(alignment: .topTrailing) {
+            if let bot = browser.botting, bot.tab == tab.id {
+                BotPanel(browser: browser, bot: bot)
+                    .padding(.top, browser.finding && focused ? 64 : 14)
+                    .padding(.trailing, 14)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(Motion.settle, value: browser.botting?.id)
         .background { SplitDropZone(browser: browser, tab: tab, kind: .stage) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(tab.label.isEmpty ? "New Tab" : tab.label)
