@@ -22,7 +22,7 @@ import AppKit
 /// What a run of the answer is: one paragraph, one heading, one list
 /// (its items kept whole — nested bullets are the model's own words,
 /// shown as written), one code block.
-struct MarkdownBlock: Identifiable, Equatable {
+private struct MarkdownBlock: Identifiable, Equatable {
     enum Kind: Equatable {
         case paragraph
         case heading(level: Int)
@@ -59,7 +59,7 @@ struct MarkdownBlock: Identifiable, Equatable {
 /// named by how it opens. A code block is kept whole — the words
 /// inside it are the point of it, hashes and stars included — and
 /// a list is split to its items, each a block of its own.
-func markdownBlocks(of text: String) -> [MarkdownBlock] {
+private func markdownBlocks(of text: String) -> [MarkdownBlock] {
     var blocks: [MarkdownBlock] = []
     var code: (language: String?, lines: [String])? = nil
     var paragraph: [String] = []

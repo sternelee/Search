@@ -35,7 +35,7 @@ struct SettingsPanel: View {
 
     enum Page: String, CaseIterable, Identifiable {
 
-        case general, appearance, tabs, browsing, spaces, passwords, privacy, ai, extensions, browserUse, keyboard, about
+        case general, appearance, tabs, browsing, spaces, terminal, passwords, privacy, ai, extensions, browserUse, keyboard, about
 
         var id: String { rawValue }
         var title: String {

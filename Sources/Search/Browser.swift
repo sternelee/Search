@@ -3709,7 +3709,7 @@ final class Browser: NSObject, ObservableObject {
     /// shell (see Terminal); a private terminal is a thing a browser has to
     /// think harder about, and isn't here yet.
     func newTerminal() {
-        let tab = Tab(configuration: Web.configuration(space: spaceID), terminal: true)
+        let tab = Tab(terminal: true, configuration: Web.configuration(space: spaceID))
         adopt(tab)
         leaving()
         activeID = tab.id
@@ -5412,7 +5412,7 @@ final class Browser: NSObject, ObservableObject {
             // shell was in when the session was saved (OSC 7), so it comes
             // back in the same directory.
             if entry.terminal == true {
-                let tab = Tab(configuration: Web.configuration(space: space), terminal: true)
+                let tab = Tab(terminal: true, configuration: Web.configuration(space: space))
                 prepare(tab)
                 let directory = URL(string: entry.url)?.path
                 tab.restore(title: entry.title, name: entry.name, directory: directory)
