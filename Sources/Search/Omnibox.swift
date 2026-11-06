@@ -59,7 +59,7 @@ struct Omnibox: View {
                     // Present or gone, not always-on-and-hidden: the list keeps
                     // the appear and disappear it had, and the overlay is what
                     // keeps that from moving the field.
-                    if !browser.offers.isEmpty || browser.siteOffer != nil {
+                    if !browser.offers.isEmpty || browser.siteOffer != nil || browser.switcherNote != nil {
                         list
                             .frame(width: width)
                             .offset(y: Self.fieldHeight + 8)
@@ -75,7 +75,7 @@ struct Omnibox: View {
                 // an animation of its own. Its rows follow what was typed or
                 // pasted at once — sliding into place on a spring between
                 // keystrokes, they trailed behind the field.
-                .animation(Motion.quick, value: browser.offers.isEmpty && browser.siteOffer == nil)
+                .animation(Motion.quick, value: browser.offers.isEmpty && browser.siteOffer == nil && browser.switcherNote == nil)
                 .animation(Motion.settle, value: refused)
             }
         }
@@ -149,6 +149,14 @@ struct Omnibox: View {
                     .contentShape(Rectangle())
                     .onTapGesture { browser.take(offer) }
             }
+            if let note = browser.switcherNote {
+                Text(note)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+            }
         }
         .padding(6)
         .background(Palette.ground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -175,23 +183,23 @@ struct Omnibox: View {
                 // words line up whatever stands in it.
                 Group {
                     switch offer.kind {
-                    case .search:
-                        // The engine's own icon when this Mac already has it: a
-                        // search sent to a site you have been to says so with the
-                        // site rather than a magnifying glass. Nothing is fetched
-                        // for one that isn't known; the glass is what the row
-                        // wears until then.
+                    case .search, .suggested:
+                        // The icon of where the words go, when this Mac already
+                        // has it: what you typed and what the engine suggests
+                        // are both searches sent there, and wear the same mark.
+                        // Nothing is fetched for one that isn't known; the
+                        // glass is what every search row wears until then.
                         if let icon = Favicons.shared.cached(for: offer.url) {
                             Mark(icon: icon, letter: "", size: 14)
                         } else {
                             symbol("magnifyingglass")
                         }
-                    case .suggested:
-                        // The engine's own words: always the glass, so they read
-                        // as searches rather than places.
-                        symbol("magnifyingglass")
                     case .command:
                         symbol("command")
+                    case .searched:
+                        // Words you searched this site for before: yours, not
+                        // the site's, so a mark of their own.
+                        symbol("clock.arrow.circlepath")
                     default:
                         // A place — open, kept or visited — wears its site's
                         // icon, as it does in History and the bookmarks bar:
@@ -204,7 +212,7 @@ struct Omnibox: View {
                 .frame(width: 14, height: 14)
                 // The row reads as 1.0.4's did, without the www; the key
                 // itself keeps it, for completing and going there.
-                Text(offer.kind == .suggested ? offer.key : Address.withoutWWW(offer.key))
+                Text(offer.kind == .suggested || offer.kind == .searched ? offer.key : Address.withoutWWW(offer.key))
                     .font(.system(size: 13))
                     .foregroundStyle(Palette.ink)
                     .lineLimit(1)
@@ -258,7 +266,11 @@ private struct SiteIcon: View {
     let site: SearchSite
     var body: some View {
         let host = site.host.split(separator: "/").first.map(String.init) ?? site.host
-        if let icon = Favicons.shared.cached(host) ?? Favicons.shared.cached("www." + host) {
+        // By where its search goes first, as the rows below it are, so the
+        // chip and its rows wear one mark: Wikipedia's icon is kept under
+        // en.wikipedia.org, not the wikipedia.org the site is named by.
+        if let icon = Favicons.shared.cached(for: site.url(for: "x"))
+            ?? Favicons.shared.cached(host) ?? Favicons.shared.cached("www." + host) {
             Image(nsImage: icon)
                 .resizable()
                 .interpolation(.high)
@@ -351,6 +363,9 @@ private struct Breath: NSViewRepresentable {
             glow.shadowOffset = .zero
             glow.shadowRadius = 26
             layer?.addSublayer(glow)
+            NSWorkspace.shared.notificationCenter.addObserver(
+                self, selector: #selector(breathe),
+                name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         }
 
         @available(*, unavailable)
@@ -375,8 +390,17 @@ private struct Breath: NSViewRepresentable {
             glow.shadowPath = CGPath(roundedRect: bounds, cornerWidth: 26, cornerHeight: 26, transform: nil)
             effectiveAppearance.performAsCurrentDrawingAppearance { glow.shadowColor = Palette.NS.ink.cgColor }
             CATransaction.commit()
-            // From 0.97 to 1.03, from 0.65 to full, 2.6 s each way, for as
-            // long as the field is there.
+            breathe()
+        }
+
+        /// From 0.97 to 1.03, from 0.65 to full, 2.6 s each way, for as
+        /// long as the field is there. It never stops on its own, so with
+        /// Reduce Motion on it doesn't start: the glow holds still, at its
+        /// full strength. Asked again when that setting changes, so turning
+        /// it on stills a breath already going.
+        @objc private func breathe() {
+            glow.removeAnimation(forKey: "breath")
+            guard !Motion.reduced else { return }
             let size = CABasicAnimation(keyPath: "transform.scale")
             size.fromValue = 0.97
             size.toValue = 1.03
@@ -431,14 +455,45 @@ struct AddressField: NSViewRepresentable {
         field.cell?.isScrollable = true
         // SwiftUI picks its own colour for a placeholder, and on a pale ground
         // that colour was near-white.
-        field.placeholderAttributedString = NSAttributedString(
-            string: "Enter a web address",
+        let words = Self.placeholderWords(for: browser)
+        field.placeholderAttributedString = Self.placeholder(words)
+        field.setAccessibilityLabel(Self.accessibilityName(for: browser))
+        context.coordinator.placeheld = words
+        return field
+    }
+
+    /// What the empty field asks for: with a site put in it with Tab, the
+    /// words to search that site for; otherwise an address, and where it
+    /// will open, since the field looks the same whichever key raised it.
+    private static func placeholderWords(for browser: Browser) -> String {
+        if let site = browser.siteChip { return "Search \(site.name)" }
+        switch browser.fieldMode {
+        case .blank: return "Enter a web address"
+        case .newTab: return "New tab: enter a web address"
+        case .thisTab: return "This tab: enter a web address"
+        case .switcher: return "Switch to an open tab"
+        }
+    }
+
+    /// The field's name for VoiceOver, which reads it beside what is typed,
+    /// after the placeholder has gone.
+    private static func accessibilityName(for browser: Browser) -> String {
+        switch browser.fieldMode {
+        case .blank: return "Address"
+        case .newTab: return "Address, new tab"
+        case .thisTab: return "Address, this tab"
+        case .switcher: return "Switch to an open tab"
+        }
+    }
+
+    private static func placeholder(_ words: String) -> NSAttributedString {
+        NSAttributedString(
+            string: words,
             attributes: [
                 .font: NSFont.systemFont(ofSize: 15.5),
                 .foregroundColor: NSColor(Palette.ink.opacity(0.3)),
             ]
         )
-        return field
     }
 
     func updateNSView(_ field: Field, context: Context) {
@@ -459,6 +514,14 @@ struct AddressField: NSViewRepresentable {
             coordinator.synced = want
             field.stringValue = want
             coordinator.select(from: browser.typed.count, in: field)
+        }
+
+        let words = Self.placeholderWords(for: browser)
+        if coordinator.placeheld != words {
+            coordinator.placeheld = words
+            field.placeholderAttributedString = Self.placeholder(words)
+            field.setAccessibilityLabel(Self.accessibilityName(for: browser))
+            DispatchQueue.main.async { coordinator.showPlaceholder(in: field) }
         }
 
         if coordinator.answered != browser.focusRequest {
@@ -490,6 +553,9 @@ struct AddressField: NSViewRepresentable {
         var browser: Browser
         var tab: Tab.ID?
         var answered = -1
+        /// The placeholder last given, so it is set again only when a site
+        /// goes in or comes out, or another key raises the field.
+        var placeheld: String?
         /// The last value pushed in from the browser side, so an update can
         /// tell a change worth applying from one it made itself.
         var synced = ""
@@ -539,6 +605,22 @@ struct AddressField: NSViewRepresentable {
             } else {
                 editor.selectAll(nil)
             }
+        }
+
+        /// A field being typed in shows the placeholder its editor was given
+        /// when the typing began, and AppKit has no way to hand that editor
+        /// a new one: the field begins editing again, with the caret and
+        /// whatever was selected put back where they were.
+        @MainActor func showPlaceholder(in field: Field) {
+            guard let window = field.window, let editor = field.currentEditor() as? NSTextView,
+                  window.firstResponder === editor else { return }
+            let selected = editor.selectedRange()
+            window.makeFirstResponder(field)
+            guard let again = field.currentEditor() as? NSTextView else { return }
+            again.selectedTextAttributes = editor.selectedTextAttributes
+            let length = (again.string as NSString).length
+            let start = min(selected.location, length)
+            again.selectedRange = NSRange(location: start, length: min(selected.length, length - start))
         }
 
         func controlTextDidChange(_ note: Notification) {

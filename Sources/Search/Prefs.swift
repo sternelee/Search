@@ -69,6 +69,23 @@ enum NewTabPlace: String {
     case next, top, end
 }
 
+/// Where Downloads opens: a tab of its own, as it always has; the side
+/// panel's card floating by the downloads button; or the side panel,
+/// beside the page.
+enum DownloadsOpening: String, CaseIterable, Identifiable {
+    case tab, popover, panel
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .tab: return "In a tab"
+        case .popover: return "Floating by the button"
+        case .panel: return "In the side panel"
+        }
+    }
+}
+
 /// Which edge the tab column sits on when tabs are arranged in a sidebar.
 enum SidebarPosition: String, CaseIterable, Identifiable {
     case left, right
@@ -444,6 +461,11 @@ final class Preferences: ObservableObject {
     @Published var alwaysShowsDownloads: Bool {
         didSet { store.set(alwaysShowsDownloads, forKey: "downloads.button") }
     }
+    /// Where Downloads opens, from its button, ⇧⌘J or the menu (see
+    /// Browser.showDownloads). A tab unless asked for.
+    @Published var downloadsOpening: DownloadsOpening {
+        didSet { store.set(downloadsOpening.rawValue, forKey: "downloads.open") }
+    }
     /// The bookmarks bar above the page (see BookmarksBar.swift). Off
     /// unless asked for.
     @Published var bookmarksBar: Bool {
@@ -539,6 +561,15 @@ final class Preferences: ObservableObject {
     /// Off unless asked for.
     @Published var usesSpaces: Bool {
         didSet { store.set(usesSpaces, forKey: "spaces") }
+    }
+    /// Profiles in one window (see OneWindow.swift): a space of another
+    /// profile, chosen, brings that profile's window into this one's place.
+    /// Off unless asked for; turned off, the windows tucked away come out.
+    @Published var profilesInOneWindow: Bool {
+        didSet {
+            store.set(profilesInOneWindow, forKey: "profiles.oneWindow")
+            if oldValue, !profilesInOneWindow { Browsers.unmerge() }
+        }
     }
     /// Named, collapsible sections in the sidebar.
     /// Always on since the Settings rework (Drice, 24 Oct 2026): it only
@@ -662,7 +693,8 @@ final class Preferences: ObservableObject {
     @Published var switcherKeys = true
     /// "settings", "new tab" and the like, typed alone in the address field,
     /// reach that part of the app instead of asking a search engine for the
-    /// word (see AddressCommands.swift). Off unless asked for.
+    /// word; part of one is offered (see AddressCommands.swift). Off unless
+    /// asked for.
     @Published var commandBar: Bool {
         didSet { store.set(commandBar, forKey: "commandbar") }
     }
@@ -782,6 +814,7 @@ final class Preferences: ObservableObject {
         // existed; they are not asked to sit through it.
         welcomed = store.bool(forKey: "welcomed") || store.object(forKey: "glyph") != nil
         usesSpaces = store.bool(forKey: "spaces")
+        profilesInOneWindow = store.bool(forKey: "profiles.oneWindow")
         listsPins = store.bool(forKey: "pins.list")
         // "Pins keep their site" is one switch over two keys (see
         // SettingsIndex): on when either was on, on by default when neither
@@ -826,6 +859,7 @@ final class Preferences: ObservableObject {
         littleLinks = store.bool(forKey: "links.little")
         bookmarksBar = store.bool(forKey: "bookmarks.bar")
         alwaysShowsDownloads = store.bool(forKey: "downloads.button")
+        downloadsOpening = store.string(forKey: "downloads.open").flatMap(DownloadsOpening.init(rawValue:)) ?? .tab
         let links = store.object(forKey: "links.show") as? Bool ?? true
         showsLinks = links
         HoveredLink.on = links

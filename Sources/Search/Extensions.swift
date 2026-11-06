@@ -330,16 +330,25 @@ final class Extensions: NSObject, ObservableObject {
     /// WebKit's (the window in front first), not Browsers.all's. WebKit
     /// turns the window's frame over from the bottom of the first screen;
     /// it is turned back here, give or take two points.
-    func tab(windowFrame frame: CGRect, index: Int, for context: WKWebExtensionContext) -> Tab? {
+    /// Two windows with one frame (one made over another, or profiles in
+    /// one window) are told apart by the tab's address at that place, when
+    /// the extension gave it (#872); still two, it is neither.
+    func tab(windowFrame frame: CGRect, index: Int, address: String? = nil, for context: WKWebExtensionContext) -> Tab? {
         let height = NSScreen.screens.first?.frame.height ?? 0
         let match = Browsers.all.filter { browser in
             guard let window = browser.window?.frame else { return false }
             return abs(window.minX - frame.minX) <= 2 && abs((height - window.maxY) - frame.minY) <= 2
                 && abs(window.width - frame.width) <= 2 && abs(window.height - frame.height) <= 2
         }
-        guard match.count == 1, let browser = match.first else { return nil }
-        let tabs = visibleTabs(of: browser, for: context)
-        return tabs.indices.contains(index) ? tabs[index] : nil
+        let found = match.compactMap { browser -> Tab? in
+            let tabs = visibleTabs(of: browser, for: context)
+            return tabs.indices.contains(index) ? tabs[index] : nil
+        }
+        if found.count == 1 { return found[0] }
+        guard found.count > 1, let address else { return nil }
+        let blank = address.isEmpty || address == "about:blank"
+        let same = found.filter { blank ? $0.isBlank : $0.address?.absoluteString == address }
+        return same.count == 1 ? same[0] : nil
     }
 
     /// The window a tab is in, when it is in one's row.
@@ -676,6 +685,23 @@ final class Extensions: NSObject, ObservableObject {
         }
         busy = id
         Task { await install(id: id, confirm: confirm) }
+    }
+
+    /// Test runs only: a store package already on disk (Tests/panel_lax.py),
+    /// checked against its id exactly as one fetched from the store is.
+    func installForTests(crx: Data, id: String) async {
+        guard Store.testing, id.count == 32, id.allSatisfy({ ("a"..."p").contains($0) }),
+              !installed.contains(where: { $0.id == id }) else { return }
+        let staged = Extensions.stagingFolder(for: id)
+        defer { try? FileManager.default.removeItem(at: staged) }
+        do {
+            let zip = try Crx.verifiedZip(crx, id: id)
+            try Crx.unpack(zip, into: staged)
+            try ExtensionShims.prepare(staged, fresh: true)
+            try await admit(staged, as: id, fromStore: true, finalFolder: Extensions.folder(for: id), confirm: false)
+        } catch {
+            browser?.announce(error.localizedDescription)
+        }
     }
 
     /// One from the store by its id, done — asked about, and installed or
@@ -1840,6 +1866,10 @@ extension Extensions: WKWebExtensionControllerDelegate {
         let ports = nativePorts[id] ?? NSHashTable<WKWebExtension.MessagePort>.weakObjects()
         ports.add(port)
         nativePorts[id] = ports
+        if port.applicationIdentifier == ExtensionFetch.name {
+            ExtensionFetch.connect(port, from: extensionContext)
+            return
+        }
         if port.applicationIdentifier == ExtensionSocket.name {
             ExtensionSocket.connect(port, from: extensionContext.uniqueIdentifier)
             return
