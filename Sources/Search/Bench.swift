@@ -2,6 +2,7 @@ import AppKit
 import AuthenticationServices
 import SwiftUI
 import WebKit
+import A2UISwiftCore
 
 // A way for a script on this Mac to drive the browser you already have open,
 // in tabs of its own, without ever taking the window from you.
@@ -298,6 +299,7 @@ final class Bench {
             given(reply)
         }
         let patience = (request["do"] as? String) == "wait" ? (request["seconds"] as? Double ?? 30) + 5 :
+            (request["do"] as? String) == "agent" && (request["action"] as? String) == "run" ? (request["seconds"] as? Double ?? 300) :
             (request["do"] as? String) == "import-file" ? (request["timeout"] as? Double ?? 120) : 25
         DispatchQueue.main.asyncAfter(deadline: .now() + patience) { answer(["error": "no answer within \(Int(patience)) s"]) }
         // --window N: the Nth window's browser, oldest first; the first
@@ -840,6 +842,12 @@ final class Bench {
                 // What the keyboard goes to in the key window, or the browser's: a find field,
                 // a page, or a button it shouldn't be.
                 "responder": (NSApp.keyWindow ?? Links.window)?.firstResponder.map { "\(type(of: $0))" } ?? "",
+                // The tabs as the person sees them: drawn in the row, and
+                // counted by the number keys — the agents' pages out of
+                // sight are in neither (see displayedTabs).
+                "rowTabs": browser.displayedTabs.map { Bench.short($0) },
+                "keyTabs": browser.shownTabs.map { Bench.short($0) },
+                "quiet": browser.prefs.benchQuiet,
             ]
             // Whether that is the address field's own editor: a find field or
             // a tab's title being renamed is an NSTextView too.
@@ -1760,8 +1768,8 @@ final class Bench {
                 menu.delegate?.menuNeedsUpdate?(menu)
                 menus[item.title] = menu.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map(\.title)
             }
-            answer(["menus": menus, "ai": browser.prefs.ai, "shipped": AI.shipped,
-                    "settingsPages": SettingsPanel.Page.allCases.filter { $0 != .ai || AI.shipped }.map(\.rawValue),
+            answer(["menus": menus, "ai": browser.prefs.ai, "bot": browser.prefs.bot, "shipped": AI.shipped,
+                    "settingsPages": SettingsPanel.Page.allCases.map(\.rawValue),
                     "settingsPage": browser.settingsPage.rawValue])
 
         case "textcheck":
@@ -1975,12 +1983,259 @@ final class Bench {
             // seen is checked on a release candidate instead.
             answer(["error": "visible is switched off: it made a window, and no bench verb makes one for now — check this on a release candidate"])
 
+        case "agent":
+            // The hands of an AI agent (see Agent.swift): pages, snapshot,
+            // act, read, wait, run — a task in words carried out by a model.
+            Agent.handle(request, browser: browser, pick: { self.find(request, in: browser) }, answer: answer)
+
+        case "bot":
+            // The bot (see Bot.swift) as a run can drive it: opened, asked,
+            // its held acts allowed or refused, its cards tapped. Only on a
+            // SEARCH_PROBE run — and only ever to a stand-in or a local model.
+            guard Store.testing else { answer(["error": "bot only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "use":
+                // The bot on, answered by this provider (and model).
+                guard let provider = (request["provider"] as? String).flatMap(AIProvider.init(rawValue:)) else {
+                    answer(["error": "bot use PROVIDER [MODEL]"]); return
+                }
+                browser.prefs.bot = true
+                browser.prefs.aiProvider = provider
+                if let model = request["model"] as? String { browser.prefs.setAIModel(model, for: provider) }
+                answer(["provider": provider.rawValue, "model": browser.prefs.aiModel(for: provider)])
+            case "open":
+                guard let tab = find(request, in: browser) else { answer(missing(request)); return }
+                if let everywhere = request["every"] as? Bool { browser.botEverywhere = everywhere }
+                browser.select(tab)
+                browser.openBot()
+                answer(["open": browser.botting != nil, "notice": browser.botting?.notice ?? "",
+                        "trouble": browser.botting?.trouble ?? "", "every": browser.botting?.mode == .every])
+            case "ask":
+                guard let text = request["text"] as? String, let bot = browser.botting else {
+                    answer(["error": "bot ask TEXT, with the bot open"]); return
+                }
+                bot.draft = text
+                bot.submit()
+                answer(["open": true, "working": bot.working])
+            case "agree":
+                browser.botting?.agree()
+                answer(["open": browser.botting != nil])
+            case "allow":
+                browser.botting?.resolve(true)
+                answer(["pending": browser.botting?.pending != nil])
+            case "always":
+                browser.botting?.always()
+                answer(["pending": browser.botting?.pending != nil, "always": browser.botting?.alwaysPage ?? false])
+            case "refuse":
+                browser.botting?.resolve(false)
+                answer(["pending": browser.botting?.pending != nil])
+            case "auto":
+                browser.botting?.auto = request["on"] as? Bool ?? true
+                answer(["auto": browser.botting?.auto ?? false])
+            case "stop":
+                // The panel's Stop, stood in for: the turn as it stands,
+                // quiet (see Bot.stop).
+                guard let bot = browser.botting else {
+                    answer(["error": "bot stop, with the bot open"]); return
+                }
+                bot.stop()
+                answer(["working": bot.working, "pending": bot.pending != nil,
+                        "trouble": bot.trouble ?? "", "busy": bot.busy])
+            case "every":
+                // The panel's switch, turned mid-talk: the open bot follows it.
+                browser.botEverywhere = request["on"] as? Bool ?? true
+                answer(["every": browser.botting?.mode == .every])
+            case "tap":
+                // A control in a card it drew, tapped: the event the model gets.
+                guard let name = request["name"] as? String, let bot = browser.botting else {
+                    answer(["error": "bot tap NAME [CONTEXT], with the bot open"]); return
+                }
+                let given = request["context"] as? [String: Any] ?? [:]
+                let context = given.mapValues { AnyCodable.string("\($0)") }
+                bot.tapped(ResolvedAction(name: name, sourceComponentId: "", context: context))
+                answer(["tapped": name, "working": bot.working])
+            case "clear":
+                browser.clearBot()
+                answer(["open": browser.botting != nil, "events": browser.botting?.events.count ?? 0])
+            case "forget":
+                Bot.forget()
+                answer(["notes": Bot.notes().map(\.words)])
+            case "state":
+                guard let bot = browser.botting else { answer(["open": false]); return }
+                answer([
+                    "open": true, "working": bot.working, "busy": bot.busy, "auto": bot.auto,
+                    "always": bot.alwaysPage, "unattended": bot.unattended, "addressed": bot.addressed,
+                    "notice": bot.notice ?? "", "trouble": bot.trouble ?? "", "place": bot.place,
+                    "status": bot.status ?? "", "every": bot.mode == .every,
+                    "draft": bot.drafting?.words ?? "",
+                    "notes": Bot.notes().map(\.words),
+                    "clipboard": NSPasteboard.general.string(forType: .string) ?? "",
+                    "pending": bot.pending.map { held in
+                        ["verb": held.act.verb, "target": held.act.target, "text": held.act.text,
+                         "tab": held.tab.map { "tab-\(String($0.uuidString.suffix(6)))" } ?? NSNull()] as [String: Any]
+                    } ?? [:],
+                    "surfaces": bot.surfaces.map { $0.surface.id },
+                    "events": bot.events.map { [
+                        "kind": "\($0.kind)", "words": $0.words,
+                        "act": $0.act.map { [$0.verb, $0.target, $0.text, $0.outcome ?? "", $0.said ?? ""] } ?? [],
+                    ] as [String: Any] },
+                ])
+            case "picture":
+                // The panel as it stands, drawn off screen to a PNG — no
+                // window (see ai picture).
+                guard let bot = browser.botting, let path = request["path"] as? String else {
+                    answer(["error": "bot picture PATH, with the bot open"]); return
+                }
+                let renderer = ImageRenderer(content: BotPanel(browser: browser, bot: bot)
+                    .background(Palette.wash))
+                renderer.scale = 2
+                guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+                      let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+                    answer(["error": "nothing drawn"]); return
+                }
+                try? png.write(to: URL(fileURLWithPath: path))
+                answer(["saved": path, "working": bot.working])
+            case "close":
+                browser.closeBot()
+                answer(["open": browser.botting != nil])
+            default:
+                answer(["error": "bot use | open | ask | agree | allow | refuse | auto | stop | every | tap | clear | forget | state | picture | close"])
+            }
+
+        case "chat":
+            // The Agent Chat tab (see ChatTab.swift) as a run can drive it:
+            // the File menu's item stood in for, and the talk it holds.
+            guard Store.testing else { answer(["error": "chat only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "new":
+                guard let tab = browser.openChat() else { answer(["error": "the chat couldn't open — Settings › AI"]); return }
+                answer(["open": true, "id": Bench.short(tab)])
+            case "close":
+                // ⌘W on the chat tab, stood in for.
+                guard let bot = browser.frontChat,
+                      let tab = browser.tabs.first(where: { $0.id == bot.tab })
+                else { answer(["error": "no chat tab in front"]); return }
+                browser.close(tab)
+                answer(["closed": 1])
+            case "ask":
+                guard let text = request["text"] as? String, let bot = browser.frontChat else {
+                    answer(["error": "chat ask TEXT, with a chat tab in front"]); return
+                }
+                bot.draft = text
+                bot.submit()
+                answer(["open": true, "working": bot.working])
+            case "allow":
+                browser.frontChat?.resolve(true)
+                answer(["pending": browser.frontChat?.pending != nil])
+            case "refuse":
+                browser.frontChat?.resolve(false)
+                answer(["pending": browser.frontChat?.pending != nil])
+            case "always":
+                browser.frontChat?.always()
+                answer(["pending": browser.frontChat?.pending != nil, "always": browser.frontChat?.alwaysPage ?? false])
+            case "auto":
+                browser.frontChat?.auto = request["on"] as? Bool ?? true
+                answer(["auto": browser.frontChat?.auto ?? false])
+            case "wide":
+                // The width switch at the top right of the talk, stood in
+                // for: across the whole tab, or in its column (see
+                // Preferences.chatWide).
+                browser.prefs.chatWide = request["on"] as? Bool ?? !browser.prefs.chatWide
+                answer(["wide": browser.prefs.chatWide])
+            case "select":
+                // The talk's words, checked for being takeable and still
+                // standing: the answer drawn under a selection layer
+                // (SwiftUI's own, the one textSelection puts there), the
+                // last event's words, and how many bands of words the
+                // window's own picture holds — for a test that knows what
+                // a person's drag would find and that what stood before a
+                // new reply still stands (a redraw that names every
+                // markdown block as new can drop what stood — see
+                // MarkdownBlock's id). Only on a SEARCH_PROBE run.
+                guard Store.testing else { answer(["error": "chat select only works on a --test run"]); return }
+                guard let bot = browser.frontChat, let window = browser.window
+                else { answer(["error": "no chat tab in front"]); return }
+                guard let content = window.contentView else { answer(["error": "the chat's window shows nothing"]); return }
+                content.layoutSubtreeIfNeeded()
+                // The selection layer under every selectable text: present
+                // when the words are takeable, absent when they're not (see
+                // MarkdownText's textSelection). Both its names, for the
+                // system's own words change from one macOS to the next.
+                var selectable = 0
+                func walk(_ view: NSView) {
+                    let name = NSStringFromClass(type(of: view))
+                    if name.contains("AppKitTextInteraction") || name.contains("SelectionOverlay") { selectable += 1 }
+                    for sub in view.subviews { walk(sub) }
+                }
+                walk(content)
+                // The window's own picture, counted in bands of bright
+                // rows — a row of words is a band, an answer's card and
+                // its words among them. What the person sees, said as a
+                // number. Laid out first, the way `picture` lays the
+                // window out before it draws (a window that never laid
+                // out draws nothing to count).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    var bands = 0
+                    if let frame = window.contentView?.superview {
+                        frame.layoutSubtreeIfNeeded()
+                        if let chrome = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
+                        frame.cacheDisplay(in: frame.bounds, to: chrome)
+                        var inBand = false, bandTop = 0
+                        let bytes = chrome.bytesPerRow
+                        for y in 80..<min(1400, chrome.pixelsHigh) {
+                            var bright = 0
+                            if let data = chrome.bitmapData {
+                                for x in stride(from: 0, to: chrome.pixelsWide, by: 4) {
+                                    let off = y * bytes + x * chrome.bitsPerPixel / 8
+                                    guard off + 2 < bytes * chrome.pixelsHigh else { continue }
+                                    let r = data[off], g = data[off + 1], b = data[off + 2]
+                                    if Int(r) + Int(g) + Int(b) > 330 * 3 { bright += 1 }
+                                }
+                            }
+                            if bright > 4, !inBand {
+                                inBand = true; bandTop = y
+                            } else if bright <= 4, inBand {
+                                if y - bandTop >= 6 { bands += 1 }
+                                inBand = false
+                            }
+                        }
+                        if inBand, min(1400, chrome.pixelsHigh) - bandTop >= 6 { bands += 1 }
+                        }
+                    }
+                    answer(["selectable": selectable, "bands": bands,
+                            "lastWords": bot.events.last?.words ?? ""])
+                }
+            case "state":
+                guard let bot = browser.frontChat else { answer(["open": false]); return }
+                answer([
+                    "open": true, "working": bot.working, "auto": bot.auto,
+                    "always": bot.alwaysPage, "unattended": bot.unattended,
+                    "notice": bot.notice ?? "", "trouble": bot.trouble ?? "",
+                    "place": bot.place, "status": bot.status ?? "",
+                    "draft": bot.drafting?.words ?? "",
+                    "musing": bot.musing?.words ?? "",
+                    "wide": browser.prefs.chatWide,
+                    "chats": browser.chatBots.count,
+                    "pending": bot.pending.map { held in
+                        ["verb": held.act.verb, "target": held.act.target, "text": held.act.text] as [String: Any]
+                    } ?? [:],
+                    "events": bot.events.map { [
+                        "kind": "\($0.kind)", "words": $0.words,
+                        "act": $0.act.map { [$0.verb, $0.target, $0.text, $0.outcome ?? "", $0.said ?? ""] } ?? [],
+                    ] as [String: Any] },
+                ])
+            default:
+                answer(["error": "chat needs an action: new, ask, allow, refuse, always, auto, wide, select or state"])
+            }
+
         case "ai":
             // The AI add-on's requests against a stand-in on this Mac: "mock"
-            // points every provider at it, "key" keeps a made-up key for the
-            // run (in memory), "ask" sends one question and gives back the
-            // whole answer or the error. Only on a SEARCH_PROBE run, and only
-            // ever to the loopback address.
+            // points every provider at it, "key" keeps a made-up key (in this
+            // Mac's keychain, where this run's own keys go), "keys" gives back
+            // what is kept for every provider — the key's last four, never the
+            // key — "forget" takes keys away again, "ask" sends one question
+            // and gives back the whole answer or the error. Only on a
+            // SEARCH_PROBE run, and only ever to the loopback address.
             guard Store.testing else { answer(["error": "ai only works on a --test run"]); return }
             switch request["action"] as? String {
             case "mock":
@@ -1995,6 +2250,29 @@ final class Bench {
                 else { answer(["error": "ai key PROVIDER KEY"]); return }
                 let saved = AIKeys.save(key, for: provider)
                 answer(["saved": "\(saved)", "hint": AIKeys.hint(for: provider) ?? ""])
+            case "keys":
+                // Every provider's own settings as they stand: where its
+                // requests go, the model chosen, and what is kept for it —
+                // the key's last four and the host it was given for, never
+                // the key itself (see AIKeys.held).
+                let kept: [[String: Any]] = AIProvider.allCases.filter { !$0.isLocal }.map { one in
+                    ["provider": one.rawValue,
+                     "name": one.name,
+                     "base": browser.prefs.aiBase(for: one),
+                     "model": browser.prefs.aiModel(for: one),
+                     "hint": AIKeys.hint(for: one) ?? "",
+                     "held": AIKeys.held(for: one).map { ["host": $0.host, "tail": $0.tail] }]
+                }
+                answer(["keys": kept])
+            case "forget":
+                // One provider's key, or every key this run's keys go under:
+                // for a test that leaves the keychain as it found it.
+                if let provider = (request["provider"] as? String).flatMap(AIProvider.init(rawValue:)) {
+                    AIKeys.forget(provider)
+                } else {
+                    AIKeys.forgetAll()
+                }
+                answer(["forgotten": true])
             case "ask":
                 guard let provider = (request["provider"] as? String).flatMap(AIProvider.init(rawValue:)) else {
                     answer(["error": "ai ask PROVIDER MODEL TEXT"]); return
@@ -2006,10 +2284,31 @@ final class Bench {
                 Task { @MainActor in
                     var text = "", pieces = 0
                     do {
-                        for try await piece in stream { text += piece; pieces += 1 }
+                        // The answer's words for the text; every piece counted,
+                        // thoughts too — a stream that is thinking is alive.
+                        for try await piece in stream {
+                            if piece.kind == .answer { text += piece.words }
+                            pieces += 1
+                        }
                         answer(["text": text, "pieces": pieces])
                     } catch {
                         answer(["error": error.localizedDescription, "text": text])
+                    }
+                }
+            case "test":
+                // The Test row in Settings › AI, asked the same way: one short
+                // message, and the whole answer or the reason there wasn't one.
+                guard let provider = (request["provider"] as? String).flatMap(AIProvider.init(rawValue:)) else {
+                    answer(["error": "ai test PROVIDER [MODEL]"]); return
+                }
+                let model = request["model"] as? String ?? provider.defaultModel
+                Task { @MainActor in
+                    do {
+                        let text = try await AITest.answer(provider, model: model,
+                                                           key: provider.isLocal ? nil : AIKeys.key(for: provider))
+                        answer(["text": text])
+                    } catch {
+                        answer(["error": error.localizedDescription])
                     }
                 }
             case "signin":
@@ -2098,6 +2397,138 @@ final class Bench {
                 answer(["strays": AIPage.strays(in: text, from: read)])
             default:
                 answer(["error": "ai mock URL | key PROVIDER KEY | ask PROVIDER MODEL TEXT | read ID | check TEXT"])
+            }
+
+        case "mcp":
+            // The person's servers (see MCP.swift) as a run can set them up:
+            // added, switched on, their tools listed, one called. Only on a
+            // SEARCH_PROBE run — and only ever a program on this Mac or an
+            // address on it.
+            guard Store.testing else { answer(["error": "mcp only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "add":
+                let usage = "mcp add NAME COMMAND [ARGS] | NAME URL [HEADERS]"
+                guard let name = request["name"] as? String else {
+                    answer(["error": usage]); return
+                }
+                var config = MCPServer.Config(name: name)
+                if let url = request["url"] as? String {
+                    guard let met = URL(string: url), ["127.0.0.1", "localhost", "::1"].contains(met.host() ?? "")
+                    else { answer(["error": "mcp add needs an address on this Mac"]); return }
+                    config.url = url
+                    // Headers said with every request — a token to say who's asking.
+                    if let headers = request["headers"] as? [String: Any] {
+                        let kept = headers.compactMapValues { $0 as? String }
+                        if !kept.isEmpty { config.headers = kept }
+                    }
+                } else if let command = request["command"] as? String {
+                    config.command = command
+                    config.args = request["args"] as? [String]
+                } else {
+                    answer(["error": usage]); return
+                }
+                do { try MCPHub.shared.add(config) } catch { answer(["error": error.localizedDescription]); return }
+                answer(["added": name])
+            case "remove":
+                guard let name = request["name"] as? String else { answer(["error": "mcp remove NAME"]); return }
+                MCPHub.shared.remove(name)
+                answer(["removed": name])
+            case "on", "off":
+                guard let name = request["name"] as? String else { answer(["error": "mcp on|off NAME"]); return }
+                MCPHub.shared.setEnabled(name, request["action"] as? String == "on")
+                answer(["name": name, "on": MCPHub.shared.enabled(name)])
+            case "list":
+                answer(["servers": MCPHub.shared.servers.map { [
+                    "name": $0.config.name,
+                    "where": $0.config.command ?? $0.config.url ?? "",
+                    "headers": $0.config.headers?.count ?? 0,
+                    "state": $0.state.words,
+                    "on": MCPHub.shared.enabled($0.config.name),
+                    "tools": $0.tools.map(\.qualified),
+                ] as [String: Any] }])
+            case "tools":
+                // Every server on, told to connect and waited for; then the
+                // tools the model would be offered.
+                Task { @MainActor in
+                    await MCPHub.shared.wakeAndWait()
+                    answer(["tools": MCPHub.shared.listed().map(\.described),
+                            "states": MCPHub.shared.servers.map { [$0.config.name: "\($0.state)"] }])
+                }
+            case "call":
+                guard let tool = request["tool"] as? String else { answer(["error": "mcp call TOOL [ARGUMENTS]"]); return }
+                let arguments = request["arguments"] as? [String: Any] ?? [:]
+                Task { @MainActor in
+                    do {
+                        let said = try await MCPHub.shared.call(tool, arguments: arguments)
+                        answer(["text": said.text, "failed": said.failed])
+                    } catch {
+                        answer(["error": error.localizedDescription])
+                    }
+                }
+            default:
+                answer(["error": "mcp add | remove | on | off | list | tools | call"])
+            }
+
+        case "skills":
+            // The person's skills (see Skills.swift) as a run can meet them.
+            guard Store.testing else { answer(["error": "skills only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "list":
+                answer(["skills": Skills.listed().map { ["name": $0.name, "description": $0.description] as [String: Any] },
+                        "found": Skills.discover().map(\.name)])
+            case "on", "off":
+                guard let name = request["name"] as? String else { answer(["error": "skills on|off NAME"]); return }
+                Skills.setEnabled(name, request["action"] as? String == "on")
+                answer(["name": name, "on": Skills.enabled(name)])
+            case "read":
+                guard let name = request["name"] as? String else { answer(["error": "skills read NAME"]); return }
+                answer(["body": Skills.body(name) ?? ""])
+            default:
+                answer(["error": "skills list | on | off | read"])
+            }
+
+        case "chores":
+            // The tasks set for the bot to do later (see Chores) as a run can
+            // meet them: listed, added, removed, the clock ticked by hand —
+            // a time already come runs at once. Only on a SEARCH_PROBE run,
+            // for what it runs is the bot.
+            guard Store.testing else { answer(["error": "chores only works on a --test run"]); return }
+            switch request["action"] as? String {
+            case "add":
+                let usage = "chores add GOAL AT PAGE [EVERY] — a time ISO 8601; EVERY, seconds, for a task that comes round again"
+                guard let goal = request["goal"] as? String, !goal.isEmpty,
+                      let when = request["at"] as? String, let at = Chores.read(when),
+                      let page = request["page"] as? String, !page.isEmpty else {
+                    answer(["error": usage]); return
+                }
+                let every = (request["every"] as? Double) ?? (request["every"] as? Int).map(Double.init)
+                let provider = browser.prefs.aiProvider
+                let task = Chores.shared.add(goal: goal, at: at, page: page,
+                                            provider: provider?.rawValue ?? "",
+                                            model: provider.map { browser.prefs.aiModel(for: $0) } ?? "", every: every)
+                answer(["added": task.id.uuidString, "every": every.map { Int($0) } ?? 0])
+            case "remove":
+                guard let id = (request["id"] as? String).flatMap(UUID.init(uuidString:)) else {
+                    answer(["error": "chores remove ID"]); return
+                }
+                Chores.shared.remove(id)
+                answer(["removed": id.uuidString])
+            case "again":
+                // A task taken up again by the person, the page it was set
+                // on already open in their tab: due now, for the clock's
+                // next look (see Chores.again).
+                guard let id = (request["id"] as? String).flatMap(UUID.init(uuidString:)) else {
+                    answer(["error": "chores again ID"]); return
+                }
+                answer(["again": Chores.shared.again(id)?.id.uuidString ?? "",
+                        "tasks": Chores.shared.listed()])
+            case "list":
+                answer(["tasks": Chores.shared.listed()])
+            case "tick":
+                Chores.shared.tick()
+                answer(["tasks": Chores.shared.listed()])
+            default:
+                answer(["error": "chores add | remove | list | tick"])
             }
 
         case "notifications":
@@ -3505,6 +3936,9 @@ final class Bench {
             if let text = request["lead"] as? String, let kind = InternalPage.Kind(rawValue: text) { browser.lead(to: InternalPage(kind)) }
             if let text = request["go"] as? String, let url = URL(string: text) { browser.active?.go(to: url) }
             if let on = request["hidden"] as? Bool { browser.reviewing = on }
+            // The agents' pages out of sight (Settings › Browser Use): the
+            // switch itself, for a test to turn.
+            if let on = request["quiet"] as? Bool { browser.prefs.benchQuiet = on }
             if let look = (request["look"] as? String).flatMap(Look.init) { browser.prefs.look = look }
             if let side = request["side"] as? String {
                 guard let position = SidebarPosition(rawValue: side) else {
@@ -3691,7 +4125,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-                "tabs", "open", "go", "openmark", "close", "wait", "sleep", "select", "text", "nowplaying", "agent", "kept", "eval", "click", "type", "submit", "shot", "probe", "key", "textcheck", "resize", "hit", "pointer", "film", "float", "window", "pages", "picture", "pdf", "place", "group", "tospace", "field", "bookmark", "marks", "menu", "keyeq", "fill", "pin", "middle", "windows", "alive", "quit", "towindow", "news", "pull", "magnify", "wheel", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "passwords", "accounts", "find", "answer", "visible", "ai", "notifications", "popups", "suggest", "translate", "profile", "settings",
+"tabs", "open", "go", "openmark", "close", "wait", "sleep", "select", "text", "nowplaying", "eval", "click", "type", "submit", "shot", "probe", "key", "textcheck", "resize", "hit", "pointer", "film", "float", "window", "pages", "picture", "pdf", "place", "group", "tospace", "field", "bookmark", "marks", "menu", "keyeq", "fill", "pin", "middle", "windows", "alive", "quit", "towindow", "news", "pull", "magnify", "wheel", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "passwords", "accounts", "find", "answer", "visible", "ai", "notifications", "popups", "suggest", "translate", "profile", "settings", "mcp", "skills", "chores", "chat", "agent", "kept"
             ]])
         }
     }
@@ -4304,6 +4738,7 @@ final class Bench {
     private func describe(_ tab: Tab) -> [String: Any] {
         [
             "id": Bench.short(tab),
+            "label": tab.label,
             "url": tab.address?.absoluteString ?? "",
             "page": tab.pageAddress?.absoluteString ?? "",
             "internal": tab.page?.url.absoluteString ?? "",
@@ -4460,11 +4895,12 @@ final class Bench {
     /// Where `film float` lends the tab's stage, off every screen.
     private var hall: NSWindow?
 
-    /// A page nobody is looking at has to be somewhere to be laid out at all.
-    /// The stage takes it back the moment you pick its tab, and it comes
-    /// here again when the bench next needs it.
-    private func house(_ tab: Tab) {
-        guard tab.bench, tab.web.window == nil else { return }
+    /// A page nobody is looking at has to be somewhere to be laid out at all —
+    /// a bench page, or the page a task-for-later works while it runs behind
+    /// the front one. The stage takes it back the moment you pick its tab,
+    /// and it comes here again when the bench next needs it.
+    func house(_ tab: Tab) {
+        guard tab.web.window == nil else { return }
         let window = room ?? makeRoom()
         tab.web.frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         tab.web.autoresizingMask = [.width, .height]

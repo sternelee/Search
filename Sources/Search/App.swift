@@ -82,6 +82,9 @@ struct SearchApp: App {
                     .shortcut("file.newTerminal")
                 Button("New Private Tab") { browser.newShyTab() }
                     .shortcut("file.newPrivateTab")
+                // A tab that is a talk with the agent, not a page — from
+                // here and nowhere else (see ChatTab.swift).
+                Button("New Agent Chat") { browser.openChat() }
                 Button(browser.reopenTitle) { browser.reopen() }
                     .shortcut("file.reopen")
                     .disabled(browser.ghosts.isEmpty && Browsers.lastClosedAt == nil)
@@ -188,6 +191,10 @@ struct SearchApp: App {
                     .shortcut("view.reader")
                 Button("Float Video") { browser.toggleFloat() }
                     .shortcut("view.float")
+                Divider()
+                Button("Bot on This Page…") { browser.openBot() }
+                    .shortcut("view.bot")
+                    .disabled(browser.active?.isBlank ?? true)
                 // Websites in the side panel, only once they are on
                 // (Settings › General).
                 if browser.prefs.sitesInPanel {
@@ -638,46 +645,73 @@ struct ContentView: View {
     // Page that is never rebuilt from one tab to the next (see Stage.swift).
     @ViewBuilder
     private var stage: some View {
-        if browser.prefs.splitView {
+        // A chat tab comes first, Split View on or off: it is a talk, not a
+        // page, and the split's stage draws pages only — a chat tab through
+        // it is a pageless tab and the stage is white. It can never be half
+        // of a pair (see Browser.canSplit), so nothing of a split is lost
+        // by filling the stage with the talk.
+        if let tab = browser.active, tab.chat, let bot = browser.chatBots[tab.id] {
+            // A tab that is a talk, not a page: the chat fills the stage
+            // and nothing of a page's chrome is drawn over it.
+            ChatStage(browser: browser, bot: bot)
+        } else if browser.prefs.splitView {
             SplitStage(browser: browser, corner: cards ? Metrics.cardRadius : 0, immersed: fullscreenTab?.id)
         } else if let tab = browser.active {
-            Page(tab: tab, corner: cards ? Metrics.cardRadius : 0, browser: browser)
-                .overlay {
-                    if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
-                }
-                .overlay(alignment: TerminalLook.findPlace == .top ? .topTrailing : .bottomTrailing) {
-                    // Always mounted. The pill draws and erases itself by its
-                    // own leg (see FindBar): a leg is a curve read per frame,
-                    // and a view taken out of the hierarchy leaves instantly
-                    // whatever its transition was, which is no way to leave.
-                    FindBar(browser: browser)
-                }
-                .overlay(alignment: .topTrailing) {
-                    if let assistant = browser.assisting, assistant.tab == tab.id {
-                        AssistantPanel(browser: browser, assistant: assistant)
-                            .padding(.top, browser.finding ? 64 : 14)
-                            .padding(.trailing, 14)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
-                }
-                .animation(Motion.settle, value: browser.assisting?.id)
-                .overlay(alignment: .topLeading) {
-                    if let asked = browser.suggesting, asked.tab == tab.id {
-                        AccountList(browser: browser, asked: asked)
-                            .transition(.opacity)
-                    }
-                }
-                .animation(Motion.quick, value: browser.suggesting)
-                .overlay(alignment: .topLeading) {
-                    if let pairing = browser.applePairing, pairing.tab == tab.id {
-                        ApplePairingCard(browser: browser, apple: browser.applePasswords, pairing: pairing)
-                            .transition(.opacity)
-                    }
-                }
-                .animation(Motion.quick, value: browser.applePairing)
+
+            pageStage(tab)
+
         } else {
             Palette.ground
         }
+    }
+
+    /// The stage a page fills, with its floating chrome over it: the link
+    /// status, the find bar, the assistant and bot panels, the account list
+    /// and the pairing card.
+    @ViewBuilder
+    private func pageStage(_ tab: Tab) -> some View {
+        Page(tab: tab, corner: cards ? Metrics.cardRadius : 0, browser: browser)
+            .overlay {
+                if browser.prefs.showsLinks { LinkBubble(status: browser.linkStatus) }
+            }
+            .overlay(alignment: .topTrailing) {
+                if browser.finding {
+                    FindBar(browser: browser)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if let assistant = browser.assisting, assistant.tab == tab.id {
+                    AssistantPanel(browser: browser, assistant: assistant)
+                        .padding(.top, browser.finding ? 64 : 14)
+                        .padding(.trailing, 14)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .animation(Motion.settle, value: browser.assisting?.id)
+            .overlay(alignment: .topTrailing) {
+                if let bot = browser.botting, bot.tab == tab.id {
+                    BotPanel(browser: browser, bot: bot)
+                        .padding(.top, browser.finding ? 64 : 14)
+                        .padding(.trailing, 14)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .animation(Motion.settle, value: browser.botting?.id)
+            .overlay(alignment: .topLeading) {
+                if let asked = browser.suggesting, asked.tab == tab.id {
+                    AccountList(browser: browser, asked: asked)
+                        .transition(.opacity)
+                }
+            }
+            .animation(Motion.quick, value: browser.suggesting)
+            .overlay(alignment: .topLeading) {
+                if let pairing = browser.applePairing, pairing.tab == tab.id {
+                    ApplePairingCard(browser: browser, apple: browser.applePasswords, pairing: pairing)
+                        .transition(.opacity)
+                }
+            }
+            .animation(Motion.quick, value: browser.applePairing)
     }
 
     /// What the column and the strip take from the page right now: animated
@@ -982,6 +1016,8 @@ struct ContentView: View {
             Links.hand(to: browser)
             BookmarkMenu.shared.start(for: browser)
             Browsers.watchFrames()
+            // The bot's tasks for later come due from here on (see Chores).
+            Chores.shared.wake(browser)
         }
     }
 
@@ -1488,6 +1524,10 @@ struct ContentView: View {
             }
             if browser.assisting != nil {
                 browser.closeAssistant()
+                return true
+            }
+            if browser.botting != nil {
+                browser.closeBot()
                 return true
             }
             if browser.veiling {

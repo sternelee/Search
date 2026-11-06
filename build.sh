@@ -53,8 +53,8 @@ CONFIG="${1:-release}"
 STEP="${2:-app}"
 ARCH="${SEARCH_ARCH:-$(uname -m)}"
 case "$ARCH" in
-  arm64) OUT="build"; SUBFOLDER="" ;;
-  x86_64) OUT="build/intel"; SUBFOLDER="/intel" ;;
+  arm64) OUT="${SEARCH_BUILD_ROOT:-build}"; SUBFOLDER="" ;;
+  x86_64) OUT="${SEARCH_BUILD_ROOT:-build}/intel"; SUBFOLDER="/intel" ;;
   *) echo "SEARCH_ARCH is arm64 or x86_64, not “$ARCH”" >&2; exit 1 ;;
 esac
 APP="$OUT/Search.app"
@@ -111,6 +111,11 @@ BINARY="$(swift build "${SWIFTFLAGS[@]}" --show-bin-path)/Search"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/$NAME"
+# The MCP bridge beside the browser: what an agent CLI (Claude Code, Codex)
+# is pointed at, in its own Settings page for it (BrowserUse.swift).
+BRIDGE="$(swift build "${SWIFTFLAGS[@]}" --show-bin-path)/search-mcp"
+[ -x "$BRIDGE" ] || { echo "search-mcp didn't build" >&2; exit 1; }
+cp "$BRIDGE" "$APP/Contents/MacOS/search-mcp"
 # The binary says which SDK it was built with, and AppKit draws the app the
 # way that SDK's macOS drew it: built with the macOS 27 SDK, a Mac on 27 gets
 # 27's window buttons and controls; said to be built with an older one, it
@@ -137,6 +142,7 @@ if [ "$CONFIG" = "release" ]; then
   rm -rf "$APP.dSYM"
   dsymutil "$BINARY" -o "$APP.dSYM" 2>/dev/null || echo "no dSYM this time" >&2
   strip -x "$APP/Contents/MacOS/$NAME"
+  strip -x "$APP/Contents/MacOS/search-mcp"
 fi
 
 # The icon, drawn fresh each time — it is thirty lines of Swift, not an asset

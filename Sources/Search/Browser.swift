@@ -123,8 +123,14 @@ final class Browser: NSObject, ObservableObject {
     }
 
     var displayedTabs: [Tab] {
-        guard prefs.splitView else { return tabs }
-        return tabs.filter { tab in !splits.contains { $0.contains(tab.id) && $0.left != tab.id } }
+        // The agents' pages out of sight (Settings › Browser Use): they are
+        // still here, still worked by the socket and the bridge — only the
+        // row doesn't draw them, and the keys that count the row (⌘1–9,
+        // ⌃Tab, see shownTabs) count what the person can see. Everything
+        // else — the session, the verbs, closing them — goes by `tabs`.
+        let standing = prefs.benchQuiet ? tabs.filter { !$0.bench } : tabs
+        guard prefs.splitView else { return standing }
+        return standing.filter { tab in !splits.contains { $0.contains(tab.id) && $0.left != tab.id } }
     }
 
     var visibleTabIDs: Set<Tab.ID> {
@@ -421,16 +427,26 @@ final class Browser: NSObject, ObservableObject {
     @Published var finding = false
     /// The AI panel's conversation about the page, while it is open.
     @Published var assisting: Assistant?
+    /// The bot's talk about the page, while it is open (see Bot).
+    @Published var botting: Bot?
+    /// The talks the Agent Chat tabs are having, one apiece, for as long
+    /// as their tabs stand in the row (see ChatTab.swift).
+    @Published var chatBots: [Tab.ID: Bot] = [:]
+    /// Talks held while their bot panels are away (see closeBot, in
+    /// Bot.swift): the talk a page was having, and the one over every
+    /// tab, taken up again when a panel comes back to the same page.
+    /// Gone with the tab, or cleared by hand.
+    var heldTalks: [Tab.ID: Bot.Held] = [:]
+    var heldEvery: Bot.Held?
     /// The side panel, beside the page (see SidePanel.swift): up or
     /// not, and what is in it.
     @Published var sidePanelShown = false
     @Published var sidePanel: SidePanelContent?
-    /// The Settings page it opens on next.
+    /// The Settings page it opens on next. The AI page is the bot's as
+    /// well as the add-on's, and the bot ships with the app, so the page is
+    /// always there to open.
     var settingsPage: SettingsPanel.Page {
-        get {
-            let page = SettingsPanel.Page.named( Store.settings.string(forKey: "settings.page") ?? "") ?? .general
-            return page == .ai && !AI.shipped ? .general : page
-        }
+        get { SettingsPanel.Page.named(Store.settings.string(forKey: "settings.page") ?? "") ?? .general }
         set { Store.settings.set(newValue.rawValue, forKey: "settings.page") }
     }
     // The same words written back (the field does, as it appears) aren't
@@ -1657,8 +1673,10 @@ final class Browser: NSObject, ObservableObject {
         // Drawn again even when the tab stays where it is (see unpin).
         objectWillChange.send()
         // Pins are the space's, kept on disk and shown in every window: a
-        // private tab can't be one, or its page would outlive it there.
-        guard !tab.shy, tab.page == nil else { return }
+        // private tab can't be one, or its page would outlive it there —
+        // and a chat tab is a talk, with no home page to pin to. Nor is
+        // one of Search's own pages pinned.
+        guard !tab.shy, !tab.chat, tab.page == nil else { return }
         detachSplit(tab)
         if tab.pin == nil {
             let previousGroup = tab.groupID
@@ -2680,7 +2698,9 @@ final class Browser: NSObject, ObservableObject {
            Pins.setShared(shared, from: self) {
             for space in Array(parked.keys) { pinsChanged(in: space) }
         }
-        writeRow(spaceID, session(tabs, active: activeID, groups: tabGroups, splits: splits), now: now)
+        // A chat tab is a talk of this opening, not an address to come back
+        // to: it is not kept for the next time.
+        writeRow(spaceID, session(tabs.filter { !$0.chat }, active: activeID, groups: tabGroups, splits: splits), now: now)
     }
 
     // MARK: - pins, the same in every window
@@ -3264,7 +3284,9 @@ final class Browser: NSObject, ObservableObject {
     /// A pin can be split with: its page goes into the pair as a tab of its
     /// own, and the pin stays where it is (see splittable).
     func canSplit(_ first: Tab, with second: Tab) -> Bool {
+        // A chat tab is no page to put beside another.
         prefs.splitView && first.id != second.id && !first.bench && !second.bench
+            && !first.chat && !second.chat
             && first.shy == second.shy
             && tabs.contains(where: { $0.id == first.id })
             && tabs.contains(where: { $0.id == second.id })
@@ -3546,6 +3568,16 @@ final class Browser: NSObject, ObservableObject {
         rememberSession()
     }
 
+    /// A chat tab stands in the row like any tab and comes to the front
+    /// (made in ChatTab.swift, where the talk is).
+    func placeChat(_ tab: Tab) {
+        prepare(tab)
+        tabs.append(tab)
+        leaving()
+        activeID = tab.id
+        editing = false
+    }
+
     /// ⌘T, the + button and the menu. With the floating field turned on and
     /// a page in front, the field comes up over that page instead of a blank
     /// tab: the tab is made by Return, not by asking for one. Anywhere else
@@ -3760,8 +3792,10 @@ final class Browser: NSObject, ObservableObject {
         // Back on a tab with the caret still in a box, the list may come again.
         looked = nil
         guard tab.id != activeID else { return }
-        // The AI panel is about the page it was opened on.
+        // The AI panel and the bot are about the page they were opened on —
+        // the bot over every tab is about them all: it stays.
         if assisting != nil { closeAssistant() }
+        if botting?.mode == .page { closeBot() }
         // An extension's panel opened for one tab goes and comes with it.
         sidePanelFollows(tab)
         // Coming back to the tab whose video is out brings it home first, so
@@ -3885,6 +3919,8 @@ final class Browser: NSObject, ObservableObject {
     /// behind; closing that blank tab closes the window.
     func close(_ tab: Tab) {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        // The talk a chat tab was having goes with the tab.
+        chatBots.removeValue(forKey: tab.id)?.stop()
         let pair = split(for: tab)
         let partner = pair.flatMap { pair in tabs.first { $0.id == pair.partner(of: tab.id) } }
         detachSplit(tab)
@@ -3918,6 +3954,7 @@ final class Browser: NSObject, ObservableObject {
                 tab.close()
                 adopt(fresh)
                 tabs = [fresh]
+                heldTalks.removeValue(forKey: tab.id)
                 activeID = fresh.id
                 typed = ""
                 removeEmptyGroup(tab.groupID)
@@ -3970,6 +4007,9 @@ final class Browser: NSObject, ObservableObject {
         remember(tab, at: index, partner: partner?.id, onLeft: pair?.left == tab.id)
         tab.close()
         tabs.remove(at: index)
+        // The talk held for the page goes with it: a new tab there is a
+        // new page, whatever its address.
+        heldTalks.removeValue(forKey: tab.id)
         removeEmptyGroup(tab.groupID)
         if activeID == tab.id {
             // The neighbour on the right, or the last one if there is no

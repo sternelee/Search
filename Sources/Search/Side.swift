@@ -1438,8 +1438,30 @@ struct Door: View {
         .overlay { if let held { RightClick(menu: held) } }
         .onHover { hovering = $0 }
         .help(help)
+        // A door is a glyph and nothing else: what it says on hover is what
+        // it should say aloud, rather than the name of the symbol.
+        .accessibilityLabel(help.isEmpty ? icon : help)
+        .accessibilityAddTraits(on ? .isSelected : [])
         .animation(Motion.quick, value: hovering)
         .animation(Motion.quick, value: on)
+    }
+}
+
+/// The stop: a turn cut where it stands, quiet (see Bot.stop).
+struct StopButton: View {
+    let act: () -> Void
+
+    var body: some View {
+        Button(action: act) {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Palette.ground)
+                .frame(width: 24, height: 24)
+                .background(Palette.ink, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Stop")
     }
 }
 

@@ -20,6 +20,9 @@ final class Assistant: ObservableObject, Identifiable {
         /// Nil for the summary.
         let question: String?
         var answer = ""
+        /// The model is thinking — shown while the answer has no words yet
+        /// (see `answer()`).
+        var thinking = false
         var done = false
         var failed: String?
         /// Addresses, emails and numbers in the answer the page doesn't have.
@@ -47,12 +50,20 @@ final class Assistant: ObservableObject, Identifiable {
     private var messages: [AIMessage] = []
     private var waiting: AIPage.Ask?
     private var task: Task<Void, Never>?
+    /// Tool calls and skills asked for in this conversation, bounded (see
+    /// `follow`).
+    private var steps = 0
 
     init(tab: Tab, provider: AIProvider, model: String, summary: Bool) {
         self.tab = tab.id
         self.provider = provider
         self.model = model
         self.summary = summary
+        // The read-only tools the person keeps are offered to this panel
+        // (see AIDescribed.forAsking): their servers connected in the
+        // background while the page is being read, so the tools are there
+        // to list by the time a question is asked.
+        MCPHub.shared.wake()
         Task { @MainActor [weak self, weak tab] in
             guard let self, let tab else { return }
             self.read = await AIPage.read(tab)
@@ -108,20 +119,43 @@ final class Assistant: ObservableObject, Identifiable {
             messages.append(AIMessage(role: .user, text: messages.isEmpty ? AIPage.opening(read, ask, fence: fence) : question))
             turns.append(Turn(question: question))
         }
+        steps = 0
+        answer()
+    }
+
+    /// The turn is asked of the model — the first time, and again when a
+    /// tool's or a skill's material has come back (see `follow`). Tools and
+    /// skills of the person's ride along when there are any, only the ones
+    /// that say they read (see AIDescribed.forAsking).
+    private func answer() {
+        guard read != nil else { return }
+        if !turns.isEmpty { turns[turns.count - 1].answer = "" }
+        let system = AIPage.system(fence: fence) + AIDescribed.forAsking()
         // The key, read now and let go with the request.
         let key = provider.isLocal ? nil : AIKeys.key(for: provider)
         let stream = provider == .thisMac
-            ? AIEngine.shared.stream(system: AIPage.system(fence: fence), messages: messages)
-            : AIClient.shared.stream(provider, model: model, system: AIPage.system(fence: fence), messages: messages, key: key)
+            ? AIEngine.shared.stream(system: system, messages: messages)
+            : AIClient.shared.stream(provider, model: model, system: system, messages: messages, key: key)
         task = Task { @MainActor [weak self] in
             do {
                 for try await piece in stream {
                     guard let self, !self.turns.isEmpty else { return }
-                    self.turns[self.turns.count - 1].answer += piece
+                    // A thinking model's thoughts are not the answer about
+                    // the page; they go by (see AIPiece).
+                    guard piece.kind == .answer else {
+                        self.turns[self.turns.count - 1].thinking = true
+                        continue
+                    }
+                    self.turns[self.turns.count - 1].answer += piece.words
                     // Longer than any answer about a page needs: a model
                     // talked into writing on and on is stopped.
                     if self.turns[self.turns.count - 1].answer.count > Assistant.longest { break }
                 }
+                // A reply that is one call is followed, not finished (see
+                // `follow`); anything else ends the turn.
+                if let self, !self.turns.isEmpty,
+                   let call = AIDescribed.call(in: self.turns[self.turns.count - 1].answer),
+                   self.follow(call) { return }
                 self?.finish(nil)
             } catch {
                 self?.finish(error.localizedDescription)
@@ -129,12 +163,59 @@ final class Assistant: ObservableObject, Identifiable {
         }
     }
 
-    static let longest = 16_000
+    /// A reply given over to one tool call or one skill is followed, not
+    /// shown: the call is made — only tools that say they read are offered,
+    /// so this panel never touches anything — and what comes back goes in
+    /// as the next material, the same turn answered again. Bounded, so a
+    /// model that calls on and on is stopped and its last words stand.
+    private func follow(_ call: (tool: (name: String, arguments: [String: Any])?, skill: String?)) -> Bool {
+        guard steps < Assistant.steps, !turns.isEmpty else { return false }
+        steps += 1
+        // What the model said stays part of the conversation; the person
+        // sees a word on what's happening instead.
+        messages.append(AIMessage(role: .assistant, text: turns[turns.count - 1].answer))
+        turns[turns.count - 1].answer = call.tool != nil ? "Looking something up…" : "Reading one of your skills…"
+        task = Task { @MainActor [weak self] in
+            guard let self, !self.turns.isEmpty else { return }
+            var material: String
+            if let tool = call.tool {
+                do {
+                    let said = try await MCPHub.shared.call(tool.name, arguments: tool.arguments)
+                    var words = said.text.isEmpty ? "nothing" : said.text
+                    if words.count > Assistant.pageful { words = String(words.prefix(Assistant.pageful)) + "…" }
+                    material = "The tool \(tool.name) \(said.failed ? "said it failed" : "said"):\n\(words)"
+                } catch {
+                    material = "The tool \(tool.name) didn't work: \(error.localizedDescription). Answer without it."
+                }
+            } else if let skill = call.skill {
+                if let id = Skills.listed().first(where: { $0.name == skill })?.id,
+                   let body = Skills.body(id) {
+                    var words = body
+                    if words.count > Assistant.pageful { words = String(words.prefix(Assistant.pageful)) + "…" }
+                    material = "The skill \(skill), the person's own words:\n\n\(words)"
+                } else {
+                    material = "There's no skill called \(skill) — answer without it."
+                }
+            } else { return }
+            self.messages.append(AIMessage(role: .user, text: material))
+            self.answer()
+        }
+        return true
+    }
+
+    nonisolated static let longest = 16_000
+    /// What a tool or a skill may say into the conversation, capped like a
+    /// page (see AIPage).
+    nonisolated static let pageful = 8_000
+    /// Tool calls and skills asked for in one conversation, before the
+    /// model is made to answer in words.
+    static let steps = 6
 
     private func finish(_ failed: String?) {
         guard !turns.isEmpty, let read else { return }
         var turn = turns[turns.count - 1]
         turn.done = true
+        turn.thinking = false
         turn.failed = failed
         turns[turns.count - 1] = turn
         // Checked away from the window's thread: a long answer is a long look.
@@ -142,8 +223,10 @@ final class Assistant: ObservableObject, Identifiable {
         Task.detached(priority: .userInitiated) { [weak self] in
             let strays = AIPage.strays(in: answer, from: read)
             await MainActor.run { [weak self] in
-                guard let mine = self, let index = mine.turns.firstIndex(where: { $0.id == id }) else { return }
-                mine.turns[index].strays = strays
+
+                guard let self, let index = self.turns.firstIndex(where: { $0.id == id }) else { return }
+                self.turns[index].strays = strays
+
             }
         }
         if failed == nil, !turn.answer.isEmpty {
@@ -168,6 +251,10 @@ enum AIAssist {
         var text = "When you ask, Search sends this page's text, its address and your question to \(provider.host)"
         text += provider == .openRouter ? ", which passes them to the model's provider." : "."
         text += " Their terms and privacy policy apply. Nothing is sent until you ask, never from a private tab, and Search keeps no copy."
+        // Reads allowed beyond the page go to the provider too, each held
+        // for an Allow first — the person should know from the start that
+        // allowing one is sending it.
+        text += " Reads you allow beyond the page — your history, for one — go with it."
         switch provider {
         case .gemini:
             text += "\n\nOn Gemini's free tier, outside the EEA, Switzerland and the UK, Google may use this to improve its products, and people may read it. Don't use it on sensitive pages."
@@ -310,7 +397,7 @@ struct AssistantPanel: View {
                 caution("This page has text written for an AI to follow. The answer may have been steered by it.")
             }
             ForEach(assistant.turns) { turn in
-                TurnView(turn: turn).id(turn.id)
+                TurnView(turn: turn, openLink: openLink).id(turn.id)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -340,6 +427,12 @@ struct AssistantPanel: View {
             .frame(maxHeight: 420)
     }
 
+    /// A link tapped in the answer: opened the browser's way, the
+    /// same as a link on any page — never by the model's words alone.
+    private func openLink(_ url: URL) {
+        browser.open(url, foreground: true)
+    }
+
     private func noticeCard(_ notice: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Answers from \(assistant.provider.name)")
@@ -360,6 +453,8 @@ struct AssistantPanel: View {
 
     private struct TurnView: View {
         let turn: Assistant.Turn
+        /// A link's tap, opened the browser's way — the panel's own open.
+        let openLink: (URL) -> Void
 
         var body: some View {
             VStack(alignment: .leading, spacing: 6) {
@@ -369,17 +464,15 @@ struct AssistantPanel: View {
                         .foregroundStyle(Palette.muted)
                 }
                 if turn.answer.isEmpty, !turn.done {
-                    Text("…").font(.system(size: 13)).foregroundStyle(Palette.faint)
-                }
-                // As written, and never as markdown: no link to follow, no
-                // picture to fetch.
-                if !turn.answer.isEmpty {
-                    Text(verbatim: turn.answer)
+                    Text(turn.thinking ? "Thinking…" : "…")
                         .font(.system(size: 13))
-                        .foregroundStyle(Palette.ink)
-                        .lineSpacing(2.5)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(Palette.faint)
+                }
+                // The answer as the model wrote it: headings, lists,
+                // code blocks, bold, links — read the way they were
+                // written (see MarkdownText).
+                if !turn.answer.isEmpty {
+                    MarkdownText(open: openLink, text: turn.answer, size: 13)
                 }
                 if let failed = turn.failed {
                     Text(verbatim: failed).font(.system(size: 12)).foregroundStyle(Palette.muted)
@@ -408,20 +501,63 @@ struct AISettings: View {
     @ObservedObject var prefs: Preferences
     /// Drawn off screen, for a picture: menus and fields stood in for.
     var drawn = false
+    /// The side stayed on, kept between visits (the words on top, see
+    /// Tabs): the AI itself, the tools of the wider world, the skills.
+    @State private var side: Side = Side(rawValue: Store.settings.string(forKey: "ai.page") ?? "") ?? .ai
     @State private var pasted = ""
     @State private var hint: String?
     @State private var models: [String] = []
     @State private var looking = false
     @ObservedObject private var engine = AIEngine.shared
+    /// The Test row's one message: on its way, and what came of it.
+    @State private var testing = false
+    @State private var testResult: String?
+    @State private var testTrouble: String?
+    @State private var testTask: Task<Void, Never>?
+
+    /// The sides of Settings › AI.
+    enum Side: String {
+        case ai, mcp, skills, chores
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            Tabs(picked: Binding(get: { side.rawValue },
+                                set: { side = Side(rawValue: $0) ?? .ai }),
+                 (id: "ai", title: "AI"), (id: "mcp", title: "MCP"), (id: "skills", title: "Skills"), (id: "chores", title: "Tasks"))
+            switch side {
+            case .ai:
+                theAI
+            case .mcp:
+                MCPServersView(drawn: drawn)
+            case .skills:
+                SkillsShelf(drawn: drawn)
+            case .chores:
+                ChoresList(drawn: drawn)
+            }
+        }
+        // The side stayed on, kept between visits.
+        .onChange(of: side) { _, fresh in
+            Store.settings.set(fresh.rawValue, forKey: "ai.page")
+        }
+    }
+
+    /// The AI side: the bot, the add-on, where it runs, and the keys.
+    private var theAI: some View {
+        VStack(alignment: .leading, spacing: 18) {
             Card {
-                Line("Use AI on pages", "Summarize a page, or ask about it, from the View menu. Nothing is sent until you ask") {
-                    Switch(on: $prefs.ai)
+                Line("The bot on pages", "Summon it over a page with ⌥⌘B: it reads the page, talks about it, and works it for you — every change waits for your Allow. Nothing is sent until you ask") {
+                    Switch(on: $prefs.bot)
                 }
             }
-            if prefs.ai {
+            if AI.shipped {
+                Card {
+                    Line("Use AI on pages", "Summarize a page, or ask about it, from the View menu. Nothing is sent until you ask") {
+                        Switch(on: $prefs.ai)
+                    }
+                }
+            }
+            if prefs.bot || prefs.ai {
                 Card {
                     Line("Where it runs", place) {
                         if drawn {
@@ -441,15 +577,62 @@ struct AISettings: View {
                     }
                     if let provider = prefs.aiProvider {
                         Rule()
-                        if provider == .thisMac { onThisMac } else if provider.isLocal { localModel(provider) } else { key(provider); Rule(); cloudModel(provider) }
+                        if provider == .thisMac {
+                            onThisMac
+                            // Nothing to ask until the model is here.
+                            if engine.state == .ready { Rule(); test(provider) }
+                        } else if provider.isLocal {
+                            localModel(provider)
+                            Rule()
+                            test(provider)
+                        } else {
+                            address(provider)
+                            Rule()
+                            key(provider)
+                            Rule()
+                            cloudModel(provider)
+                            Rule()
+                            test(provider)
+                        }
                     }
                 }
                 .onChange(of: prefs.aiProvider) { _, _ in
                     // A key typed for one provider is never saved for another.
                     pasted = ""
+                    forgetTest()
                     refresh()
                 }
                 .onAppear(perform: refresh)
+                Card {
+                    Line("Thinking", "How hard the model reasons before it speaks — off for providers that don't think, and for the model on this Mac") {
+                        if drawn {
+                            Stand(prefs.botThinking.name, menu: true)
+                        } else {
+                            Picker("", selection: $prefs.botThinking) {
+                                ForEach(BotThinking.allCases) { level in
+                                    Text(level.name).tag(level)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .fixedSize()
+                        }
+                    }
+                    Rule()
+                    Line("Tool calls", "The most tool calls one turn makes before it wraps up with an answer") {
+                        if drawn {
+                            Stand("\(prefs.botSteps)")
+                        } else {
+                            Stepper(value: $prefs.botSteps, in: 1...50) {
+                                Text("\(prefs.botSteps)")
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(Palette.ink)
+                                    .frame(width: 28, alignment: .trailing)
+                            }
+                            .fixedSize()
+                        }
+                    }
+                }
                 Card {
                     Line("Forget every key", "Deletes them from this Mac's keychain. A key made by signing in with OpenRouter still works until you delete it on openrouter.ai") {
                         Pill("Forget") {
@@ -500,19 +683,61 @@ struct AISettings: View {
             : "Your key, kept in this Mac's keychain, sent only to \(provider.host). Never from a private tab"
     }
 
+    /// Where requests go, for the two providers that take an address of their
+    /// own: a gateway, a relay, an account under another name. Empty is the
+    /// provider's own address, and a key is kept for the host named here and
+    /// sent nowhere else (see AIKeys.account).
+    @ViewBuilder
+    private func address(_ provider: AIProvider) -> some View {
+        if provider.takesAnotherAddress {
+            Line("Base URL", "Leave empty for \(provider.own.host() ?? ""). A key is kept for the host named here and sent nowhere else") {
+                if drawn {
+                    Stand(prefs.aiBase(for: provider).isEmpty ? (provider.own.host() ?? "") : prefs.aiBase(for: provider), width: 170)
+                } else {
+                    TextField("", text: Binding(get: { prefs.aiBase(for: provider) },
+                                                set: { prefs.setAIBase($0, for: provider) }),
+                              prompt: Text(provider.own.host() ?? "").foregroundStyle(Palette.faint))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .frame(width: 170)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        // The key line below is about the host, so it says a
+                        // key is wanted as soon as an address is named.
+                        .onChange(of: prefs.aiBase(for: provider)) { _, _ in
+                            // A test of the address that was there says nothing
+                            // about this one.
+                            forgetTest()
+                            refresh()
+                        }
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func key(_ provider: AIProvider) -> some View {
         if let hint {
-            Line("Key", "\(hint), in this Mac's keychain") {
+            // Where a key is kept, and how long it lasts: this Mac's keychain
+            // unless it wouldn't take one (see AIKeys.available).
+            Line("Key", "\(hint)\(AIKeys.available ? ", in this Mac's keychain" : ", kept for this run only")") {
                 Pill("Forget") {
                     AIKeys.forget(provider)
                     refresh()
                 }
             }
-        } else if !AIKeys.available {
-            Line("Key", "This copy of Search can't keep keys safely — it isn't the signed release. An app on this Mac still works") { EmptyView() }
+        } else if provider.takesAnotherAddress, let elsewhere = AIKeys.held(for: provider).first {
+            // A key given for the provider's own address, with another one
+            // named since: said, and offered for the address in use now.
+            Line("Key", "••••\(elsewhere.tail), kept for \(elsewhere.host) — not for \(provider.host)") {
+                Pill("Keep for This Address") {
+                    _ = AIKeys.carry(provider, from: elsewhere.host)
+                    refresh()
+                }
+            }
         } else {
-            Line("Key", provider == .openRouter ? "Paste one, or sign in and OpenRouter makes one for you" : "Paste your API key") {
+            Line("Key", keyPrompt(provider)) {
                 HStack(spacing: 6) {
                     SecureField("", text: $pasted, prompt: Text("Key").foregroundStyle(Palette.faint))
                         .textFieldStyle(.plain)
@@ -529,6 +754,9 @@ struct AISettings: View {
                         }
                     }
                 }
+                // The field and its buttons keep their size, and the words
+                // above wrap instead: squeezed, a pill's label stands on end.
+                .fixedSize()
             }
         }
     }
@@ -551,8 +779,58 @@ struct AISettings: View {
         }
     }
 
+    /// One short message to the provider, sent and shown: whether the address,
+    /// the key and the model work together. Said plainly, because a bot that
+    /// answers nothing is the thing this is for.
+    @ViewBuilder
+    private func test(_ provider: AIProvider) -> some View {
+        Line("Test", testing ? "Asking \(provider.host)…" : "Send one short message to \(provider.host), and read what comes back") {
+            if drawn {
+                Stand("Test")
+            } else {
+                Pill(testing ? "Testing…" : "Test") { ask(provider) }
+            }
+        }
+        if let said = testResult {
+            Line("It answered", said) { EmptyView() }
+        }
+        if let trouble = testTrouble {
+            Line("It didn't answer", trouble) { EmptyView() }
+        }
+    }
+
+    /// The Test row's one message, sent: the answer, or why there wasn't one.
+    private func ask(_ provider: AIProvider) {
+        forgetTest()
+        testing = true
+        let model = prefs.aiModel(for: provider)
+        let key = provider.isLocal ? nil : AIKeys.key(for: provider)
+        testTask = Task { @MainActor in
+            var said: String?
+            var why: String?
+            do { said = try await AITest.answer(provider, model: model, key: key) }
+            catch { why = error.localizedDescription }
+            // Another provider, another address, another test: this answer is
+            // about something that is no longer on the page.
+            guard !Task.isCancelled else { return }
+            testing = false
+            if let why { testTrouble = why }
+            else if let said { testResult = said.isEmpty ? "It answered with nothing at all." : said }
+        }
+    }
+
+    /// Let go of the last test: it was about another provider or another
+    /// address, and its answer would be read as this one's.
+    private func forgetTest() {
+        testTask?.cancel()
+        testTask = nil
+        testing = false
+        testResult = nil
+        testTrouble = nil
+    }
+
     /// A menu or a field, as a picture shows it.
-    private struct Stand: View {
+    struct Stand: View {
         let text: String
         var menu = false
         var width: CGFloat?
@@ -593,11 +871,20 @@ struct AISettings: View {
         let key = pasted
         pasted = ""
         switch AIKeys.save(key, for: provider) {
-        case .kept: browser.announce("Key kept in the keychain")
-        case .unavailable: browser.announce("This copy of Search can't keep keys")
+        case .kept: browser.announce("Key kept in this Mac's keychain")
+        case .unavailable: browser.announce("The keychain wouldn't take the key — kept for this run")
         case .failed: browser.announce("The key wasn't kept")
         }
         refresh()
+    }
+
+    /// What the key line says under a paste field: where a pasted key is kept,
+    /// which depends on whether the keychain will take one at all (see
+    /// AIKeys.available).
+    private func keyPrompt(_ provider: AIProvider) -> String {
+        let open = AIKeys.available ? "Paste your API key — kept in this Mac's keychain"
+            : "Paste your API key — kept for this run only"
+        return provider == .openRouter ? "Paste one, or sign in and OpenRouter makes one for you" : open
     }
 
     /// Looked at when the page is: a local app is asked for its models only
@@ -611,6 +898,298 @@ struct AISettings: View {
         Task { @MainActor in
             models = await AIClient.shared.localModels(provider)
             looking = false
+        }
+    }
+}
+
+/// The MCP side of Settings › AI: the person's own servers, switched on
+/// apiece and taken out by hand, one added by hand too — a program run on
+/// this Mac or an address elsewhere (see MCP). Nothing is contacted until
+/// a server is switched on, and none runs behind the person's back.
+private struct MCPServersView: View {
+    var drawn = false
+    @ObservedObject private var hub = MCPHub.shared
+    @State private var name = ""
+    /// A program run on this Mac, or an address elsewhere.
+    @State private var program = true
+    @State private var command = ""
+    @State private var arguments = ""
+    @State private var address = ""
+    /// Headers to give with every request over HTTP, as they're typed in.
+    @State private var headerRows: [HeaderField] = []
+    @State private var trouble: String?
+
+    /// One header of an address, as it's typed in: its name, and what it says.
+    private struct HeaderField: Identifiable {
+        let id = UUID()
+        var name = ""
+        var worth = ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                if hub.servers.isEmpty {
+                    Nothing("No servers yet — the bot has no tools beyond the page. Add one below")
+                } else {
+                    ForEach(Array(hub.servers.enumerated()), id: \.element.id) { index, server in
+                        if index > 0 { Rule() }
+                        Line(server.config.name, "\(whereItIs(server.config)) · \(server.state.words)") {
+                            HStack(spacing: 8) {
+                                if drawn {
+                                    AISettings.Stand(hub.enabled(server.config.name) ? "On" : "Off")
+                                } else {
+                                    Switch(on: Binding(get: { hub.enabled(server.config.name) },
+                                                       set: { hub.setEnabled(server.config.name, $0) }))
+                                }
+                                Quick("Remove") { hub.remove(server.config.name) }
+                            }
+                        }
+                    }
+                }
+            }
+            Card {
+                Line("Add a server", "Its tools are offered to the bot, and the ones that say they read to the questions about a page") {
+                    EmptyView()
+                }
+                Rule()
+                Line("Name", "Its tools are met by it: Name · tool") {
+                    field($name, prompt: "weather", width: 130)
+                }
+                Rule()
+                Line("Kind", nil) {
+                    if drawn {
+                        AISettings.Stand(program ? "Program" : "Address", menu: true)
+                    } else {
+                        Picker("", selection: $program) {
+                            Text("Program").tag(true)
+                            Text("Address").tag(false)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .fixedSize()
+                    }
+                }
+                if program {
+                    Rule()
+                    Line("Program", "Run on this Mac, spoken to over its pipes") {
+                        field($command, prompt: "/opt/homebrew/bin/weather", width: 170)
+                    }
+                    Rule()
+                    Line("Arguments", "One after another, apart") {
+                        field($arguments, prompt: "--unit celsius", width: 170)
+                    }
+                } else {
+                    Rule()
+                    Line("Address", "Over HTTP, answered one request at a time") {
+                        field($address, prompt: "https://example.com/mcp", width: 170)
+                    }
+                    Rule()
+                    Line("Headers", "Given with every request — a token to say who's asking, or whatever else the server wants to hear") {
+                        Quick("+ Header") { headerRows.append(HeaderField()) }
+                    }
+                    ForEach($headerRows) { $header in
+                        Rule()
+                        Line("Header", "Its name, and what it says") {
+                            HStack(spacing: 6) {
+                                field($header.name, prompt: "Authorization", width: 105)
+                                field($header.worth, prompt: "Bearer …", width: 125)
+                                Quick("Remove") { headerRows.removeAll { $0.id == header.id } }
+                            }
+                            // The fields and the Remove keep their size, and the
+                            // words above wrap instead: squeezed, a pill's label
+                            // stands on end.
+                            .fixedSize()
+                        }
+                    }
+                }
+                if let trouble {
+                    Rule()
+                    Line("It wasn't added", trouble) { EmptyView() }
+                }
+                Rule()
+                Line("", nil) {
+                    Pill("Add Server", filled: true) { add() }
+                }
+            }
+        }
+    }
+
+    /// A program on this Mac, or an address elsewhere — with the headers
+    /// it was given, if an address with some.
+    private func whereItIs(_ config: MCPServer.Config) -> String {
+        if let command = config.command?.trimmingCharacters(in: .whitespaces), !command.isEmpty {
+            let rest = (config.args ?? []).joined(separator: " ")
+            return "on this Mac: \(command)\(rest.isEmpty ? "" : " \(rest)")"
+        }
+        let headers = config.headers?.count ?? 0
+        return (config.url ?? "") + (headers > 0 ? " · \(headers) header\(headers == 1 ? "" : "s")" : "")
+    }
+
+    /// The field of a line, as the plate draws them.
+    @ViewBuilder
+    private func field(_ text: Binding<String>, prompt: String, width: CGFloat) -> some View {
+        if drawn {
+            AISettings.Stand(prompt, width: width)
+        } else {
+            TextField("", text: text, prompt: Text(prompt).foregroundStyle(Palette.faint))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .frame(width: width)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Palette.wash, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .onSubmit { add() }
+        }
+    }
+
+    private func add() {
+        var config = MCPServer.Config(name: name)
+        if program {
+            config.command = command
+            config.args = arguments.split(whereSeparator: \.isWhitespace).map(String.init)
+        } else {
+            config.url = address
+            // A header named is a header kept; of two of one name, the last
+            // word wins.
+            let kept = Dictionary(
+                headerRows.map { ($0.name.trimmingCharacters(in: .whitespaces), $0.worth) }
+                    .filter { !$0.0.isEmpty },
+                uniquingKeysWith: { _, last in last })
+            config.headers = kept.isEmpty ? nil : kept
+        }
+        do {
+            try hub.add(config)
+            // A field cleared is the sign it was taken; the words said under
+            // it before are gone with it.
+            name = ""; command = ""; arguments = ""; address = ""; headerRows = []
+            trouble = nil
+        } catch {
+            trouble = error.localizedDescription
+        }
+    }
+}
+
+/// The Skills side of Settings › AI: the person's own instruction files,
+/// one folder apiece in the skills folder (see Skills), on until they're
+/// switched off. Nothing is written here — the words are the person's own,
+/// made by hand or dropped in.
+private struct SkillsShelf: View {
+    var drawn = false
+    @State private var found: [Skills.Listed] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                if found.isEmpty {
+                    Nothing("No skills yet — a folder in the skills folder, holding a SKILL.md with its name and description between --- lines at the top, and its words below")
+                } else {
+                    ForEach(Array(found.enumerated()), id: \.element.id) { index, skill in
+                        if index > 0 { Rule() }
+                        Line(skill.name, skill.description.isEmpty ? "One of your own files" : skill.description) {
+                            if drawn {
+                                AISettings.Stand(Skills.enabled(skill.id) ? "On" : "Off")
+                            } else {
+                                Switch(on: Binding(get: { Skills.enabled(skill.id) },
+                                                   set: { Skills.setEnabled(skill.id, $0) }))
+                            }
+                        }
+                    }
+                }
+            }
+            Card {
+                Line("The folder", Skills.folder.path) {
+                    Quick("Show") {
+                        // Made if it isn't there yet, so there's something to
+                        // show; opened for the person, never from a test.
+                        try? FileManager.default.createDirectory(at: Skills.folder, withIntermediateDirectories: true)
+                        if !Store.testing { NSWorkspace.shared.open(Skills.folder) }
+                    }
+                }
+            }
+        }
+        .onAppear { found = Skills.discover() }
+    }
+}
+
+/// The bot's tasks for a time to come (see Chores): the goal in its own
+/// words, when it comes, and what came of it — taken off here, watched
+/// here, missed here.
+private struct ChoresList: View {
+    var drawn = false
+    @ObservedObject private var chores = Chores.shared
+
+    /// A task's state, as a person reads it.
+    private func spoken(_ task: Chores.Chore) -> String {
+        switch task.state {
+        case .waiting:
+            if task.lastState == .human {
+                return "waiting for its next round — its last round needed you: \(task.words ?? "")"
+            }
+            return task.every != nil ? "waiting for its next round" : "waiting"
+        case .running: return "running now"
+        case .done: return "done — \(task.words ?? "")"
+        case .human: return "needs you — \(task.words ?? "")"
+        case .failed: return "didn't come to it — \(task.words ?? "")"
+        case .missed: return "missed — \(task.words ?? "")"
+        case .interrupted: return "interrupted — \(task.words ?? "")"
+        }
+    }
+
+    /// A task's time, as a person reads it: for one that comes round
+    /// again, the gap and the next time it comes.
+    /// Where a task stands when the person can take it up again: it
+    /// stopped — the answer never came, the time was missed, or what's left
+    /// is only a person's to do — and it isn't a task that comes round
+    /// again, whose own clock is what brings it back.
+    private static func takeUp(_ task: Chores.Chore) -> Bool {
+        guard task.every == nil else { return false }
+        switch task.state {
+        case .human, .missed, .failed, .interrupted: return true
+        case .waiting, .running, .done: return false
+        }
+    }
+
+    private func timing(_ task: Chores.Chore) -> String {
+        if let every = task.every {
+            return "every \(Chores.gap(every)) · next \(Chores.spoken(task.at))"
+        }
+        return Chores.spoken(task.at)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Card {
+                if chores.tasks.isEmpty {
+                    Nothing("No tasks for later yet — ask the bot over a page for something at a time to come (\"tomorrow at eight, sign me up\", or \"every ten minutes, pull the feed\"), and it notes the goal in its own words and does it when the time comes")
+                } else {
+                    ForEach(Array(chores.tasks.enumerated()), id: \.element.id) { index, task in
+                        if index > 0 { Rule() }
+                        Line(task.goal, "\(timing(task)) · \(spoken(task)) · \(task.page)") {
+                            if drawn {
+                                AISettings.Stand(task.state == .waiting ? "Waiting" : spoken(task))
+                            } else {
+                                // A task that stopped where only a person
+                                // could go on is taken up again from here,
+                                // once they have done what it couldn't:
+                                // the page it was set on is already open
+                                // in its tab, and the goal, the page and
+                                // the provider are all in it still. Asking
+                                // the bot for the whole of it over again is
+                                // asking it to be told what it already
+                                // knows.
+                                if Self.takeUp(task) {
+                                    Pill("Take it up") { chores.again(task.id) }
+                                }
+                                Pill("Remove") { chores.remove(task.id) }
+                            }
+                        }
+                    }
+                }
+            }
+            Card {
+                Line("When the time comes", "The page is opened again and the bot works it, Auto on, while Search is running — a time that passes with Search closed is missed, not run, and says so here. A task asked for as one that comes round again (\"every ten minutes\") comes round until it's taken off: each round's answer is kept with it, a round that finds Search closed is skipped, not piled up, and one that goes wrong tries again at its next time") { EmptyView() }
+            }
         }
     }
 }

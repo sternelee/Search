@@ -87,6 +87,7 @@ enum Web {
     /// out of a private page is still signed in to whatever that page was.
     static func configuration(shy: Bool = false, space: UUID? = nil, store: WKWebsiteDataStore? = nil) -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
+        config.processPool = Web.pool
         // The real store, not the ephemeral one: staying signed in between
         // launches is the difference between a browser and a preview pane. A
         // shy tab gets its own store, which exists only while it does — its own
@@ -96,7 +97,6 @@ enum Web {
         // Web notifications go through the store (see Notifications.swift);
         // a private tab's is left without, and a page there is refused.
         if !shy { let kept = config.websiteDataStore; MainActor.assumeIsolated { SiteNotifications.shared.attach(kept) } }
-        config.processPool = Web.pool
         // A test run's pretend camera and microphone (see ExtensionCapture).
         if #available(macOS 15.4, *), Store.testing { ExtensionCapture.mockDevices(config.preferences) }
         // Chrome extensions see every page but a private one, unless Settings
@@ -773,6 +773,13 @@ final class Tab: ObservableObject, Identifiable {
     /// the session or the history, and gone when the script is done.
     let bench: Bool
 
+    /// A tab that is a talk with the agent, not a page: made from the File
+    /// menu and nowhere else, holding a conversation that reaches every
+    /// tab in the row (see ChatTab.swift). It owns no web view and goes
+    /// nowhere: it is closed like any tab, and not kept for the next time
+    /// the browser opens.
+    let chat: Bool
+
     /// The tab whose page opened this one, when a script did. Sign-in flows
     /// hand you back to it when they are done.
     var opener: Tab.ID?
@@ -875,8 +882,11 @@ final class Tab: ObservableObject, Identifiable {
 
     /// A tab that has never been anywhere shows the address field instead of a
     /// page. It still owns a web view — built now, warm by the time it's needed.
-    /// A shell is somewhere already, and never blank.
-    var isBlank: Bool { shell == nil && address == nil && page == nil }
+
+    /// A chat tab is never one of these blanks to be reused or cleaned
+    /// away, and neither is one of Search's own pages. A shell is somewhere
+    /// already, and never blank.
+    var isBlank: Bool { !chat && shell == nil && address == nil && page == nil }
 
     /// A tab with a web page — loaded, on its way or asleep — as opposed to
     /// an empty one, one of Search's own pages, or a shell.
@@ -948,6 +958,7 @@ final class Tab: ObservableObject, Identifiable {
     /// that says nothing at all for the first second of every load is a tab you
     /// can't find your way back to.
     var label: String {
+        if chat { return "Agent Chat" }
         if let name, !name.isEmpty { return name }
         if let page { return page.title }
         if popup, let host = address?.host(), !host.isEmpty {
@@ -958,10 +969,13 @@ final class Tab: ObservableObject, Identifiable {
         return "New Tab"
     }
 
-    init(shy: Bool = false, bench: Bool = false, configuration: WKWebViewConfiguration? = nil, terminal: Bool = false) {
+
+    init(shy: Bool = false, bench: Bool = false, chat: Bool = false, terminal: Bool = false, configuration: WKWebViewConfiguration? = nil) {
         self.shy = shy
         self.bench = bench
+        self.chat = chat
         self.runsShell = terminal
+
         self.configuration = configuration ?? Web.configuration(shy: shy)
         // The shell's own icon, worn before the shell itself is started:
         // the bar shows what the tab is the moment it is restored.
@@ -1250,6 +1264,15 @@ final class Tab: ObservableObject, Identifiable {
         controller.addUserScript(
             WKUserScript(source: PasskeyRelay.bridge, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: Web.world)
         )
+        // The agent's ears, in the page's own world from its first breath:
+        // the page's own story — console, errors, network — kept in the page
+        // itself, sent nowhere, until an agent asks the page for it (see
+        // Agent.watch). Here rather than in build: this list is the one that
+        // stands after the wipe above, and arm runs again whenever the
+        // veils change.
+        controller.addUserScript(
+            WKUserScript(source: Agent.watch, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page)
+        )
         // Every frame but the top, only while Translate Page is switched on:
         // a frame of another site says it's there, to be translated too.
         if PageTranslator.enabled {
@@ -1459,6 +1482,8 @@ final class Tab: ObservableObject, Identifiable {
     }
 
     func go(to url: URL) {
+        // A chat tab goes nowhere: it is a talk, not a page.
+        guard !chat else { return }
         if let own = InternalPage(url: url) {
             show(own)
             return

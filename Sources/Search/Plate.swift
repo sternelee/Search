@@ -228,6 +228,21 @@ struct Caption: View {
     }
 }
 
+/// A word of warning, plain: the triangle, the words, nothing else.
+struct Caution: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle").font(.system(size: 10, weight: .medium))
+            Text(verbatim: text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(Palette.muted)
+        .padding(8)
+        .background(Palette.wash, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
 /// The field for narrowing a list. The wash, the glass, the caret.
 struct Hunt: View {
     @Binding var text: String
@@ -300,5 +315,41 @@ struct Quick: View {
                 .background(Palette.wash, in: Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// The words on top, for a panel with more than one side to it (see
+/// Settings › AI). The chosen one is ink with a line under it; the rest
+/// are muted with a faint one, the sides this panel isn't on.
+struct Tabs: View {
+    @Binding var picked: String
+    let tabs: [(id: String, title: String)]
+
+    init(picked: Binding<String>, _ tabs: (id: String, title: String)...) {
+        self._picked = picked
+        self.tabs = tabs
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            ForEach(tabs, id: \.id) { tab in
+                let chosen = picked == tab.id
+                Button {
+                    picked = tab.id
+                } label: {
+                    VStack(spacing: 4) {
+                        Text(tab.title)
+                            .font(.system(size: 13, weight: chosen ? .semibold : .regular))
+                            .foregroundStyle(chosen ? Palette.ink : Palette.muted)
+                        Capsule()
+                            .fill(chosen ? Palette.ink : Palette.faint)
+                            .frame(height: 2)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
     }
 }

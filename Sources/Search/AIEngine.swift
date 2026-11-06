@@ -266,7 +266,7 @@ final class AIEngine: ObservableObject {
     private var carry = Data()
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
     private var ready = false
-    private var answering: [Int: AsyncThrowingStream<String, Error>.Continuation] = [:]
+    private var answering: [Int: AsyncThrowingStream<AIPiece, Error>.Continuation] = [:]
     private var nextID = 1
     private var idle: Timer?
 
@@ -376,7 +376,9 @@ final class AIEngine: ObservableObject {
     }
 
     /// responsibility_spawnattrs_setdisclaim, where the system has it.
-    private static let disclaim: (@convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32)? = {
+
+    nonisolated private static let disclaim: (@convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32)? = {
+
         guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else { return nil }
         return unsafeBitCast(symbol, to: (@convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32).self)
     }()
@@ -420,7 +422,9 @@ final class AIEngine: ObservableObject {
                 readyWaiters = []
             } else if let id = message["id"] as? Int, let answer = answering[id] {
                 if let piece = message["piece"] as? String {
-                    answer.yield(piece)
+                    // The engine's model never thinks (the engine turns it
+                    // off, see the prompt it builds): every piece is answer.
+                    answer.yield(AIPiece(kind: .answer, words: piece))
                 } else if let error = message["error"] as? String {
                     answering[id] = nil
                     answer.finish(throwing: Stopped(why: error))
@@ -458,8 +462,10 @@ final class AIEngine: ObservableObject {
         ended("Stopped.")
     }
 
-    /// An answer from the model here, a piece at a time.
-    func stream(system: String, messages: [AIMessage]) -> AsyncThrowingStream<String, Error> {
+    /// An answer from the model here, a piece at a time — the answer's
+    /// words only, for the engine's model never thinks (its thinking is
+    /// turned off in the prompt the engine builds; see AIPiece).
+    func stream(system: String, messages: [AIMessage]) -> AsyncThrowingStream<AIPiece, Error> {
         AsyncThrowingStream { continuation in
             let id = nextID
             nextID += 1

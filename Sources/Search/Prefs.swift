@@ -122,6 +122,13 @@ final class Preferences: ObservableObject {
     /// The setting said on at launch with no mark from the switch behind it,
     /// and was put back to off.
     private(set) var benchRefused = false
+    /// The agents' pages out of sight (Settings › Browser Use): their tabs
+    /// work on as ever — the socket, the bridge, the verbs — but nothing of
+    /// them is drawn in the row, and the keys count only what the person
+    /// can see. Off unless asked for.
+    @Published var benchQuiet: Bool {
+        didSet { store.set(benchQuiet, forKey: "bench.quiet") }
+    }
     /// Light, dark, or the Mac's own.
     @Published var look: Look {
         didSet {
@@ -610,6 +617,17 @@ final class Preferences: ObservableObject {
             store.set(ai, forKey: "ai")
         }
     }
+    /// The bot (see Bot): one key over a page, a talk and a pair of
+    /// hands. Off unless asked for.
+    @Published var bot: Bool {
+        didSet { store.set(bot, forKey: "bot") }
+    }
+    /// The talk on an Agent Chat tab across the whole tab (see ChatStage).
+    /// Off unless asked for: the column it is read in, where it has always
+    /// stood.
+    @Published var chatWide: Bool {
+        didSet { store.set(chatWide, forKey: "chat.wide") }
+    }
     /// Where its answers come from. None until you choose.
     @Published var aiProvider: AIProvider? {
         didSet { store.set(aiProvider?.rawValue, forKey: "ai.provider") }
@@ -617,6 +635,34 @@ final class Preferences: ObservableObject {
     /// The model asked for at each provider, where it isn't the default.
     @Published private(set) var aiModels: [String: String] {
         didSet { store.set(aiModels, forKey: "ai.models") }
+    }
+    /// Another address for a provider, where one was named: a gateway of your
+    /// own, a relay, an account under another name. Only the two providers that
+    /// take one (see AIProvider.takesAnotherAddress).
+    @Published private(set) var aiBases: [String: String] {
+        didSet { store.set(aiBases, forKey: AIProvider.addressesKey) }
+    }
+    /// How hard the model thinks before it speaks (see BotThinking). Off
+    /// for providers that don't think, and for the engine on this Mac.
+    @Published var botThinking: BotThinking {
+        didSet { store.set(botThinking.rawValue, forKey: "bot.thinking") }
+    }
+    /// The most tool calls one turn of the bot makes before it wraps up
+    /// (see Bot.steps). A person who sets it higher lets the bot work longer.
+    @Published var botSteps: Int {
+        didSet { store.set(botSteps, forKey: "bot.steps") }
+    }
+
+    /// What was named, as typed — the provider's own address until what was
+    /// typed is an address at all (see AIProvider.named).
+    func aiBase(for provider: AIProvider) -> String { aiBases[provider.rawValue] ?? "" }
+
+    /// Half an address is kept as it is typed rather than thrown away, so the
+    /// field can be edited; nothing is sent to it until it is whole.
+    func setAIBase(_ address: String, for provider: AIProvider) {
+        let named = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard named.count <= 200 else { return }
+        if named.isEmpty { aiBases.removeValue(forKey: provider.rawValue) } else { aiBases[provider.rawValue] = named }
     }
 
     func aiModel(for provider: AIProvider) -> String {
@@ -763,6 +809,7 @@ final class Preferences: ObservableObject {
             benchRefused = true
             store.set(false, forKey: "bench")
         }
+        benchQuiet = store.bool(forKey: "bench.quiet")
         let chosen = store.string(forKey: "look").flatMap(Look.init) ?? .system
         look = chosen
         // Before the first window, and not deferred: the window that is about
@@ -868,8 +915,13 @@ final class Preferences: ObservableObject {
         let keepsSite = home == nil && peek == nil ? true : (home ?? false) || (peek ?? false)
         pinsGoHome = keepsSite
         ai = AI.shipped && store.bool(forKey: "ai")
+        bot = store.bool(forKey: "bot")
+        chatWide = store.bool(forKey: "chat.wide")
         aiProvider = store.string(forKey: "ai.provider").flatMap(AIProvider.init(rawValue:))
         aiModels = store.dictionary(forKey: "ai.models") as? [String: String] ?? [:]
+        aiBases = store.dictionary(forKey: AIProvider.addressesKey) as? [String: String] ?? [:]
+        botThinking = BotThinking(rawValue: store.string(forKey: "bot.thinking") ?? "") ?? .off
+        botSteps = store.object(forKey: "bot.steps") as? Int ?? 12
         commandBar = store.bool(forKey: "commandbar")
         terminalFont = store.string(forKey: "terminal.font") ?? ""
         terminalSize = store.object(forKey: "terminal.size") as? Double ?? TerminalLook.home

@@ -34,8 +34,9 @@ struct SettingsPanel: View {
     @MainActor static var arcBefore: Preferences.ArcSetup?
 
     enum Page: String, CaseIterable, Identifiable {
-        case general, appearance, tabs, browsing, spaces, terminal, passwords, privacy, ai,
-             extensions, keyboard, about
+
+        case general, appearance, tabs, browsing, spaces, passwords, privacy, ai, extensions, browserUse, keyboard, about
+
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -49,6 +50,7 @@ struct SettingsPanel: View {
             case .privacy: return "Privacy"
             case .ai: return "AI"
             case .extensions: return "Extensions"
+            case .browserUse: return "Browser Use"
             case .keyboard: return "Keyboard & Mouse"
             case .about: return "About"
             }
@@ -65,6 +67,7 @@ struct SettingsPanel: View {
             case .privacy: return "hand.raised"
             case .ai: return "sparkles"
             case .extensions: return "puzzlepiece.extension"
+            case .browserUse: return "terminal"
             case .keyboard: return "keyboard"
             case .about: return "info.circle"
             }
@@ -76,13 +79,18 @@ struct SettingsPanel: View {
             switch name.lowercased() {
             case "downloads": return .general
             case "shortcuts", "mouse": return .keyboard
+            case "browseruse", "browser-use": return .browserUse
             default: return Page(rawValue: name.lowercased())
             }
         }
         /// The rail's three blocks: the browser, your data and tools, About.
+        /// The AI page is the bot's as well as the add-on's, and the bot
+        /// ships with the app, so it is always there to open.
         static var blocks: [[Page]] {
-            [[.general, .appearance, .tabs, .browsing, .spaces, .terminal],
-             [.passwords, .privacy] + (AI.shipped ? [.ai] : []) + [.extensions, .keyboard],
+
+            [[.general, .appearance, .tabs, .browsing, .spaces],
+             [.passwords, .privacy, .ai, .extensions, .browserUse, .keyboard],
+
              [.about]]
         }
     }
@@ -127,7 +135,7 @@ struct SettingsPanel: View {
     }
 
     private func follow(_ asked: String?) {
-        guard let asked, let wanted = Page.named(asked), wanted != .ai || AI.shipped, wanted != page else { return }
+        guard let asked, let wanted = Page.named(asked), wanted != page else { return }
         page = wanted
     }
 
@@ -335,7 +343,9 @@ struct SettingsPanel: View {
         case .extensions:
             ExtensionsPage(browser: browser)
         case .ai:
-            if AI.shipped { AISettings(browser: browser, prefs: prefs) }
+            AISettings(browser: browser, prefs: prefs)
+        case .browserUse:
+            BrowserUseSettings(browser: browser, prefs: prefs)
         default:
             groups(of: page)
         }
