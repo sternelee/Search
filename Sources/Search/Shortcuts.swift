@@ -214,7 +214,7 @@ struct Command: Identifiable {
         },
         Command("tabs.previous", "Previous Tab", .tabs, KeyCombo("[", shift: true)) { $0.step(-1) },
         Command("tabs.search", "Search Tabs…", .tabs, KeyCombo("k")) { browser in
-            if browser.editing, !browser.offers.isEmpty { browser.stepSummon() } else { browser.summon() }
+            browser.searchTabsKey()
         },
         Command("tabs.nextCommand", "Next Command", .tabs, KeyCombo("down")) { $0.jumpPrompt(forward: true) },
         Command("tabs.previousCommand", "Previous Command", .tabs, KeyCombo("up")) { $0.jumpPrompt(forward: false) },
@@ -294,7 +294,7 @@ struct Command: Identifiable {
         },
 
         Command("history.show", "Show History…", .history, KeyCombo("y")) { $0.recalling = true },
-        Command("history.downloads", "Downloads…", .history, KeyCombo("j", shift: true)) { $0.hoarding = true },
+        Command("history.downloads", "Downloads…", .history, KeyCombo("j", shift: true)) { $0.showDownloads() },
         Command("history.clearData", "Clear Browsing Data…", .history, KeyCombo("delete", shift: true)) { $0.clearBrowsingData() },
         Command("history.clear", "Clear History", .history, nil) { $0.clearHistory() },
     ] + (1...9).map { number in
