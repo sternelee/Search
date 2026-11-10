@@ -88,23 +88,23 @@ struct Page: View {
                     .transition(.opacity)
             }
 
-            Swiping(pull: tab.pull)
+            Swiping(pulling: tab.pulling)
         }
         .animation(Motion.quick, value: tab.page?.kind)
         .animation(Motion.quick, value: tab.failure)
         .animation(Motion.quick, value: tab.floating)
         .animation(Motion.quick, value: tab.reader)
         .animation(.easeOut(duration: 0.2), value: tab.cover == nil)
-        .animation(.easeOut(duration: 0.16), value: tab.pull == nil)
     }
 }
 
 /// What a sideways swipe puts over the page: the disc, or the list a held
 /// one opens. The page's own stage, and a small window's (Little.swift).
 struct Swiping: View {
-    let pull: Pull?
+    @ObservedObject var pulling: Pulling
 
     var body: some View {
+        let pull = pulling.pull
         ZStack {
             if let pull, pull.stops != nil {
                 // In the disc's place, grown from its own edge: it sits in a
@@ -128,6 +128,7 @@ struct Swiping: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
             }
         }
+        .animation(.easeOut(duration: 0.16), value: pull == nil)
     }
 }
 
@@ -465,8 +466,9 @@ final class StageView: NSView {
             }
             // Nothing of its own here: the last tab's page, left as it was,
             // stood at its old size in a stage grown to the whole window,
-            // with an empty band beside it where the column had been.
-            if homecoming != nil { clearUnwanted() }
+            // with an empty band beside it where the column had been. Nor
+            // the tab shown in front of it while it filled the screen.
+            if homecoming != nil || Shared.prefs.keepsWindow { clearUnwanted() }
             return
         }
 
@@ -482,6 +484,13 @@ final class StageView: NSView {
     private func clearUnwanted() {
         let docked = inspecting
         for view in subviews where view !== wanted && !(docked && Self.isInspector(view)) {
+            // Another tab in front while this page fills the screen: WebKit
+            // brings the page home to its placeholder, so that stays, under
+            // the tab in front, and so does the page on its way back.
+            if Shared.prefs.keepsWindow {
+                if Self.isPlaceholder(view) { continue }
+                if let page = view as? WKWebView, page.fullscreenState != .notInFullscreen { continue }
+            }
             // Unseen, and still drawn: WebKit asks whether its view is in a
             // window and not hidden, not whether anything shows of it.
             if view === parting {

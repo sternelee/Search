@@ -84,6 +84,7 @@ enum SettingsIndex {
 
         .init(id: "passwords", page: .passwords, title: "Your passwords", icon: "key"),
         .init(id: "apple", page: .passwords, title: "Apple Passwords", icon: "lock.rectangle.stack"),
+        .init(id: "forms", page: .passwords, title: "Filling in forms", icon: "character.cursor.ibeam"),
 
         .init(id: "blocking", page: .privacy, title: "Blocking", icon: "shield"),
         .init(id: "permissions", page: .privacy, title: "Site permissions", icon: "checkmark.shield"),
@@ -143,6 +144,11 @@ enum SettingsIndex {
         .init(id: "sidebar.hides", group: "window", icon: "sidebar.squares.left",
               title: "Hide the column until the pointer reaches the edge", detail: "The page takes the whole window; ⌘S keeps the tabs out",
               keys: ["sidebar.hides"], words: ["auto hide", "sidebar"], parent: "tabs.layout"),
+        .init(id: "sidebar.foldIcons", group: "window", icon: "arrow.down.right.and.arrow.up.left",
+              title: "⌘S makes the column icons only", detail: "The tabs stay in sight as a narrow column of icons; ⌘S again brings the titles back",
+              more: "Off, ⌘S hides the column and the page takes the whole window.",
+              keys: ["sidebar.foldIcons"], words: ["collapse", "collapsed", "compact", "narrow", "hide sidebar", "icons only", "favicons"],
+              parent: "tabs.layout"),
         .init(id: "layout.cards", group: "window", icon: "rectangle.inset.filled",
               title: "The page as a card", detail: "A little room around the page, with rounded corners",
               more: "Off, the page reaches the window's edges and the column is white with its hairline.",
@@ -153,6 +159,10 @@ enum SettingsIndex {
         .init(id: "sidebar.roomy", group: "tablook", icon: "textformat.size.larger",
               title: "Roomier tabs", detail: "Taller rows and larger titles in the column",
               keys: ["sidebar.roomy"], words: ["bigger", "larger", "text size", "accessibility"], parent: "tabs.layout"),
+        .init(id: "sidebar.player", group: "tablook", icon: "play.circle",
+              title: "What's playing in other tabs", detail: "At the foot of the sidebar, to pause it, play it again or go to it",
+              more: "A tab playing sound while you're on another one shows above the sidebar's foot.",
+              keys: ["sidebar.player"], words: ["media", "music", "now playing", "pause", "player", "sound", "audio"], parent: "tabs.layout"),
         .init(id: "glyph", group: "tablook", icon: "app",
               title: "Tabs show", detail: "Beside the title, and on a pinned square",
               keys: ["glyph"], words: ["favicon", "icons", "letters"]),
@@ -166,15 +176,19 @@ enum SettingsIndex {
               title: "Show the bookmarks bar", detail: "Your bookmarks in a row above the page",
               keys: ["bookmarks.bar"], words: ["favorites bar"]),
         .init(id: "motion.light", group: "motion", icon: "leaf",
-              title: "Reduce animations in Low Power Mode", detail: "Quicker, simpler motion while the Mac saves power",
+              title: "Save power in Low Power Mode", detail: "Simpler motion while saving power or running hot; idle tabs sleep sooner in Low Power Mode",
               more: "In Low Power Mode, or while the Mac runs hot. Pages are left as they are.",
               keys: [Motion.lightKey], words: ["battery", "animations", "motion"]),
 
         // Tabs
         .init(id: "tabs.newPlace", group: "newtabs", icon: "arrow.right.to.line",
               title: "New tab position", detail: "Where a link or ⌘T's new tab goes in the row",
-              more: "After current puts a link beside the tab you're on, and ⌘T's new tab at the end. Pins stay first; a link from a group stays in it.",
+              more: "After current puts a link you ⌘-click right after its page; ⌘T's new tab and a page a link opens in front go at the end. Pins stay first; a link from a group stays in it.",
               keys: ["tabs.newPlace"], words: ["new tab", "order"]),
+        .init(id: "tabs.frontBeside", group: "newtabs", icon: "arrow.turn.down.right",
+              title: "Links opened in front go beside their page", detail: "A link that opens a new tab lands right after the tab it came from",
+              more: "In the order you click them, as ⌘-clicks do, while you go back and forth between the page and the tabs it opened. Going to any other tab starts again right after the page.",
+              keys: ["tabs.frontBeside"], words: ["target blank", "new tab", "order", "next to", "opener", "link"], parent: "tabs.newPlace"),
         .init(id: "tabs.newAfterLast", group: "newtabs", icon: "plus.rectangle.on.rectangle",
               title: "Leave a new tab when the last tab closes", detail: "Otherwise you land on a pinned tab",
               keys: ["tabs.newAfterLast"], words: ["last tab"]),
@@ -210,6 +224,10 @@ enum SettingsIndex {
         .init(id: "search.engine", group: "search", icon: "magnifyingglass",
               title: "Search with", detail: "Where words that aren't an address go",
               keys: ["search.engine", "search.custom"], words: ["google", "duckduckgo", "engine", "kagi", "bing"]),
+        .init(id: "search.shift", group: "search", icon: "shift",
+              title: "Shift-Return searches with", detail: "Off: Shift-Return does what Return does",
+              more: "A second engine one key away: Return asks your default, Shift-Return asks this one, with exactly what you typed.",
+              keys: ["search.shift", "search.shiftCustom"], words: ["shift enter", "second engine", "alternate", "google", "perplexity"]),
         .init(id: "search.suggest", group: "search", icon: "text.magnifyingglass",
               title: "Suggestions from your search engine", detail: "What you type is sent to your engine as you type",
               more: "Its suggestions show under the address field. Never from a private tab, and never an address.",
@@ -220,6 +238,9 @@ enum SettingsIndex {
         .init(id: "links.little", group: "links", icon: "rectangle.on.rectangle",
               title: "Open links from other apps in a small window", detail: "To read and close, or keep with Open in Search (⌘O)",
               keys: ["links.little"], words: ["little arc", "mini window"]),
+        .init(id: "links.little.tabs", group: "links", icon: "arrow.right.square",
+              title: "Go to a tab that has the page", detail: "A link to a page already open in a tab goes to that tab, not a small window",
+              keys: ["links.little.tabs"], words: ["switch to tab", "already open", "duplicate"], parent: "links.little"),
         .init(id: "reader.twins", group: "reading", icon: "doc.text",
               title: "Read the site's own Markdown", detail: "When a page has a Markdown copy, reading mode shows that",
               more: "⇧⌘R shows a page's article alone, in clean type. Most docs sites publish a Markdown copy; nothing in it can run, its text is escaped.",
@@ -234,7 +255,7 @@ enum SettingsIndex {
               keys: ["float.style"], words: ["pip", "picture in picture", "mini player"]),
         .init(id: "float.own", group: "video", icon: "pip.exit",
               title: "Float the video on its own", detail: "A playing video comes out when you leave its tab, or Search",
-              more: "It goes back into its tab when you return. ⇧⌘P still floats one by hand.",
+              more: "It goes back into its tab when you return, and stays put while its window is still in view on another screen. ⇧⌘P still floats one by hand.",
               keys: ["float.leave", "float.away"], words: ["pip", "picture in picture", "switch apps"], kind: .wide),
         .init(id: "media.click", group: "video", icon: "play.slash",
               title: "Videos wait for a click", detail: "Videos don't start by themselves, even without sound",
@@ -242,6 +263,12 @@ enum SettingsIndex {
         .init(id: "fullscreen.escapeTwice", group: "video", icon: "escape",
               title: "Press Esc twice to leave full screen", detail: "The first press shows a reminder, as in Arc",
               keys: ["fullscreen.escapeTwice"], words: ["escape", "full screen"]),
+        .init(id: "fullscreen.keepsWindow", group: "video", icon: "macwindow",
+              title: "Keep the window in use during full screen", detail: "Its tabs stay in reach on its own desktop while a video plays on another",
+              keys: ["fullscreen.keepsWindow"], words: ["full screen", "desktop", "space", "video"]),
+        .init(id: "translate.target", group: "pages", icon: "translate",
+              title: "Translation language", detail: "Pages are translated on this Mac",
+              keys: ["translate.target"], words: ["translate", "language"]),
         .init(id: "pageZoom", group: "pages", icon: "plus.magnifyingglass",
               title: "Page zoom", detail: "Where every site starts. ⌘+ and ⌘− are kept for each site",
               keys: ["pageZoom"], words: ["zoom", "size", "scale"]),
@@ -270,6 +297,12 @@ enum SettingsIndex {
               title: "Profiles in one window", detail: "Every profile's spaces in one window, switched in place",
               more: "Choosing a space of another profile brings that profile's window into this one's place, so each keeps its own sign-ins. Closing it closes them all.",
               keys: ["profiles.oneWindow"], words: ["arc", "profiles", "single window", "merge"], parent: "profiles"),
+        .init(id: "spaces.links", group: "spaces", icon: "arrow.triangle.branch",
+              title: "Send links to a space", detail: "Links to sites you choose open in their space, with its sign-ins",
+              more: "Links from other apps, and links a page in another space opens in a new tab. A site includes its subdomains. Typed addresses, links followed in their own tab and private tabs stay where they are. Right-click a tab to send its site to the space it is in.",
+              keys: [SpaceRoutes.key, SpaceRoutes.rulesKey],
+              words: ["arc", "air traffic control", "route", "routing", "rules", "domain", "site", "open in space", "default space", "links from other apps"],
+              parent: "spaces"),
         .init(id: "pins.keep", group: "pins", icon: "pin.circle",
               title: "Pins keep their site", detail: "Links elsewhere open over the pin, and ⌘W takes it back home",
               more: "As in Arc and Safari: a link from a pin to another site opens in a peek over it, and a pin closed with ⌘W, or left open when Search quits, comes back at the page it was pinned at.",
@@ -282,6 +315,10 @@ enum SettingsIndex {
               title: "New tab in a floating field", detail: "⌘T raises the address field over the page, as in Arc",
               more: "Return opens what you typed in a new tab; Escape, ⌘W or a click outside puts it away.",
               keys: ["newtab.floating"], words: ["command bar", "cmd t", "spotlight"]),
+        .init(id: "newtab.recent", group: "opening", icon: "clock.arrow.circlepath",
+              title: "Recent places in the new tab", detail: "Before you type, ⌘T's field lists the last three places you went",
+              more: "From History on this Mac, leaving out pages already open, which ⌘K finds. Nothing is picked until an arrow key picks it, and a private tab lists nothing.",
+              keys: ["newtab.recent"], words: ["recent", "history", "suggestions", "cmd t", "last visited"], parent: "newtab.floating"),
         .init(id: "commandbar", group: "opening", icon: "chevron.right.square",
               title: "Address bar commands", detail: "\"settings\" or \"new tab\" alone in the address field goes there",
               more: "Part of a name, like \"down\" or \"dwn\", shows the command lower in the list.",
@@ -303,9 +340,13 @@ enum SettingsIndex {
               title: "Offer passkeys", detail: "Touch ID or an iCloud passkey, on sites that offer one",
               keys: ["passkeys"], words: ["webauthn", "touch id"]),
         .init(id: "passwords.apple", group: "apple", icon: "applelogo",
-              title: "Passwords from Apple's Passwords app", detail: "Your Passwords app's accounts under the sign-in box. Unofficial",
+              title: "Passwords from Apple's Passwords app", detail: "Your Passwords app's accounts and verification codes under their box. Unofficial",
               more: "Search talks to the helper Apple made for its Chrome extension, as that extension. Never in private tabs.",
               keys: ["passwords.apple"], words: ["icloud keychain", "apple"]),
+        .init(id: "contacts.fill", group: "forms", icon: "person.crop.rectangle",
+              title: "Fill in your contact details", detail: "Your card in Contacts under name, email, phone and address boxes",
+              more: "A click fills the rest of the form's empty boxes too. Only your own card is read, and macOS asks first.",
+              keys: ["contacts.fill"], words: ["autofill", "address", "email", "phone", "name", "contacts", "me card"]),
 
         // Privacy
         .init(id: "shield", group: "blocking", icon: "shield.lefthalf.filled",
@@ -370,7 +411,7 @@ enum SettingsIndex {
               title: "Correct spelling as you type", detail: "Now in Edit › Spelling and Grammar, as in Safari",
               keys: ["autocorrect"], words: ["autocorrect", "spelling", "spell"], findOnly: true),
         .init(id: "note.split", group: "window", icon: "rectangle.split.2x1",
-              title: "Split View", detail: "Always there: drag a tab onto a page, or press ⌥⌘N",
+              title: "Split View", detail: "Always there: ⌥-click a tab, drag a tab onto a page, or press ⌥⌘N",
               keys: ["splitView"], words: ["split", "side by side"], kind: .note, findOnly: true),
         .init(id: "note.groups", group: "newtabs", icon: "folder",
               title: "Tab groups", detail: "Always there: right-click a tab › Add to New Group",
@@ -441,10 +482,15 @@ enum SettingsIndex {
     @MainActor static func applies(_ item: SettingsItem, _ prefs: Preferences) -> Bool {
         switch item.id {
         case "pages.dusk": return prefs.look != .light
-        case "sidebar.roomy": return prefs.sidebar && !prefs.sideIcons
+        case "sidebar.roomy", "sidebar.player": return prefs.sidebar && !prefs.sideIcons
         case "sidebar.hides", "layout.cards", "pins.list": return prefs.sidebar
+        case "sidebar.foldIcons": return prefs.sidebar && !prefs.sideHides
         case "toolbar.left": return !prefs.sidebar
         case "profiles.oneWindow": return Profiles.shared.several
+        case "spaces.links": return prefs.usesSpaces
+        case "tabs.frontBeside": return prefs.newTabPlace == .next
+        case "newtab.recent": return prefs.floatingNewTab
+        case "links.little.tabs": return prefs.littleLinks
         default: return true
         }
     }
@@ -455,7 +501,13 @@ enum SettingsIndex {
         case "pages.dusk": return "Only while Search isn't set to Light"
         case "toolbar.left": return "Only with the tabs across the top"
         case "sidebar.roomy": return "Only with titles in the column"
+        case "sidebar.foldIcons": return "Only with the column down a side and not hidden until the edge"
         case "profiles.oneWindow": return "Only with more than one profile"
+        case "spaces.links": return "Only with Spaces on"
+        case "sidebar.player": return "Only with titles in the sidebar"
+        case "tabs.frontBeside": return "Only with New tab position on After current"
+        case "newtab.recent": return "Only with the new tab in a floating field"
+        case "links.little.tabs": return "Only with links from other apps in a small window"
         default: return "Only with the tabs down a side"
         }
     }

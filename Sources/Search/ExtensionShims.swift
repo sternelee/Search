@@ -45,7 +45,7 @@ enum ExtensionShims {
     nonisolated static let stamp = ".search-shim"
     /// Raised when `prepare` changes what it does to a package, so that
     /// extensions prepared before are prepared again.
-    nonisolated private static let preparation = "4"
+    nonisolated private static let preparation = "6"
     nonisolated static let version: String = {
         SHA256.hash(data: Data((script + PasskeyRelay.page + preparation).utf8)).prefix(8).map { String(format: "%02x", $0) }.joined() + (Store.testing ? "-test" : "")
     }()
@@ -129,14 +129,85 @@ enum ExtensionShims {
         // it: a password manager's there keeps a reference to
         // navigator.credentials as it finds it, and that has to be Search's,
         // not WebKit's (see Passkeys.swift).
+        //
+        // Entries that run in the same place at the same time share one copy
+        // rather than each carrying its own: WebKit parses a content script
+        // once per entry per frame, and the shim is 200 KB, so a manifest
+        // with three <all_urls> entries paid for it three times in every
+        // frame of a page. Only `matches` is pooled, and only between entries
+        // that agree on everything else, so the shared copy never reaches a
+        // page the extension's own scripts would not: Catppuccin's one entry
+        // names eight forges, and would otherwise have carried the shim
+        // everywhere.
+        //
+        // An entry with nothing to share keeps the copy inside it, as before.
+        // Lifting it out would leave two entries where the manifest had one,
+        // and an entry of its own costs a page a little even when it carries
+        // nothing new.
+        //
+        // The shared entries go first, which is what puts the shim before the
+        // scripts it is there for: WebKit runs a frame's entries in manifest
+        // order within a `run_at`, in the page's own world as in an isolated
+        // one.
         if let entries = manifest["content_scripts"] as? [[String: Any]] {
-            manifest["content_scripts"] = entries.map { entry -> [String: Any] in
-                var entry = entry
-                if var js = entry["js"] as? [String] {
-                    if !js.contains(file) { js.insert(file, at: 0) }
-                    if (entry["world"] as? String)?.uppercased() == "MAIN", !js.contains(passkeys) { js.insert(passkeys, at: 0) }
-                    entry["js"] = js
+            // What an earlier preparation left: its shared entries, and its
+            // copies inside the extension's own. Both come off first, so a
+            // newer shim takes an older one's place instead of stacking on
+            // it.
+            var own: [[String: Any]] = []
+            for var entry in entries {
+                guard var js = entry["js"] as? [String] else { own.append(entry); continue }
+                if entry["css"] == nil, js == [file] || js == [passkeys, file] { continue }
+                js.removeAll { $0 == file || $0 == passkeys }
+                if js.isEmpty, entry["css"] == nil { continue }
+                entry["js"] = js
+                own.append(entry)
+            }
+
+            // Grouped by everything that decides where and when an entry
+            // runs. An unknown key counts, so a manifest Search does not
+            // understand yet groups on its own rather than being pooled on a
+            // guess.
+            func place(_ entry: [String: Any]) -> String {
+                var place = entry
+                for key in ["matches", "js", "css"] { place.removeValue(forKey: key) }
+                guard let data = try? JSONSerialization.data(withJSONObject: place, options: [.sortedKeys]),
+                      let key = String(data: data, encoding: .utf8)
+                else { return UUID().uuidString }
+                return key
+            }
+
+            var order: [String] = []
+            var pools: [String: (place: [String: Any], matches: [String], count: Int)] = [:]
+            for entry in own where entry["js"] is [String] {
+                let key = place(entry)
+                if pools[key] == nil {
+                    order.append(key)
+                    var bare = entry
+                    for name in ["matches", "js", "css"] { bare.removeValue(forKey: name) }
+                    pools[key] = (bare, [], 0)
                 }
+                pools[key]?.count += 1
+                for match in entry["matches"] as? [String] ?? [] where !(pools[key]?.matches.contains(match) ?? true) {
+                    pools[key]?.matches.append(match)
+                }
+            }
+
+            let shared = Set(order.filter { (pools[$0]?.count ?? 0) > 1 })
+            var shimmed: [[String: Any]] = []
+            for key in order where shared.contains(key) {
+                guard let pool = pools[key] else { continue }
+                var entry = pool.place
+                entry["matches"] = pool.matches
+                entry["js"] = (pool.place["world"] as? String)?.uppercased() == "MAIN" ? [passkeys, file] : [file]
+                shimmed.append(entry)
+            }
+            manifest["content_scripts"] = shimmed + own.map { entry -> [String: Any] in
+                var entry = entry
+                guard var js = entry["js"] as? [String], !shared.contains(place(entry)) else { return entry }
+                js.insert(file, at: 0)
+                if (entry["world"] as? String)?.uppercased() == "MAIN" { js.insert(passkeys, at: 0) }
+                entry["js"] = js
                 return entry
             }
         }
@@ -203,9 +274,17 @@ enum ExtensionShims {
     /// didn't write, and nothing acts beyond what it named. A block or an
     /// allow of that shape is left as WebKit reads it, as before. The shim
     /// leaves out the same rules added while the extension runs (`misread`).
+    ///
+    /// A rule that hangs on a response's headers (`responseHeaders`,
+    /// `excludedResponseHeaders`), whatever it does. WebKit has no such
+    /// condition, drops it, and carries out the rest on every request it
+    /// matches: uBlock Origin Lite's block of a site's own `.bundle.js`
+    /// when the server answers with an anti-adblock header took every
+    /// webpack bundle GitLab serves, and its pages stayed empty.
     nonisolated static func misreadByWebKit(_ rule: [String: Any]) -> Bool {
-        guard let condition = rule["condition"] as? [String: Any],
-              condition["regexFilter"] is String, condition["requestDomains"] != nil,
+        guard let condition = rule["condition"] as? [String: Any] else { return false }
+        if condition["responseHeaders"] != nil || condition["excludedResponseHeaders"] != nil { return true }
+        guard condition["regexFilter"] is String, condition["requestDomains"] != nil,
               let type = (rule["action"] as? [String: Any])?["type"] as? String
         else { return false }
         return type == "redirect" || type == "modifyHeaders"
@@ -218,11 +297,12 @@ enum ExtensionShims {
         guard let dnr = manifest["declarative_net_request"] as? [String: Any],
               let resources = dnr["rule_resources"] as? [[String: Any]] else { return }
         for resource in resources {
-            // Only a file with both words in it is read as rules: a blocker
+            // Only a file with the words in it is read as rules: a blocker
             // ships tens of megabytes of them.
             guard let name = resource["path"] as? String, let url = inside(name, of: folder),
                   let data = try? Data(contentsOf: url),
-                  data.range(of: Data("regexFilter".utf8)) != nil, data.range(of: Data("requestDomains".utf8)) != nil,
+                  data.range(of: Data("ResponseHeaders".utf8)) != nil || data.range(of: Data("responseHeaders".utf8)) != nil
+                    || (data.range(of: Data("regexFilter".utf8)) != nil && data.range(of: Data("requestDomains".utf8)) != nil),
                   let rules = (try? JSONSerialization.jsonObject(with: data)) as? [Any]
             else { continue }
             let kept = rules.filter { !(($0 as? [String: Any]).map(misreadByWebKit) ?? false) }
@@ -726,7 +806,7 @@ enum ExtensionShims {
         const decode = (text) => { const s = atob(text), bytes = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i); return bytes.buffer; };
         const states = { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
         class WebSocket extends EventTarget {
-          #port; #state = 0; #queue = Promise.resolve(); #origin; #hello;
+          #port; #state = 0; #queue = Promise.resolve(); #origin; #hello; #closing;
           constructor(url, protocols) {
             super();
             let parsed;
@@ -784,7 +864,10 @@ enum ExtensionShims {
           }
           #take(m) {
             if (!m || this.#state === 3) return;
-            if ("opened" in m) { this.protocol = m.opened; this.#state = 1; this.#fire("open"); }
+            // Closed while connecting: the browser may have opened it anyway,
+            // if the close was lost or came before the opening. Say it again.
+            if ("opened" in m && this.#state === 2) { try { this.#port.postMessage(this.#closing); } catch (e) {} }
+            else if ("opened" in m) { this.protocol = m.opened; this.#state = 1; this.#fire("open"); }
             else if ("text" in m) this.#fire("message", { data: m.text, origin: this.#origin });
             else if ("binary" in m) {
               const buffer = decode(m.binary);
@@ -810,7 +893,7 @@ enum ExtensionShims {
             }
             if (this.#state >= 2) return;
             this.#state = 2;
-            const message = { close: code === undefined ? 1000 : code, reason: reason === undefined ? "" : String(reason) };
+            const message = this.#closing = { close: code === undefined ? 1000 : code, reason: reason === undefined ? "" : String(reason) };
             this.#queue = this.#queue.then(() => { try { this.#port.postMessage(message); } catch (e) {} });
           }
         }
@@ -1366,17 +1449,21 @@ enum ExtensionShims {
         // it takes a single connection: its options page stayed blank and its
         // keys did nothing. A copy applied to no object (0, null, undefined)
         // is applied to runtime. Only through apply, which is how such code
-        // calls it.
-        const apply = Function.prototype.apply;
-        try {
-          Object.defineProperty(Function.prototype, "apply", {
-            value: ({ apply(that, args) {
-              if ((that === null || (typeof that !== "object" && typeof that !== "function"))
-                  && typeof this === "function" && this.name === "getPlatformInfo") that = runtime;
-              return Reflect.apply(apply, this, [that, args]);
-            } }).apply, configurable: true, writable: true, enumerable: false,
-          });
-        } catch (e) {}
+        // calls it. Never in a content script: there it made every apply on
+        // the page's side of the extension several times slower, for a call
+        // only the extension's own pages and worker make.
+        if (!inContent) {
+          const apply = Function.prototype.apply;
+          try {
+            Object.defineProperty(Function.prototype, "apply", {
+              value: ({ apply(that, args) {
+                if ((that === null || (typeof that !== "object" && typeof that !== "function"))
+                    && typeof this === "function" && this.name === "getPlatformInfo") that = runtime;
+                return Reflect.apply(apply, this, [that, args]);
+              } }).apply, configurable: true, writable: true, enumerable: false,
+            });
+          } catch (e) {}
+        }
       }
       // Installed before the content-script return. Each passive subscription
       // is bound natively to the background that this port connected to. A
@@ -2504,6 +2591,7 @@ enum ExtensionShims {
       const base = (() => { try { return runtime.getURL(""); } catch (e) { return ""; } })();
       const misread = (r) => {
         const c = r && r.condition, type = r && r.action && r.action.type;
+        if (c && (c.responseHeaders !== undefined || c.excludedResponseHeaders !== undefined)) return true;
         return !!(c && typeof c.regexFilter === "string" && c.requestDomains !== undefined
           && (type === "redirect" || type === "modifyHeaders"));
       };
@@ -2526,8 +2614,10 @@ enum ExtensionShims {
         // change of that shape is left out rather than carried out
         // everywhere: uBlock Origin Lite's strict blocking, `^https?://.*`
         // for thousands of named sites, sent every page to its warning (#709).
+        // So is a rule on a response's headers, which WebKit has no word for
+        // and would carry out on every request it otherwise matches.
         if (misread(r)) {
-          try { native("debug.error", ["declarativeNetRequest: " + r.action.type + " rule " + r.id + " left out — WebKit would take its pattern for every site, not the ones it names"]).catch(() => {}); } catch (x) {}
+          try { native("debug.error", ["declarativeNetRequest: " + (r.action && r.action.type) + " rule " + r.id + " left out — WebKit would carry it out beyond what it names"]).catch(() => {}); } catch (x) {}
           return null;
         }
         return r;

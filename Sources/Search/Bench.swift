@@ -424,6 +424,9 @@ final class Bench {
             }
             else if request["off"] as? Bool == true { browser.unpin(tab) }
             else if request["home"] as? Bool == true { browser.goHome(tab) }
+            // "rehome": Replace Pinned Page with Current URL, as the pin's
+            // menu does.
+            else if request["rehome"] as? Bool == true { browser.rehome(tab) }
             // "everywhere": Keep in Every Space (true) or Only in This Space
             // (false), as the pin's menu does.
             else if let everywhere = request["everywhere"] as? Bool, tab.pin != nil {
@@ -497,6 +500,19 @@ final class Bench {
             }
 
         case "agent":
+            // Two agents answer to this word. The one from main asks for a
+            // tab's whole user agent, as another browser's would read, until
+            // it is set back with none ("ua" in the request, and never an
+            // "action"); the one from dev is the hands of an AI agent (see
+            // Agent.swift): pages, snapshot, act, read, wait, run — a task in
+            // words carried out by a model, always with an "action". The word
+            // cannot be split between them, so the action tells them apart —
+            // and neither can come second, where a switch would leave it
+            // forever unheard.
+            if request["action"] as? String != nil {
+                Agent.handle(request, browser: browser, pick: { self.find(request, in: browser) }, answer: answer)
+                return
+            }
             // A tab's whole user agent, as another browser's would read, until
             // it is set back with none. Only on a SEARCH_PROBE run: a page
             // answers to it.
@@ -519,6 +535,27 @@ final class Bench {
             }
             if let cover = tab.cover { out["cover"] = NSStringFromSize(cover.size) }
             answer(out)
+
+        case "player":
+            // What plays in another tab, at the foot of the sidebar
+            // (Player.swift): the tab it is for, and whether it was paused
+            // from there. With "act", what its buttons do first — still,
+            // play or away — or "go", a click on it, which takes the window
+            // over: a test run only, as select is.
+            if let act = request["act"] as? String {
+                guard Store.testing else { answer(["error": "player's act only works on a --test run"]); return }
+                guard let tab = browser.player else { answer(["error": "nothing plays out of sight"]); return }
+                switch act {
+                case "still": tab.still()
+                case "play": tab.playAgain()
+                case "away": tab.stilled = false
+                case "go": browser.select(tab)
+                default: answer(["error": "act is still, play, away or go"]); return
+                }
+            }
+            let tab = browser.player
+            answer(["tab": tab.map { Bench.short($0) } ?? "", "stilled": tab?.stilled ?? false,
+                    "noisy": tab?.noisy ?? false, "sounding": browser.sounding.count])
 
         case "eval":
             guard let tab = find(request, in: browser) else { answer(missing(request)); return }
@@ -1092,6 +1129,99 @@ final class Bench {
                 DispatchQueue.main.asyncAfter(deadline: .now() + interval) { walk(n + 1) }
             }
             walk(0)
+
+        case "foldtime":
+            // ⌘S, timed: each pass of the main run loop for the next 0.7 s,
+            // from waking to going back to sleep, with when it started after
+            // the press, the page's width at its end, and the rows built in
+            // it. The first pass is the press itself, whatever it costs
+            // before the slide can start. Test runs only.
+            guard Store.testing else { answer(["error": "foldtime is for test runs"]); return }
+            guard let web = browser.active?.built else { answer(["error": "foldtime needs a page on screen"]); return }
+            var passes: [[String: Any]] = []
+            var woke: CFAbsoluteTime = 0
+            var rows = 0
+            let pressed = CFAbsoluteTimeGetCurrent()
+            let wake = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.afterWaiting.rawValue, true, CFIndex.min) { _, _ in
+                woke = CFAbsoluteTimeGetCurrent()
+            }
+            let sleep = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, CFIndex.max) { _, _ in
+                let now = CFAbsoluteTimeGetCurrent()
+                let start = woke > 0 ? woke : pressed
+                let built = Bench.bodies["row", default: 0]
+                passes.append(["at": ((start - pressed) * 1000).rounded(), "ms": ((now - start) * 10000).rounded() / 10,
+                               "page": Double(web.frame.width), "rows": built - rows])
+                rows = built
+                woke = 0
+            }
+            for observer in [wake, sleep].compactMap({ $0 }) { CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes) }
+            Bench.bodies = [:]
+            let before = Double(web.frame.width)
+            browser.toggleFold()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                for observer in [wake, sleep].compactMap({ $0 }) { CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes) }
+                answer(["folded": browser.folded, "pageBefore": before, "passes": passes])
+            }
+
+        case "bookmarksweep":
+            // Bookmarks kept and then let go, one a frame, as the star or a
+            // folder's menu would: how many rows of the column and how many
+            // bookmarks bars were built again along the way, and how long
+            // each pass of the main run loop carrying an edit took. Test
+            // runs only: it writes the world's bookmarks.
+            guard Store.testing else { answer(["error": "bookmarksweep is for test runs"]); return }
+            let count = request["count"] as? Int ?? 10
+            let interval = request["interval"] as? Double ?? 1.0 / 60
+            let urls = (0..<count).compactMap { URL(string: "https://bookmarksweep.test/\($0)") }
+            var made: [Bookmark.ID] = []
+            let clock = LoopClock()
+            Bench.bodies = [:]
+            clock.start()
+            func edit(_ n: Int) {
+                guard n < urls.count * 2 else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        clock.stop()
+                        answer([
+                            "edits": urls.count * 2, "tabs": browser.tabs.count,
+                            "bodies": Bench.bodies, "left": browser.bookmarks.count,
+                            "editMs": LoopClock.summary(clock.marked),
+                            "otherMs": LoopClock.summary(clock.unmarked),
+                        ])
+                    }
+                    return
+                }
+                clock.mark()
+                if n < urls.count {
+                    if let kept = browser.bookmarks.add(urls[n], title: "Sweep \(n)") { made.append(kept.id) }
+                } else {
+                    if n - urls.count < made.count { browser.bookmarks.remove(made[n - urls.count]) }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + interval) { edit(n + 1) }
+            }
+            edit(0)
+
+        case "keeppage":
+            // The page on screen kept, or let go ("keep": false), on the
+            // bookmarks alone, as the Bookmarks panel does it: nothing else
+            // of the browser changes. Then the Bookmarks menu's items as it
+            // would open, a moment later, and how many times the bookmarks
+            // bar was built meanwhile. Test runs only: it writes the world's
+            // bookmarks.
+            guard Store.testing else { answer(["error": "keeppage is for test runs"]); return }
+            guard let tab = browser.active, let url = tab.address else { answer(["error": "no page on screen"]); return }
+            Bench.bodies = [:]
+            if request["keep"] as? Bool == false {
+                if let kept = browser.bookmarks.bookmark(for: url) { browser.bookmarks.remove(kept.id) }
+            } else {
+                _ = browser.bookmarks.add(url, title: tab.title)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                let menu = NSApp.mainMenu?.items.first { $0.title == "Bookmarks" }?.submenu
+                if let menu { menu.delegate?.menuNeedsUpdate?(menu) }
+                answer(["kept": browser.pageKept,
+                        "items": menu?.items.prefix(2).map(\.title) ?? [],
+                        "bar": Bench.bodies["bar"] ?? 0])
+            }
 
         case "pointer":
             // What a page's own tracking areas hand their owners as the
@@ -1967,7 +2097,7 @@ final class Bench {
                 tab.setAlwaysTranslates(code, action == "always")
                 answer(state())
             default:
-                let target = (request["lang"] as? String).map(Locale.Language.init(identifier:)) ?? PageTranslator.reader
+                let target = (request["lang"] as? String).map(Locale.Language.init(identifier:)) ?? PageTranslator.preferredTarget
                 if PageTranslator.start(tab, to: target, done: { report in
                     var reply = state()
                     reply["report"] = report
@@ -1982,11 +2112,6 @@ final class Bench {
             // reached a screen during test runs; what needs a page to be
             // seen is checked on a release candidate instead.
             answer(["error": "visible is switched off: it made a window, and no bench verb makes one for now — check this on a release candidate"])
-
-        case "agent":
-            // The hands of an AI agent (see Agent.swift): pages, snapshot,
-            // act, read, wait, run — a task in words carried out by a model.
-            Agent.handle(request, browser: browser, pick: { self.find(request, in: browser) }, answer: answer)
 
         case "bot":
             // The bot (see Bot.swift) as a run can drive it: opened, asked,
@@ -4125,7 +4250,7 @@ final class Bench {
 
         default:
             answer(["error": "unknown command “\(verb)”", "commands": [
-"tabs", "open", "go", "openmark", "close", "wait", "sleep", "select", "text", "nowplaying", "eval", "click", "type", "submit", "shot", "probe", "key", "textcheck", "resize", "hit", "pointer", "film", "float", "window", "pages", "picture", "pdf", "place", "group", "tospace", "field", "bookmark", "marks", "menu", "keyeq", "fill", "pin", "middle", "windows", "alive", "quit", "towindow", "news", "pull", "magnify", "wheel", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "passwords", "accounts", "find", "answer", "visible", "ai", "notifications", "popups", "suggest", "translate", "profile", "settings", "mcp", "skills", "chores", "chat", "agent", "kept"
+"tabs", "open", "go", "openmark", "close", "wait", "sleep", "select", "text", "nowplaying", "player", "eval", "click", "type", "submit", "shot", "probe", "key", "textcheck", "resize", "hit", "pointer", "film", "float", "window", "pages", "picture", "pdf", "place", "group", "tospace", "field", "bookmark", "marks", "menu", "keyeq", "fill", "pin", "middle", "windows", "alive", "quit", "towindow", "news", "pull", "magnify", "wheel", "space", "split", "strip", "column", "fold", "consent", "update", "site", "little", "ui", "import", "import-preview", "import-file", "import-file-start", "import-file-status", "import-file-cancel", "remove-folder", "passwords", "accounts", "find", "answer", "visible", "ai", "notifications", "popups", "suggest", "translate", "profile", "settings", "mcp", "skills", "chores", "chat", "agent", "kept"
             ]])
         }
     }
@@ -4594,7 +4719,7 @@ final class Bench {
         let skip = Store.testing && (request["yes"] as? Bool ?? false)
         switch verb {
         case "extensions":
-            answer(["started": extensions.started, "busy": extensions.busy ?? "", "extensions": extensions.installed.map { item -> [String: Any] in
+            answer(["started": extensions.started, "busy": extensions.busy.sorted(), "extensions": extensions.installed.map { item -> [String: Any] in
                 let context = extensions.contexts[item.id]
                 let action = context.flatMap { $0.action(for: extensions.activeAdapter(for: $0)) }
                 return [
@@ -4759,6 +4884,7 @@ final class Bench {
             "asleep": tab.asleep,
             "shy": tab.shy,
             "noisy": tab.noisy,
+            "stilled": tab.stilled,
             "muted": tab.muted,
             // Darkened by Search, as the page last said, and what the page
             // was seen to be: dark by itself, light, or not looked at (see

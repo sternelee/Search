@@ -181,6 +181,7 @@ enum Spaces {
         if let made = stores[id] { return made }
         let made = WKWebsiteDataStore(forIdentifier: id)
         if Store.keepsSignIns { Store.followSignIns(made) } else { Store.followCookies(made) }
+        BrowserProxy.shared.attach(made)
         stores[id] = made
         return made
     }
@@ -327,9 +328,17 @@ extension Browser {
     }
 
     func enter(_ id: UUID) {
-        guard id != spaceID, let to = spaces.firstIndex(where: { $0.id == id }) else { return }
+        guard let to = spaces.firstIndex(where: { $0.id == id }) else { return }
         // Which way the icon at the foot turns over: the way the spaces lie.
-        if !makingSpace { spaceStep = to > (spaces.firstIndex { $0.id == spaceID } ?? 0) ? 1 : -1 }
+        // The card for a new space lies past the last one.
+        let here = makingSpace ? spaces.count : (spaces.firstIndex { $0.id == spaceID } ?? 0)
+        if to != here { spaceStep = to > here ? 1 : -1 }
+        // Going to a space from the card puts it away, as Escape does.
+        if makingSpace {
+            cancelSpaceCreation()
+            makingSpace = false
+        }
+        guard id != spaceID else { return }
         cancelTabEdit()
         let returningVideo = parked[id].map { row in
             guard let active = row.active else { return false }
@@ -386,10 +395,27 @@ extension Browser {
 
     /// Every other space's row, made ahead of time, so the column can show
     /// the next space beside this one while two fingers bring it in.
-    func preloadSpaces() {
-        for space in spaces where space.id != spaceID && parked[space.id] == nil {
-            parked[space.id] = loadRow(space.id)
+    /// Gradually, one space a turn of the run loop, the next ones first, so
+    /// a launch with many spaces never holds the window still for all of them.
+    func preloadSpaces(gradually: Bool = false) {
+        guard gradually else {
+            for space in spaces where space.id != spaceID && parked[space.id] == nil {
+                parked[space.id] = loadRow(space.id)
+            }
+            return
         }
+        guard prefs.usesSpaces, !retired else { return }
+        let at = spaces.firstIndex { $0.id == spaceID } ?? 0
+        let next = spaces.indices
+            .filter { spaces[$0].id != spaceID && parked[spaces[$0].id] == nil }
+            .min { abs($0 - at) < abs($1 - at) }
+        guard let next else {
+            // All in memory now: the sweep at launch saw only this row.
+            closeLeftAlone()
+            return
+        }
+        parked[spaces[next].id] = loadRow(spaces[next].id)
+        DispatchQueue.main.async { [weak self] in self?.preloadSpaces(gradually: true) }
     }
 
     /// The Nth space: of this window's profile, or with profiles in one
@@ -690,13 +716,19 @@ enum SpaceMenu {
             menu.addItem(unfold)
             menu.addItem(.separator())
         }
+        // Where this space's downloads go, in one place: the folder in
+        // Settings, or one of its own.
         let folder = here.downloads.map { URL(fileURLWithPath: $0).lastPathComponent }
-        menu.addItem(item(folder.map { "Downloads to “\($0)”…" } ?? "Downloads Folder…") {
-            Ask.folder { browser.setSpaceDownloads(here.id, to: $0) }
-        })
-        if folder != nil {
-            menu.addItem(item("Downloads to the Folder in Settings") { browser.setSpaceDownloads(here.id, to: nil) })
+        let places = NSMenu()
+        places.addItem(item("Same as Settings", checked: folder == nil) { browser.setSpaceDownloads(here.id, to: nil) })
+        if let folder {
+            places.addItem(item("“\(folder)”", checked: true) {})
         }
+        places.addItem(.separator())
+        places.addItem(item("Choose Folder…") { Ask.folder { browser.setSpaceDownloads(here.id, to: $0) } })
+        let downloads = NSMenuItem(title: "Downloads", action: nil, keyEquivalent: "")
+        downloads.submenu = places
+        menu.addItem(downloads)
         if !here.isFirst, here.id != browser.homeSpaceID {
             menu.addItem(.separator())
             menu.addItem(item("Delete “\(here.name)”…") {

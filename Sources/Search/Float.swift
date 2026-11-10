@@ -94,8 +94,8 @@ final class Float {
     static var benchScreens: [NSRect]?
 
     /// `still`: the video as it was in its tab, cut out of a picture of the
-    /// page (see `still(of:picture:page:)`), shown until the page is laid out
-    /// at this window's size.
+    /// page with the rest of it hidden (see `still(of:picture:page:)`),
+    /// shown until the page is laid out at this window's size.
     func lift(_ page: NSView, still: NSImage? = nil) {
         guard panel == nil else { return }
         self.page = page
@@ -1046,6 +1046,31 @@ final class Settling {
 }
 
 enum Isolate {
+    /// The videos WebKit paused itself as the page went out of sight, for
+    /// `on` and NativePiP to take for playing. WebKit pauses a silent video
+    /// the moment nobody can see its page, and plays it again once somebody
+    /// can. Another desktop hides the window at once, and by the time Search
+    /// hears it has been left (Browser.appLeft) a muted video is paused, so
+    /// nothing floated; another app leaves the window on screen and the
+    /// video playing. Taken out all the same, it plays again in the little
+    /// window, or in picture in picture. One paused while the page could be
+    /// seen was paused by hand, and stays where it is.
+    static let watch = """
+    (function () {
+      if (window.__officeFloatUnseen) return;
+      var stopped = new WeakSet();
+      document.addEventListener('pause', function (e) {
+        if (e.isTrusted && document.visibilityState === 'hidden') stopped.add(e.target);
+      }, true);
+      // Seen again: WebKit has played its own again by now, and one still
+      // paused was paused by hand while out of sight, with the media keys.
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') stopped = new WeakSet();
+      }, true);
+      window.__officeFloatUnseen = function (v) { return v.paused && stopped.has(v); };
+    })();
+    """
+
     /// Everything but the video, out of the way. Visibility is inherited, so
     /// hiding the body and turning it back on for the video alone leaves the
     /// player's own machinery running untouched — which is what keeps the
@@ -1053,25 +1078,18 @@ enum Isolate {
     static let on = """
     (function () {
       var videos = document.querySelectorAll('video');
+      var unseen = window.__officeFloatUnseen || function () { return false; };
       var best = null, area = 0;
       for (var i = 0; i < videos.length; i++) {
         var v = videos[i];
-        if (v.paused || v.ended || v.readyState < 2) continue;
+        if ((v.paused && !unseen(v)) || v.ended || v.readyState < 2) continue;
         var box = v.getBoundingClientRect();
         if (box.width * box.height >= area) { area = box.width * box.height; best = v; }
       }
       if (!best) return 'none';
 
-      // Where the video's picture is, for cutting it out of a picture of the
-      // page (Float.still): inside its box as `contain` fits it, which is
-      // how a video is drawn unless the page says otherwise.
-      var r = best.getBoundingClientRect(), pic = [r.left, r.top, r.width, r.height];
-      var vw = best.videoWidth, vh = best.videoHeight;
-      if (vw && vh && r.width && r.height && getComputedStyle(best).objectFit === 'contain') {
-        var fit = Math.min(r.width / vw, r.height / vh);
-        pic = [r.left + (r.width - vw * fit) / 2, r.top + (r.height - vh * fit) / 2, vw * fit, vh * fit];
-      }
-      // And where the video was in the page, at what size of page, for the
+      var r = best.getBoundingClientRect(), vw = best.videoWidth, vh = best.videoHeight;
+      // Where the video was in the page, at what size of page, for the
       // landing to wait for (see off). Not while the last float is still
       // landing: the page isn't as it was yet, and the place it is going
       // back to is the one kept from before. And whether Twitch's chat was
@@ -1201,7 +1219,13 @@ enum Isolate {
         if (again) again.setAttribute('data-office-float', '');
       }, 250);
 
-      return { floating: true, picture: pic, page: [innerWidth, innerHeight] };
+      // Where the picture is once the rest of the page is out of the way,
+      // as large as it goes whole and in the middle, for cutting it out of a
+      // picture of the page taken then (Float.still, Browser.lift).
+      var whole = shown[0] && shown[1] ? shown : [vw, vh];
+      var by = Math.min(innerWidth / whole[0], innerHeight / whole[1]) || 0;
+      var alone = [(innerWidth - whole[0] * by) / 2, (innerHeight - whole[1] * by) / 2, whole[0] * by, whole[1] * by];
+      return { floating: true, alone: alone, page: [innerWidth, innerHeight] };
     })();
     """
 

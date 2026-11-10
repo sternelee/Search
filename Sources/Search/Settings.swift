@@ -340,6 +340,11 @@ struct SettingsPanel: View {
             }
         case .terminal:
             terminal
+        case .privacy:
+            groups(of: page)
+            GroupBlock(title: "Proxy", icon: "network") {
+                ProxySettings()
+            }
         case .extensions:
             ExtensionsPage(browser: browser)
         case .ai:
@@ -439,6 +444,7 @@ struct SettingsPanel: View {
         case "downloads.folder":
             return prefs.downloads.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
         case "search.engine": return searchDetail
+        case "search.shift": return shiftDetail
         case "search.suggest": return suggestDetail
         case "search.keywords": return keywordDetail
         case "passwords.save": return savingDetail
@@ -524,6 +530,7 @@ struct SettingsPanel: View {
                         set: { layout in withAnimation(Motion.glide) { prefs.tabsLayout = layout } }
                      ))
         case "sidebar.hides": Switch(on: $prefs.sideHides)
+        case "sidebar.foldIcons": Switch(on: $prefs.foldsToIcons)
         case "layout.cards":
             Pictures(options: [(true, "As a card", AnyView(CardPicture(card: true))),
                                (false, "Edge to edge", AnyView(CardPicture(card: false)))],
@@ -537,6 +544,7 @@ struct SettingsPanel: View {
                 get: { prefs.roomyTabs },
                 set: { on in withAnimation(Motion.glide) { prefs.roomyTabs = on } }
             ))
+        case "sidebar.player": Switch(on: $prefs.showsPlayer)
         case "glyph": Segmented(options: Glyph.allCases.map { ($0, $0.title) }, selection: $prefs.glyph)
         case "tabs.reading": Switch(on: $prefs.showsReading)
         case "tabs.give": Switch(on: $prefs.tabsGive)
@@ -561,6 +569,7 @@ struct SettingsPanel: View {
             .fixedSize()
         case "tabs.newAfterLast": Switch(on: $prefs.newTabAfterLast)
         case "tabs.closeGoesBack": Switch(on: $prefs.closeGoesBack)
+        case "tabs.frontBeside": Switch(on: $prefs.frontLinksBeside)
         case "tabs.lazy": Switch(on: $prefs.lazyTabs)
         case "tabs.popupWindows": Switch(on: $prefs.popupWindows)
         case "tabs.sleep":
@@ -603,6 +612,17 @@ struct SettingsPanel: View {
             .labelsHidden()
             .pickerStyle(.menu)
             .fixedSize()
+        case "search.shift":
+            Picker("", selection: $prefs.shiftEngine) {
+                Text("Off").tag(Engine?.none)
+                Divider()
+                ForEach(Engine.allCases) { engine in
+                    Text(engine.title).tag(Engine?.some(engine))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
         case "search.suggest": Switch(on: $prefs.engineSuggests)
         case "search.keywords":
             if draft == nil {
@@ -616,6 +636,7 @@ struct SettingsPanel: View {
                 }
             }
         case "links.little": Switch(on: $prefs.littleLinks)
+        case "links.little.tabs": Switch(on: $prefs.littleFindsTabs)
         case "reader.twins": Switch(on: $prefs.readsTwins)
         case "reader.follows": Switch(on: $prefs.readerFollowsLook)
         case "float.style": Segmented(options: FloatStyle.allCases.map { ($0, $0.title) }, selection: $prefs.floatStyle)
@@ -624,6 +645,10 @@ struct SettingsPanel: View {
                 .frame(maxWidth: 340)
         case "media.click": Switch(on: $prefs.waitsForPlay)
         case "fullscreen.escapeTwice": Switch(on: $prefs.escapeTwice)
+        case "fullscreen.keepsWindow": Switch(on: $prefs.keepsWindow)
+        case "translate.target":
+            if PageTranslator.available { TranslateTargetPicker(prefs: prefs) }
+            else { Text("Requires macOS 15").foregroundStyle(Palette.muted) }
         case "pageZoom":
             // The number itself takes it back to 100%.
             Steps(stops: Preferences.zooms, value: $prefs.pageZoom, home: 1) { "\(Int(($0 * 100).rounded()))%" }
@@ -657,9 +682,11 @@ struct SettingsPanel: View {
         case "spaces": Switch(on: $prefs.usesSpaces)
         case "profiles": Pill("New Profile…") { ProfileMenu.askNew() }
         case "profiles.oneWindow": Switch(on: $prefs.profilesInOneWindow)
+        case "spaces.links": Switch(on: $prefs.sendsLinksToSpaces)
         case "pins.keep": Switch(on: $prefs.pinsKeepSite)
         case "pins.list": Switch(on: $prefs.listsPins)
         case "newtab.floating": Switch(on: $prefs.floatingNewTab)
+        case "newtab.recent": Switch(on: $prefs.recentInNewTab)
         case "commandbar": Switch(on: $prefs.commandBar)
         case "start.fresh": Switch(on: $prefs.startsFresh)
         case "note.sharedpins", "note.pinback": Always()
@@ -675,6 +702,23 @@ struct SettingsPanel: View {
         case "passwords.fill": Switch(on: $prefs.fillsPasswords)
         case "passkeys": Switch(on: $prefs.passkeys)
         case "passwords.apple": Switch(on: $prefs.applePasswords)
+        // Turned on, macOS is asked whether Search may read Contacts; a no,
+        // or no card of yours, leaves it off and says why.
+        case "contacts.fill":
+            Switch(on: Binding(get: { prefs.fillsContacts }, set: { on in
+                guard on else { prefs.fillsContacts = false; return }
+                Task { @MainActor in
+                    guard await MeCard.shared.ask() else {
+                        browser.announce("Search may not read Contacts: System Settings › Privacy & Security › Contacts")
+                        return
+                    }
+                    guard await MeCard.shared.reload() else {
+                        browser.announce("No card of yours in Contacts: pick yours there, then Card › Make This My Card")
+                        return
+                    }
+                    prefs.fillsContacts = true
+                }
+            }))
         case "shield": Switch(on: $prefs.shielded)
         case "sites.keep": Switch(on: Binding(get: { !prefs.keepsSignIns }, set: { prefs.keepsSignIns = !$0 }))
         case "privacy.clickIDs": Switch(on: $prefs.removesClickIDs)
@@ -721,7 +765,9 @@ struct SettingsPanel: View {
     private func after(_ item: SettingsItem, searched: Bool) -> some View {
         switch item.id {
         case "search.engine":
-            if prefs.engine == .custom { customEngine }
+            if prefs.engine == .custom { templateField($prefs.customEngine) }
+        case "search.shift":
+            if prefs.shiftEngine == .custom { templateField($prefs.shiftCustom) }
         case "search.keywords":
             keywordEditor
             // What ⌘T opens to, and the way back after an extension took
@@ -762,6 +808,11 @@ struct SettingsPanel: View {
                 ProfileList(browser: browser)
                     .under()
             }
+        case "spaces.links":
+            if !searched, prefs.usesSpaces, prefs.sendsLinksToSpaces {
+                SpaceRouteList(prefs: prefs)
+                    .under()
+            }
         case "pages.120":
             if !searched, PageTranslator.available, !prefs.translateAlways.isEmpty {
                 TranslateLanguageList(prefs: prefs)
@@ -772,13 +823,14 @@ struct SettingsPanel: View {
         }
     }
 
-    private var customEngine: some View {
+    /// A custom engine's address, under the row that chose Custom.
+    private func templateField(_ text: Binding<String>) -> some View {
         ZStack(alignment: .leading) {
-            if prefs.customEngine.isEmpty {
+            if text.wrappedValue.isEmpty {
                 Text("https://example.com/search?q=%s")
                     .foregroundStyle(Palette.muted.opacity(0.8))
             }
-            TextField("", text: $prefs.customEngine)
+            TextField("", text: text)
                 .textFieldStyle(.plain)
                 .foregroundStyle(Palette.ink)
         }
@@ -885,6 +937,17 @@ struct SettingsPanel: View {
             return "An http or https address with %s where the words go. Until then, Google"
         }
         return "Words go to \(prefs.engine.name(custom: prefs.customEngine))"
+    }
+
+    private var shiftDetail: String {
+        guard let engine = prefs.shiftEngine else {
+            return SettingsIndex.item("search.shift")?.detail ?? ""
+        }
+        guard engine == .custom else { return "Shift-Return sends what you typed to \(engine.title)" }
+        guard Engine.accepts(prefs.shiftCustom) else {
+            return "An http or https address with %s where the words go. Until then, Google"
+        }
+        return "Shift-Return sends what you typed to \(engine.name(custom: prefs.shiftCustom))"
     }
 
     /// Says so when a password manager extension has taken the saving over.

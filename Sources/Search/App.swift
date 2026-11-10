@@ -163,7 +163,9 @@ struct SearchApp: App {
                 .shortcut("view.sidebar")
                 // Folded away, not moved (see Fold.swift) — the column, or the
                 // strip across the top.
-                Button(browser.prefs.sidebar
+                Button(browser.prefs.shrinks && !browser.folded
+                       ? (browser.prefs.sideIcons ? "Show Sidebar Titles" : "Show Sidebar as Icons Only")
+                       : browser.prefs.sidebar
                        ? (browser.folded ? "Show Sidebar" : "Hide Sidebar")
                        : (browser.folded ? "Show Tab Bar" : "Hide Tab Bar")) { browser.toggleFold() }
                     .shortcut("view.fold")
@@ -335,7 +337,11 @@ struct SearchApp: App {
                     .disabled(browser.active?.isTerminal != true)
                 Divider()
                 if browser.prefs.splitView {
-                    Button("Split Current Page") { browser.startSplit() }
+                    // The same key puts a pair apart: on a pair, the item
+                    // says so, and the one below it without a key goes.
+                    Button(browser.activeSplit == nil || browser.pickedPair != nil ? "Split Current Page" : "Separate Split Tabs") {
+                        browser.splitKey()
+                    }
                         .shortcut("tabs.split")
                         .disabled(browser.active == nil || browser.active?.bench == true)
                     Button("Focus Left Page") { browser.focusPane(onLeft: true) }
@@ -347,11 +353,13 @@ struct SearchApp: App {
                     Button("Swap Pages") { browser.swapSplit() }
                         .shortcut("tabs.swapSplit")
                         .disabled(browser.activeSplit == nil)
-                    Button("Separate Split Tabs") {
-                        if let tab = browser.active { browser.detachSplit(tab) }
+                    if browser.activeSplit == nil || browser.pickedPair != nil {
+                        Button("Separate Split Tabs") {
+                            if let tab = browser.active { browser.detachSplit(tab) }
+                        }
+                        .shortcut("tabs.separateSplit")
+                        .disabled(browser.activeSplit == nil)
                     }
-                    .shortcut("tabs.separateSplit")
-                    .disabled(browser.activeSplit == nil)
                     Button("Close Both Pages") { browser.closeSplit() }
                         .disabled(browser.activeSplit == nil)
                     Divider()
@@ -592,14 +600,8 @@ struct ContentView: View {
             // (see SidePanel.swift); two pages in Split View share what's left.
             if panelRoom > 0 { sidePanel }
 
-            // The column of tabs, in the way that has one. It takes the full
-            // height, so the traffic lights sit in its own corner rather than
-            // over the page.
-            if sidebar {
-                SideBar(browser: browser, prefs: browser.prefs, onFrame: cards)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .transition(.move(edge: sideOnRight ? .trailing : .leading))
-            }
+            // The column of tabs is Fold's, in its place beside the page or
+            // folded away (see Fold.swift).
 
             if !browser.prefs.sidebar, !browser.folded, fullscreenTab == nil {
                 TabBar(browser: browser)
@@ -974,6 +976,9 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
                 if let window, (note.object as? NSWindow) === window { Browsers.becameKey(browser) }
             }
+            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.activeSpaceDidChangeNotification)) { _ in
+                if browser.prefs.keepsWindow, browser.tabs.contains(where: \.immersed) { immersing() }
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { note in
                 if let window, (note.object as? NSWindow) === window {
                     browser.tabSwitcher.cancel()
@@ -1012,6 +1017,10 @@ struct ContentView: View {
         .onAppear {
             watchKeys()
             browser.askFocus()
+            // Over a page, the page has the keys from the start. Left with
+            // the window, the Mac's keyboard navigation handed them to the
+            // first button that takes them, Reload, ringed.
+            handBack()
             // Addresses from other apps have somewhere to go from here on.
             Links.hand(to: browser)
             BookmarkMenu.shared.start(for: browser)
@@ -1127,12 +1136,12 @@ struct ContentView: View {
     /// only the browser (see fullscreenWatch).
     private var fullscreenTab: Tab? {
         _ = immersionRevision
-        guard browser.prefs.splitView else { return browser.active?.immersed == true ? browser.active : nil }
+        guard browser.prefs.splitView else { return browser.active.flatMap { browser.fillsHere($0) ? $0 : nil } }
         if let split = browser.activeSplit,
-           let immersed = browser.tabs.first(where: { split.contains($0.id) && $0.immersed }) {
+           let immersed = browser.tabs.first(where: { split.contains($0.id) && browser.fillsHere($0) }) {
             return immersed
         }
-        return browser.active?.immersed == true ? browser.active : nil
+        return browser.active.flatMap { browser.fillsHere($0) ? $0 : nil }
     }
 
     /// The pages on screen, watched for full screen. The page alone too: left
@@ -1166,6 +1175,8 @@ struct ContentView: View {
         var still = Transaction()
         still.disablesAnimations = true
         withTransaction(still) {
+            // The folded column reads this too (Browser.fillsHere).
+            browser.objectWillChange.send()
             immersionRevision += 1
             roomTicket += 1
             room = chrome
@@ -1634,6 +1645,17 @@ struct ContentView: View {
             return false
         }
 
+        // Shift-Return in the address field, with an engine chosen for it in
+        // Settings › Browsing: the words go there instead of to the default
+        // engine. With none chosen it isn't taken, and Return has it as
+        // before. Only this window's own address field, as ⌘Return below.
+        if event.keyCode == 36 || event.keyCode == 76,
+           flags.intersection([.command, .shift, .option, .control]) == .shift,
+           browser.prefs.shiftEngine != nil, browser.fieldShowing, browser.editingTab == nil,
+           let window, event.window === window, ContentView.inAddressField(window) {
+            return browser.submitToShiftEngine()
+        }
+
         // Space keys have no menu; other commands arrive here when rebound.
         // A key taken off a command goes back to the page.
         if ShortcutStore.shared.anyChanged || browser.prefs.usesSpaces, let combo = KeyCombo(event: event) {
@@ -1796,7 +1818,9 @@ struct ContentView: View {
         case "w" where shifted:
             browser.closeWindow()
         case "l" where !shifted:
-            browser.edit()
+            // Held down, the field stays up: its repeats would put it away
+            // and raise it again, over and over.
+            if !event.isARepeat { browser.edit() }
         case "r" where !shifted:
             browser.reload()
         case "r" where shifted:

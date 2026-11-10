@@ -23,6 +23,8 @@ final class HeldQuestion {
     }
 
     func present() {
+        // A dismissed or already presented question must not be shown again.
+        guard drop != nil else { return }
         drop = nil
         show()
     }
@@ -385,11 +387,11 @@ extension Browser {
         guard let tab = tab(for: webView) else { return }
         dropQuestions(for: tab.id)
         let host = tab.address?.host() ?? ""
-        // In front of you: straight back, a reload beats a white page with a
-        // button on it — unless it keeps dying (see recoverFromCrash). Behind
-        // another tab: the moment you come back to it.
+        // On screen, either half of a pair: straight back, a reload beats a
+        // white page with a button on it — unless it keeps dying (see
+        // recoverFromCrash). Behind another tab: the moment you come back to it.
         let outcome: String
-        if tab.id == activeID, !tab.isBlank {
+        if visibleTabIDs.contains(tab.id), !tab.isBlank {
             outcome = tab.recoverFromCrash(end) ? "loaded again" : "kept dying, left for Try again"
         } else {
             tab.stale = true
