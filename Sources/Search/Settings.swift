@@ -87,10 +87,8 @@ struct SettingsPanel: View {
         /// The AI page is the bot's as well as the add-on's, and the bot
         /// ships with the app, so it is always there to open.
         static var blocks: [[Page]] {
-
             [[.general, .appearance, .tabs, .browsing, .spaces],
-             [.passwords, .privacy, .ai, .extensions, .browserUse, .keyboard],
-
+             [.passwords, .privacy, .extensions, .ai, .browserUse, .terminal, .keyboard],
              [.about]]
         }
     }
