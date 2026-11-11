@@ -37,7 +37,7 @@ enum Session {
         /// hold what was typed into the page, and is left out of the keys.
         var keepsake: Browser.Keepsake? = nil
 
-        enum CodingKeys: String, CodingKey { case url, title, pin, name, home, groupID, pinID, touched, letGo, listed, muted }
+        enum CodingKeys: String, CodingKey { case url, title, pin, name, home, groupID, pinID, touched, letGo, listed, terminal, muted }
     }
 
     struct Shape: Codable {

@@ -11,6 +11,19 @@ in [ROADMAP.md](ROADMAP.md).
 
 ## Unreleased
 
+### Fixed
+
+- The terminal's input line spans the frame's full width and sits on the status bar's hairline rather than floating above it, shoulders rounded and foot on the line, so the frame's bottom reads as one connected edge from corner to corner. A taller window no longer lifts it off — whatever slack the row count leaves settles between the content and the input line, where it reads as the page's own bottom margin, instead of stranding the bar mid-window with the line still under it. `swift test --filter TerminalDockTests` checks the seat.
+- Terminal tabs come back after a restart. The saved session held each one's place, but its file never recorded what it was — the flag a shell is marked with was written past the file's own list of keys and dropped — so a terminal came back as a page with no address, and the row let it go. Written now, and read back: a shell is a shell again next launch, in its place, with its name and its folder. `swift test --filter TerminalTabTests` checks the round trip.
+- ⌘T no longer takes a terminal tab for the empty one: a shell restored but not yet woken has no pane, and a tab with no pane, no page and no address read as blank — so a new tab could land on the shell instead of beside it. A shell is never blank now, asleep or awake.
+- The terminal, taken apart and put back together for speed and finish. A program writing fast no longer makes the frames wait: each reading of its output hands over its damage after one 64 KB chunk and takes its turn with the frame, so an endless writer is scrolled rather than stalled. Writing a character no longer copies the whole row under it — a thousand characters are a thousand writes, not a thousand copies — and the input dock's veil blanks rows whole instead of square by square. The status bar's git ask is one at a time per folder, and its clock stops with a hidden or closed pane instead of running for nobody.
+- The terminal's caret blinks only while its window is the key one and the keyboard is in it, settles the moment the window resigns, and holds still altogether with Reduce Motion on. A find match carried in from the scrollback is stood clear of the panel above instead of under it; the count beside the field no longer takes the clicks beside it.
+
+### Added
+
+- A double press in the terminal picks the word under it whole, a triple the line; the drag that follows keeps picking that way, word by word or line by line. A pill over the bottom corner — "↑ N" — says how far up the scrollback the frame is and goes back to the bottom when pressed. The status bar and the pill write at the terminal's own configured size, from ten to twenty points, so furniture doesn't whisper under a large face.
+- The terminal's settings read out to VoiceOver: switches say on and off and that they are buttons, the segments of a picker say which one is chosen, and a stepper's arrows say what they do. Settings rows are one element to the reader, not a label and a value apart.
+
 ### Added
 
 - A task that stopped where only a person could go on can be taken up again from the tasks page — "Take it up" makes it due now with the goal, the page and the provider it was set with, so the person does what the bot couldn't (a password, a code from another place) in the tab the task already opened, then says so, rather than asking the bot for the whole of it over again. A task that comes round again is left to its own clock, and one still running is left to finish. `python3 Tests/chores.py` checks it.

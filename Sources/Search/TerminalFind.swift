@@ -320,15 +320,17 @@ extension TerminalView {
     }
 
     /// Carry the view to the match being stood on: a match in the
-    /// scrollback is brought to the top of the frame, a match on the
-    /// screen stays where it is.
+    /// scrollback is brought to the first row clear of the panel at the
+    /// frame's top, a match on the screen stays where it is.
     private func carry() {
         guard let scene = terminal.scene(scroll: lift),
               findings.indices.contains(finding) else { return }
         let hit = findings[finding]
-        // The row the hit wants in this frame: the top of the scrollback's
-        // own, or the hit's own place on the screen.
-        let wants = hit.row < scene.back ? 2 : hit.row - scene.back
+        // The row the hit wants in this frame: the first one the panel
+        // does not stand over — it hangs from the frame's top edge — or
+        // the hit's own place on the screen.
+        let clear = Int(ceil((FieldBox.edge + FieldBox.height - TerminalDraw.inset) / cell.height))
+        let wants = hit.row < scene.back ? clear : hit.row - scene.back
         lift = min(max(wants + scene.back - hit.row, 0), scene.back)
         present()
     }

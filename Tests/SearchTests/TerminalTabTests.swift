@@ -16,6 +16,10 @@ final class TerminalTabTests: XCTestCase {
     override func setUp() {
         super.setUp()
         _ = NSApplication.shared
+        // A browser made here restores the row the last test's browser
+        // saved — and that row holds a shell, which now restores as a
+        // shell. Emptied, so each test starts from no row.
+        Session.write(now: true, space: Space.firstID, Session.Shape(tabs: [], active: -1))
     }
 
     /// A terminal tab never builds a web view — not when asked to reload,
@@ -167,6 +171,9 @@ final class TerminalTabTests: XCTestCase {
     /// test run keeps what it would have posted, for the bench.
     func testNoticeFromAnUnseenTerminalIsKeptForTheBench() {
         let browser = Browser(record: WindowRecord())
+        let notices = browser.prefs.siteNotifications
+        browser.prefs.siteNotifications = true
+        defer { browser.prefs.siteNotifications = notices }
         let tab = Tab(bench: true, terminal: true)
         browser.prepare(tab)
 

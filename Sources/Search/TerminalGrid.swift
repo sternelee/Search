@@ -185,38 +185,40 @@ struct Modes: Equatable {
     var cursorBlinks: Bool?
 }
 
-/// What feeding the screen changed, for whoever draws it: the rows by
-/// their place, whether anything scrolled, and whether the whole thing was
-/// turned over — scrollback dropped, the alternate screen swapped, or the
-/// grid resized — which makes positions held before it stale. Taken, not
+/// What feeding the screen changed, for whoever draws it: whether any
+/// cells were written, and whether the whole thing was turned over —
+/// scrollback dropped, the alternate screen swapped, or the grid
+/// resized — which makes positions held before it stale. Taken, not
 /// watched: whoever draws drains it (see `take`).
 struct Damage: Equatable {
-    var rows: Set<Int> = []
-    var scrolled = false
+    /// Whether any cell changed. Which rows is not said: the renderer
+    /// tells a changed row by its own buffer (see TerminalCells), so the
+    /// grid only has to say that there is one at all — a set of rows
+    /// filled per character here was a set nobody ever read.
+    var wroteCells = false
     var overturned = false
     var blocks = false
     /// A change that is not in the cells: the caret moved, or a mode the
     /// frame or the keyboard reads was set. A frame is owed for it — the
     /// caret is drawn where it now is, the arrows take the form the
     /// program just asked for — but not one cell has to be said again,
-    /// which is what makes it worth naming apart from `rows`.
+    /// which is what makes it worth naming apart from `wroteCells`.
     var moved = false
 
-    var empty: Bool { rows.isEmpty && !scrolled && !overturned && !blocks && !moved }
+    var empty: Bool { !wroteCells && !overturned && !blocks && !moved }
 
     /// Adds another report to this one: what a view owes a frame across a
     /// burst of readings. The fields are listed once, here, rather than at
     /// each place that accumulates — a field added to `Damage` and not to
     /// this merge would be damage nobody ever draws.
     mutating func merge(_ other: Damage) {
-        rows.formUnion(other.rows)
-        scrolled = scrolled || other.scrolled
+        wroteCells = wroteCells || other.wroteCells
         overturned = overturned || other.overturned
         blocks = blocks || other.blocks
         moved = moved || other.moved
     }
 
-    static let everything = Damage(rows: [], scrolled: true, overturned: true, blocks: true, moved: true)
+    static let everything = Damage(wroteCells: true, overturned: true, blocks: true, moved: true)
 }
 
 /// The rows that have left the top of the screen, oldest first, as a ring.
@@ -500,23 +502,25 @@ final class Screen {
             lineFeed()
         }
         guard y < height, x < width else { return }
-        var row = rows[y]
+        // Written straight through the row in place: a local copy would
+        // hold the row's buffer beside the grid's own, and every
+        // character would copy the whole line again (see plan, which
+        // tells a changed row by its buffer).
         if insert {
-            row.cells.insert(square(" "), at: min(x, width - 1))
-            row.cells.removeLast()
+            rows[y].cells.insert(square(" "), at: min(x, width - 1))
+            rows[y].cells.removeLast()
         }
-        row.cells[x] = square(char, wide: wide)
+        rows[y].cells[x] = square(char, wide: wide)
         if wide, x + 1 < width {
-            row.cells[x + 1] = square(" ")
+            rows[y].cells[x + 1] = square(" ")
             x += 1
         }
-        rows[y] = row
         if x + 1 < width {
             x += 1
         } else {
             pendingWrap = true
         }
-        damage.rows.insert(place(y))
+        damage.wroteCells = true
     }
 
     /// The carriage return: back to the first column.
@@ -643,16 +647,16 @@ final class Screen {
         case 0:
             eraseRow(0)
             if y + 1 < height {
-                for row in (y + 1)..<height { rows[row] = Row(width: width); damage.rows.insert(place(row)) }
+                for row in (y + 1)..<height { rows[row] = Row(width: width) }
             }
         case 1:
             eraseRow(1)
             if y > 0 {
-                for row in 0..<y { rows[row] = Row(width: width); damage.rows.insert(place(row)) }
+                for row in 0..<y { rows[row] = Row(width: width) }
             }
         case 2:
             rows = Array(repeating: Row(width: width), count: height)
-            for row in 0..<height { damage.rows.insert(place(row)) }
+            damage.wroteCells = true
         case 3:
             backBase += back.count
             back.removeAll()
@@ -666,26 +670,22 @@ final class Screen {
     /// beginning, 2 all of it.
     func eraseRow(_ mode: Int) {
         guard y < height else { return }
-        var row = rows[y]
         switch mode {
         case 0:
-            for column in x..<width { row.cells[column] = square(" ") }
+            for column in x..<width { rows[y].cells[column] = square(" ") }
         case 1:
-            for column in 0...min(x, width - 1) { row.cells[column] = square(" ") }
+            for column in 0...min(x, width - 1) { rows[y].cells[column] = square(" ") }
         default:
-            row.cells = Array(repeating: square(" "), count: width)
+            rows[y].cells = Array(repeating: square(" "), count: width)
         }
-        rows[y] = row
-        damage.rows.insert(place(y))
+        damage.wroteCells = true
     }
 
     /// ECH: erase this many squares from the cursor, without moving it.
     func eraseChars(_ count: Int) {
         guard y < height else { return }
-        var row = rows[y]
-        for column in x..<min(x + count, width) { row.cells[column] = square(" ") }
-        rows[y] = row
-        damage.rows.insert(place(y))
+        for column in x..<min(x + count, width) { rows[y].cells[column] = square(" ") }
+        damage.wroteCells = true
     }
 
     /// IL and DL: rows put in or taken out at the cursor, inside the
@@ -695,7 +695,7 @@ final class Screen {
         let blank = Array(repeating: Row(width: width), count: min(count, bottom - y + 1))
         let rest = rows[y...min(bottom, height - 1)]
         rows.replaceSubrange(y...min(bottom, height - 1), with: blank + rest.dropLast(blank.count))
-        for row in y...bottom { damage.rows.insert(place(row)) }
+        damage.wroteCells = true
     }
 
     func deleteRows(_ count: Int) {
@@ -704,29 +704,25 @@ final class Screen {
         let blank = Array(repeating: Row(width: width), count: gone)
         let rest = rows[(y + gone)...min(bottom, height - 1)]
         rows.replaceSubrange(y...min(bottom, height - 1), with: rest + blank)
-        for row in y...bottom { damage.rows.insert(place(row)) }
+        damage.wroteCells = true
     }
 
     /// ICH and DCH: squares put in or taken out at the cursor, the rest of
     /// the row sliding to or away from it.
     func insertChars(_ count: Int) {
         guard y < height, x < width else { return }
-        var row = rows[y]
         let slide = min(count, width - x)
-        row.cells.removeLast(slide)
-        row.cells.insert(contentsOf: Array(repeating: square(" "), count: slide), at: x)
-        rows[y] = row
-        damage.rows.insert(place(y))
+        rows[y].cells.removeLast(slide)
+        rows[y].cells.insert(contentsOf: Array(repeating: square(" "), count: slide), at: x)
+        damage.wroteCells = true
     }
 
     func deleteChars(_ count: Int) {
         guard y < height, x < width else { return }
-        var row = rows[y]
         let slide = min(count, width - x)
-        row.cells.removeSubrange(x..<(x + slide))
-        row.cells.append(contentsOf: Array(repeating: square(" "), count: slide))
-        rows[y] = row
-        damage.rows.insert(place(y))
+        rows[y].cells.removeSubrange(x..<(x + slide))
+        rows[y].cells.append(contentsOf: Array(repeating: square(" "), count: slide))
+        damage.wroteCells = true
     }
 
     /// The scrollback holds its limit; rows that fall out of it are gone,
@@ -752,12 +748,12 @@ final class Screen {
         if top == 0, !alternate {
             back.append(contentsOf: rows[0..<gone])
             trim()
-            damage.scrolled = true
+            damage.wroteCells = true
         }
         let blank = Array(repeating: Row(width: width), count: gone)
         let rest = top + gone <= bottom ? Array(rows[(top + gone)...bottom]) : []
         rows.replaceSubrange(top...bottom, with: rest + blank)
-        for row in top...bottom { damage.rows.insert(place(row)) }
+        damage.wroteCells = true
     }
 
     func scrollDown(_ count: Int) {
@@ -765,7 +761,7 @@ final class Screen {
         let blank = Array(repeating: Row(width: width), count: gone)
         let rest = bottom - gone >= top ? Array(rows[top...(bottom - gone)]) : []
         rows.replaceSubrange(top...bottom, with: blank + rest)
-        for row in top...bottom { damage.rows.insert(place(row)) }
+        damage.wroteCells = true
     }
 
     // MARK: Saving, keeping, resetting
@@ -836,7 +832,7 @@ final class Screen {
     func fillPattern() {
         for row in 0..<height {
             rows[row].cells = Array(repeating: Cell(char: "E"), count: width)
-            damage.rows.insert(place(row))
+            damage.wroteCells = true
         }
         x = 0
         y = 0

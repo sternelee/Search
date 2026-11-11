@@ -57,28 +57,27 @@ enum DockBox {
     private static var unit: CGFloat { size / 12 }
     /// How tall the plate is.
     static var height: CGFloat { 30 * unit }
-    /// The gap at the frame's left and right, matching the find panel's
-    /// inset, so the two boxes belong to the same window.
+    /// The inset the chrome's floating pieces keep from the frame's
+    /// edges: the status line's text and the scroll cue, which sit over
+    /// the full-bleed plate and the grid.
     static var margin: CGFloat { 14 * unit }
-    /// The gap at the frame's bottom — a plate further in than this sits
-    /// over the last row of a running command's output, which it does
-    /// anyway (the ground is translucent for exactly that), but the
-    /// hairline should clear the frame's own edge.
-    static var edge: CGFloat { 12 * unit }
+    /// The plate's seat on the status bar's hairline: half a point over
+    /// it, because the line is drawn on the half point and a plate seated
+    /// exactly beside it would leave the slit of a rounded-up pixel
+    /// between the two.
+    static var seat: CGFloat { 0.5 }
     /// The room the plate leaves before the prompt glyph.
     static var pad: CGFloat { 10 * unit }
     /// Between the prompt glyph and the line.
     static var gap: CGFloat { 7 * unit }
     /// The caret's width.
     static var bar: CGFloat { 2 * unit }
-    /// The air kept between the grid's last row and the plate's top —
-    /// the whole of the gap the person sees between the terminal's
-    /// content and the input line. Small and constant on purpose: the
-    /// plate hugs the rows (see `home(in:above:under:)`), so a window
-    /// whose height leaves slack under the last row puts that slack
-    /// below the plate — dead room among the chrome, where it belongs —
-    /// instead of letting it read as a gap between the output and the
-    /// input.
+    /// The air kept between the grid's last row and the plate's top.
+    /// Small and constant on purpose: the plate is pinned to the status
+    /// bar's hairline rather than raised with the rows, so a window whose
+    /// height leaves slack under the last row puts that slack above the
+    /// plate — the page's own bottom margin, where it reads as padding —
+    /// instead of lifting the input bar off its line.
     static var air: CGFloat { 4 * unit }
     /// How far a glyph rises on arrival, and the window it rises in:
     /// Metalterm's `rise` keypress — a fifth of a window, which is the
@@ -98,32 +97,15 @@ enum DockBox {
     /// shows through is the window's own ground, not text.
     static let ground: CGFloat = 0.82
 
-    /// Where the plate goes for a frame of a given size: pinned to the
-    /// bottom — above the status bar, which owns the frame's own edge —
-    /// spanning the width less a margin each side. Pure in the frame it
-    /// is handed (the only other input is the configured face's own
-    /// numbers), so the place can be checked without a terminal.
+    /// Where the plate goes for a frame of a given size: seated on the
+    /// status bar's hairline, the input joined to the line the frame's
+    /// bottom is drawn with — shoulders rounded, foot on the line — and
+    /// spanning the frame's full width, so the joined edge runs from
+    /// corner to corner. Pure in the frame it is handed (the only other
+    /// input is the configured face's own numbers), so the place can be
+    /// checked without a terminal.
     static func home(in bounds: CGRect, above bar: CGFloat) -> CGRect {
-        let width = max(120, bounds.width - margin * 2)
-        return NSRect(x: margin, y: edge + bar, width: width, height: height)
-    }
-
-    /// The same home, hugging the grid: `floor` is the bottom edge of the
-    /// grid's last row, and the plate rises into whatever slack the row
-    /// count left under it — never lower than the fixed home, never
-    /// nearer the rows than `air`. A plate pinned to the fixed home while
-    /// the rows end almost a whole row above it reads as a gap between
-    /// the content and the input line that is really just the grid's
-    /// rounding; hugging turns that gap into the constant `air`, and the
-    /// slack settles below the plate, over the status bar, where no one
-    /// reads it as the input line's margin.
-    static func home(in bounds: CGRect, above bar: CGFloat, under floor: CGFloat) -> CGRect {
-        let fixed = home(in: bounds, above: bar)
-        let hugged = floor - air - height
-        return NSRect(
-            x: fixed.minX, y: max(fixed.minY, hugged),
-            width: fixed.width, height: fixed.height
-        )
+        NSRect(x: 0, y: bar - seat, width: bounds.width, height: height)
     }
 }
 
@@ -722,9 +704,29 @@ final class TerminalDockPlate: NSView {
         // translucent, because the plate stays up while commands run and
         // a running command's last line is under it — dimmed, not hidden.
         let ground = TerminalDockPlate.ground
-        let plate = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7
+        // The plate is seated on the status bar's hairline rather than
+        // floating above it (see DockBox.home), so it is drawn with its
+        // shoulders rounded and its foot square: the foot is the line
+        // itself, and a rounded corner there would not sit on anything.
+        let box = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let shoulder: CGFloat = 7
+        let kappa: CGFloat = shoulder * 0.5523
+        let plate = NSBezierPath()
+        plate.move(to: NSPoint(x: box.minX, y: box.minY))
+        plate.line(to: NSPoint(x: box.minX, y: box.maxY - shoulder))
+        plate.curve(
+            to: NSPoint(x: box.minX + shoulder, y: box.maxY),
+            controlPoint1: NSPoint(x: box.minX, y: box.maxY - shoulder + kappa),
+            controlPoint2: NSPoint(x: box.minX + kappa, y: box.maxY)
         )
+        plate.line(to: NSPoint(x: box.maxX - shoulder, y: box.maxY))
+        plate.curve(
+            to: NSPoint(x: box.maxX, y: box.maxY - shoulder),
+            controlPoint1: NSPoint(x: box.maxX - kappa, y: box.maxY),
+            controlPoint2: NSPoint(x: box.maxX, y: box.maxY - shoulder + kappa)
+        )
+        plate.line(to: NSPoint(x: box.maxX, y: box.minY))
+        plate.close()
         ground.withAlphaComponent(DockBox.ground * p.plate).setFill()
         plate.fill()
         ink.withAlphaComponent(0.14 * p.plate).setStroke()
@@ -855,20 +857,15 @@ extension TerminalView {
         present()
     }
 
-    /// The plate over the frame's bottom, placed by every layout. While
-    /// the grid has rows it hugs them (see DockBox.home(in:above:under:))
-    /// — the bottom of the last row, less the air — so the gap between
-    /// the terminal's content and the input line is the air alone,
-    /// however much slack the row count left under the grid.
+    /// The plate over the frame's bottom, placed by every layout: seated
+    /// on the status bar's hairline and pinned there whatever the row
+    /// count left under the grid — slack between the grid's last row and
+    /// the plate's top reads as the page's own bottom margin, while the
+    /// same slack under a floating plate reads as an input bar that missed
+    /// its line.
     func placeDock() {
         guard let plate = dockPlate else { return }
-        if let floor = gridFloor {
-            plate.frame = DockBox.home(
-                in: bounds, above: statusBar.frame.height, under: floor
-            )
-        } else {
-            plate.frame = DockBox.home(in: bounds, above: statusBar.frame.height)
-        }
+        plate.frame = DockBox.home(in: bounds, above: statusBar.frame.height)
     }
 
     /// One frame of the dock: the engine's model put in the plate's

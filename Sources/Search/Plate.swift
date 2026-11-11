@@ -196,6 +196,10 @@ struct Line<Control: View>: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+        // One stop for the whole row: the title, its note and its control
+        // read together, so a switch is heard with the line it belongs to
+        // rather than as a bare toggle beside it.
+        .accessibilityElement(children: .combine)
     }
 
     private var heading: some View {

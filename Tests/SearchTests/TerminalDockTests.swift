@@ -454,26 +454,22 @@ final class TerminalDockTests: XCTestCase {
         XCTAssertEqual(DockBox.tall, 30, accuracy: 0.01)
         TerminalLook.size = was
     }
-    /// The hugging home: the plate rises into whatever slack the row count
-    /// left under the grid's last row, so the gap between the content and
-    /// the input line is the air alone — and it never drops below the
-    /// fixed home over the status bar.
-    func testThePlateHugsTheGridsLastRow() {
+    /// The pinned home: the plate sits on the status bar's hairline
+    /// whatever the row count left under the grid — slack between the
+    /// last row and the plate's top is the page's own bottom margin —
+    /// and spans the frame's full width, so the joined edge runs corner
+    /// to corner with no inset either side.
+    func testThePlateSitsOnTheHairlineWhateverTheSlack() {
         let bounds = CGRect(x: 0, y: 0, width: 400, height: 300)
         let bar: CGFloat = 34
-        let fixed = DockBox.home(in: bounds, above: bar)
-        // Slack under the last row: the plate rises, exactly the air
-        // between the row's bottom and the plate's top.
-        let floor: CGFloat = fixed.maxY + DockBox.air + 40
-        let hugged = DockBox.home(in: bounds, above: bar, under: floor)
-        XCTAssertEqual(floor - hugged.maxY, DockBox.air, accuracy: 0.01)
-        XCTAssertGreaterThan(hugged.minY, fixed.minY)
-        // No slack: the floor as low as the strip allows — the fixed home.
-        let low = DockBox.home(
-            in: bounds, above: bar,
-            under: bar + DockBox.edge + DockBox.height + DockBox.air
-        )
-        XCTAssertEqual(low.minY, fixed.minY, accuracy: 0.01)
+        let home = DockBox.home(in: bounds, above: bar)
+        // The seat itself: the plate grounds on the status bar's hairline
+        // rather than floating above it, half a point over the line the
+        // half-point stroke draws on.
+        XCTAssertEqual(home.minY, bar - DockBox.seat, accuracy: 0.01)
+        XCTAssertEqual(home.height, DockBox.height, accuracy: 0.01)
+        XCTAssertEqual(home.minX, 0, accuracy: 0.01)
+        XCTAssertEqual(home.width, bounds.width, accuracy: 0.01)
     }
     /// The Input Bar setting's off answer: a shell started with the dock
     /// on goes on reporting for as long as it lives, and the terminal

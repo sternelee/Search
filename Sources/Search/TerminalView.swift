@@ -81,6 +81,15 @@ final class TerminalView: NSView, NSTextInputClient {
     private var pick: ((Int, Int), (Int, Int))?
     /// The anchor a drag is picking from.
     private var anchor = (column: 0, row: 0)
+    /// How the press that started the current selection picks: one square
+    /// at a time, whole words, or whole lines — set by the press's own
+    /// count (single, double, triple), kept for the drag that follows it.
+    private var picking: Picking = .square
+
+    /// The ways a press picks. A drag keeps the way its press began.
+    enum Picking {
+        case square, word, line
+    }
     /// A drag in the dock, as the column where it started. Nil when the
     /// last mouseDown was not on the dock.
     private var dockDragStart: Int?
@@ -117,6 +126,10 @@ final class TerminalView: NSView, NSTextInputClient {
     /// like the plate — always there, told its news by the terminal (OSC
     /// 7), the turns of a block, and a slow tick.
     let statusBar: TerminalStatusBar
+    /// The pill over the bottom corner that says the frame is lifted into
+    /// the scrollback, and takes it back down on a press (see
+    /// TerminalScrollCue).
+    let scrollCue = TerminalScrollCue()
     /// The slow tick: git asked for again every couple of seconds, because
     /// a branch can move without this terminal being the one that moved
     /// it. One timer per view, gated down to nothing when there is nobody
@@ -135,6 +148,16 @@ final class TerminalView: NSView, NSTextInputClient {
         super.init(frame: .zero)
         wantsLayer = true
         addSubview(statusBar)
+        addSubview(scrollCue)
+        // The pill's press settles the frame at the bottom — the same
+        // settle a swipe down or an End makes, said once here rather than
+        // in the pill, which owns only the words.
+        scrollCue.onPress = { [weak self] in
+            guard let self else { return }
+            lift = 0
+            pick = nil
+            present()
+        }
         terminal.onDraw = { [weak self] damage, modes in self?.moved(damage, modes) }
         // The dock's reports (OSC 7784) come through their own word: the
         // line the shell's editor holds, put on a plate over the bottom of
@@ -150,6 +173,10 @@ final class TerminalView: NSView, NSTextInputClient {
         statusAsk = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.pollStatus()
         }
+        // A slow tick nobody needs exact: the clock is only a rhythm to
+        // re-ask git by, and a Mac with many terminals open wakes less
+        // for a tolerant one.
+        statusAsk?.tolerance = 0.5
         // A glyph the atlas had to cut is a square some frame drew blank
         // (see TerminalAtlas), so the frame after it is worth asking for —
         // and on a terminal that is otherwise idle there is nothing else
@@ -201,13 +228,26 @@ final class TerminalView: NSView, NSTextInputClient {
             watchingKey = [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification]
                 .map { name in
                     NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                        MainActor.assumeIsolated { self?.settleFocus() }
+                        MainActor.assumeIsolated {
+                            self?.settleFocus()
+                            // The caret's own ink and blink follow the
+                            // window's keyness too (a window that lost it
+                            // keeps its first responder), and nothing else
+                            // owes the frame that shows the change.
+                            self?.present()
+                        }
                     }
                 }
         }
         // A terminal that left its window has no display to keep time by
         // and nothing to draw for; one that arrived has a frame waiting.
-        if window == nil { pacer.detach() } else { present() }
+        if window == nil {
+            pacer.detach()
+            statusAsk?.fireDate = .distantFuture
+        } else {
+            present()
+            statusAsk?.fireDate = Date(timeIntervalSinceNow: 2)
+        }
         settleFocus()
     }
 
@@ -218,11 +258,15 @@ final class TerminalView: NSView, NSTextInputClient {
     override func viewDidHide() {
         super.viewDidHide()
         pacer.detach()
+        // The bar's tick too: a pane nobody can see has no branch to
+        // show, and its git is not worth a process every two seconds.
+        statusAsk?.fireDate = .distantFuture
     }
 
     override func viewDidUnhide() {
         super.viewDidUnhide()
         present()
+        statusAsk?.fireDate = Date(timeIntervalSinceNow: 2)
     }
 
     override func layout() {
@@ -261,18 +305,9 @@ final class TerminalView: NSView, NSTextInputClient {
     /// and the multiline `off` state — `Ctrl-X !`, a pasted newline —
     /// frees it too, so the grid the editor is used in is the whole
     /// grid.
-    /// The bottom edge of the grid's last row, in the frame's own points —
-    /// the line the dock's plate hugs (see placeDock). Nil before the grid
-    /// has been sized, which is the one moment the plate falls back to its
-    /// fixed home.
-    var gridFloor: CGFloat? {
-        guard let paint, sized.height > 0 else { return nil }
-        return bounds.height - TerminalDraw.inset - paint.cell.height * CGFloat(sized.height)
-    }
-
     private var dockStrip: CGFloat {
         guard dockPlate != nil else { return 0 }
-        return DockBox.edge + DockBox.height + DockBox.air
+        return DockBox.height + DockBox.air
     }
 
     /// The status bar's own height, always two rows of the grid: kept
@@ -478,7 +513,7 @@ final class TerminalView: NSView, NSTextInputClient {
         // the blink is drawn).
         if dock.owns, dockPlate != nil {
             if dock.blinkClock(at: CACurrentMediaTime()) { pacer.want(.caret) }
-        } else if modes.cursorBlinks != false, TerminalLook.blinks, window?.firstResponder === self, caretIsLive {
+        } else if modes.cursorBlinks != false, TerminalLook.blinks, !Motion.reduced, holdsKeyboard, caretIsLive {
             pacer.want(.caret)
         } else {
             pacer.settleCaret()
@@ -491,6 +526,11 @@ final class TerminalView: NSView, NSTextInputClient {
     private func frame() {
         guard let paint, var scene = terminal.scene(scroll: lift) else { return }
         lift = min(lift, scene.back)
+        // The pill says where the frame is — the one mark of a lifted
+        // frame, the caret being absent lifted. Placed here, over the
+        // status bar and whatever strip the dock holds, every frame; the
+        // pill itself draws only when the lift changes.
+        scrollCue.update(lift: lift, in: bounds, above: statusBar.frame.height + dockStrip)
         links = scene.links
         linked = scene.links.isEmpty ? [] : runs(of: scene)
         // it is drawn here, by marking the copy of the scene the frame is
@@ -543,9 +583,7 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         if let veiled {
             for row in veiled {
-                for column in 0..<scene.lines[row].cells.count {
-                    scene.lines[row].cells[column] = Cell()
-                }
+                scene.lines[row].cells = Array(repeating: Cell(), count: scene.lines[row].cells.count)
             }
         }
         // Words wearing SGR 5 keep blinking while any are on the screen,
@@ -568,7 +606,7 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         paint.update(
             scene: scene, damage: owed, selection: selection(in: scene),
-            strong: window?.firstResponder === self,
+            strong: holdsKeyboard,
             cursor: veiled != nil ? false : pacer.caretShown,
             finds: finds(in: scene), found: found(in: scene),
             reversed: modes.reversed, blinking: pacer.blinkShown
@@ -744,6 +782,8 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         // And the status bar's face is the look's own too — its height
         // moves with it, and the layout that follows places it.
+        statusBar.refont()
+        scrollCue.refont()
         // Cells of a different size — a new face, or more room left at the
         // edges — fit in a different number: the layout has to be worked out
         // again, which presents the frame.
@@ -1014,6 +1054,41 @@ final class TerminalView: NSView, NSTextInputClient {
         return (min(at.column, sized.width - 1), min(at.row, sized.height - 1))
     }
 
+    /// The cells of one row of the frame as it stands, counted from its
+    /// top — scrollback, screen or the blank of a lift past the
+    /// beginning, whatever the frame is showing there. Read in one look,
+    /// for a press and its drag, not on a frame: a frame reads the rows
+    /// it wants through the scene it is already drawing.
+    private func row(_ index: Int) -> [Cell]? {
+        // An empty answer for a row the frame is not holding — past the
+        // top of the scrollback or below the screen — so the look itself
+        // can stay a plain ask.
+        let cells = terminal.look(scroll: lift) { screen, lifted -> [Cell] in
+            let at = screen.back.count + index - lifted
+            if at < 0 { return [] }
+            if at < screen.back.count { return screen.back[at].cells }
+            let live = at - screen.back.count
+            guard live < screen.rows.count else { return [] }
+            return screen.rows[live].cells
+        } ?? []
+        return cells.isEmpty ? nil : cells
+    }
+
+    /// The run of columns a double press means: the word under the
+    /// column, or — over a blank — the blanks themselves, which is what a
+    /// press in the room between words has to mean. A wide cell's own
+    /// trailing blank is part of the word it belongs to.
+    private func words(at column: Int, in cells: [Cell]) -> Range<Int> {
+        guard !cells.isEmpty else { return 0..<0 }
+        let at = min(max(column, 0), cells.count - 1)
+        let blank = { (cell: Cell) in cell.char == " " && !cell.wide }
+        let space = blank(cells[at])
+        var low = at, high = at
+        while low > 0, blank(cells[low - 1]) == space { low -= 1 }
+        while high < cells.count - 1, blank(cells[high + 1]) == space { high += 1 }
+        return low..<(high + 1)
+    }
+
     /// A point as the frame counts it. This view is not flipped, so its own
     /// y runs up from the bottom — AppKit's way — and the frame's rows run
     /// down from the top, which is where the renderer draws row 0.
@@ -1161,6 +1236,24 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         pick = nil
         anchor = spot
+        // A double press picks the word under it whole, a triple the line
+        // it is on — and the drag that follows either keeps picking the
+        // same way, so the selection grows word by word or line by line
+        // rather than falling back to square one.
+        if event.clickCount == 2 {
+            picking = .word
+            if let cells = row(spot.row) {
+                let word = words(at: spot.column, in: cells)
+                pick = ((word.lowerBound, spot.row), (word.upperBound - 1, spot.row))
+            }
+        } else if event.clickCount >= 3 {
+            picking = .line
+            if let cells = row(spot.row) {
+                pick = ((0, spot.row), (cells.count - 1, spot.row))
+            }
+        } else {
+            picking = .square
+        }
         present()
     }
 
@@ -1181,7 +1274,21 @@ final class TerminalView: NSView, NSTextInputClient {
             terminal.pour(report(number(of: event), at: at, dragging: true, event))
             return
         }
-        pick = ((anchor.column, anchor.row), (spot.column, spot.row))
+        switch picking {
+        case .square:
+            pick = ((anchor.column, anchor.row), (spot.column, spot.row))
+        case .word:
+            guard let around = row(anchor.row), let cells = row(spot.row) else { break }
+            let first = words(at: anchor.column, in: around)
+            let last = words(at: spot.column, in: cells)
+            pick = (
+                (min(first.lowerBound, last.lowerBound), min(anchor.row, spot.row)),
+                (max(first.upperBound, last.upperBound) - 1, max(anchor.row, spot.row))
+            )
+        case .line:
+            guard let cells = row(anchor.row) else { break }
+            pick = ((0, min(anchor.row, spot.row)), (cells.count - 1, max(anchor.row, spot.row)))
+        }
         present()
     }
 

@@ -1796,26 +1796,32 @@ struct Segmented<Option: Hashable>: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.0) { option, title in
-                Text(title)
-                    .font(.system(size: 11.5, weight: option == selection ? .medium : .regular))
-                    .foregroundStyle(option == selection ? Palette.ink : Palette.muted)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: !wide, vertical: false)
-                    .frame(maxWidth: wide ? .infinity : nil)
-                    .padding(.horizontal, wide ? 4 : 10)
-                    .padding(.vertical, 5)
-                    .background {
-                        if option == selection {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Palette.ground)
-                                .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
-                                .matchedGeometryEffect(id: "chosen", in: slide)
+                // A button rather than a bare tap, for the keyboard and
+                // for whatever is listening in accessibility terms; the
+                // traits say which of the choices is the one standing.
+                Button {
+                    withAnimation(Motion.settle) { selection = option }
+                } label: {
+                    Text(title)
+                        .font(.system(size: 11.5, weight: option == selection ? .medium : .regular))
+                        .foregroundStyle(option == selection ? Palette.ink : Palette.muted)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: !wide, vertical: false)
+                        .frame(maxWidth: wide ? .infinity : nil)
+                        .padding(.horizontal, wide ? 4 : 10)
+                        .padding(.vertical, 5)
+                        .background {
+                            if option == selection {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(Palette.ground)
+                                    .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
+                                    .matchedGeometryEffect(id: "chosen", in: slide)
+                            }
                         }
-                    }
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .onTapGesture {
-                        withAnimation(Motion.settle) { selection = option }
-                    }
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(option == selection ? [.isButton, .isSelected] : .isButton)
             }
         }
         .padding(2)
@@ -1829,18 +1835,28 @@ struct Switch: View {
     @Binding var on: Bool
 
     var body: some View {
-        Capsule()
-            .fill(on ? Palette.ink : Palette.faint)
-            .frame(width: 30, height: 18)
-            .overlay(alignment: on ? .trailing : .leading) {
-                Circle()
-                    .fill(Palette.ground)
-                    .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
-                    .padding(2)
-            }
-            .contentShape(Capsule())
-            .onTapGesture { withAnimation(Motion.settle) { on.toggle() } }
-            .animation(Motion.settle, value: on)
+        // A button rather than a bare tap: a press that arrives from the
+        // keyboard (Full Keyboard Access) or from whatever is listening in
+        // accessibility terms lands in the same place a click does, and
+        // the traits below say what it is and which way it stands.
+        Button {
+            withAnimation(Motion.settle) { on.toggle() }
+        } label: {
+            Capsule()
+                .fill(on ? Palette.ink : Palette.faint)
+                .frame(width: 30, height: 18)
+                .overlay(alignment: on ? .trailing : .leading) {
+                    Circle()
+                        .fill(Palette.ground)
+                        .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+                        .padding(2)
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(on ? "On" : "Off")
+        .animation(Motion.settle, value: on)
     }
 }
 
@@ -1894,6 +1910,8 @@ struct Steps: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            // The glyphs are pictures; what they do wants saying in words.
+            .accessibilityLabel(icon == "minus" ? "Decrease" : "Increase")
             .disabled(to == nil)
             .onHover { hovering = $0 }
             .animation(Motion.quick, value: hovering)

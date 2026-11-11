@@ -427,9 +427,10 @@ final class TerminalFieldPanel: NSView {
     required init?(coder: NSCoder) { nil }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // Only the field itself takes a click: the plate is scenery, and a
-        // click beside the words must reach the terminal under it.
-        super.hitTest(point).flatMap { $0 === self ? nil : $0 }
+        // Only the field itself takes a click: the plate is scenery, the
+        // count beside it is too, and a click beside the words must reach
+        // the terminal under it.
+        super.hitTest(point).flatMap { $0 === field ? $0 : nil }
     }
 
     /// The ink of the words in it, and of everything drawn on it.

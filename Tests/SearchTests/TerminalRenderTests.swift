@@ -416,7 +416,7 @@ final class TerminalRenderTests: XCTestCase {
             lines: [rows[1], rows[2], rows[3], line("echo")], caret: nil,
             width: 10, height: 4, back: 0, top: 101
         )
-        paint.update(scene: moved, damage: Damage(scrolled: true), selection: nil, strong: true)
+        paint.update(scene: moved, damage: Damage(wroteCells: true), selection: nil, strong: true)
         let scrolled = try pixels(of: paint)
 
         paint.refresh(scene: moved, selection: nil, strong: true)
@@ -447,7 +447,7 @@ final class TerminalRenderTests: XCTestCase {
         for word in ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"] {
             parser.feed(Array((word + "\r\n").utf8))
             let frame = screen.scene(lifted: 0)
-            paint.update(scene: frame, damage: Damage(scrolled: true), selection: nil, strong: true)
+            paint.update(scene: frame, damage: Damage(wroteCells: true), selection: nil, strong: true)
             let drawn = try pixels(of: paint)
 
             paint.refresh(scene: frame, selection: nil, strong: true)

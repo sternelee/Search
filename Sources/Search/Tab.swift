@@ -922,7 +922,7 @@ final class Tab: ObservableObject, Identifiable {
     /// A chat tab is never one of these blanks to be reused or cleaned
     /// away, and neither is one of Search's own pages. A shell is somewhere
     /// already, and never blank.
-    var isBlank: Bool { !chat && shell == nil && address == nil && page == nil }
+    var isBlank: Bool { !chat && !isTerminal && shell == nil && address == nil && page == nil }
 
     /// A tab with a web page — loaded, on its way or asleep — as opposed to
     /// an empty one, one of Search's own pages, or a shell.

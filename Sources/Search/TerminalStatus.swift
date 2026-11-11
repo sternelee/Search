@@ -108,12 +108,21 @@ enum TerminalGit {
     /// oftener than they change.
     private static let queue = DispatchQueue(label: "search.terminal.git", qos: .utility)
 
+    /// The folders a git is already out for. Panes that share a folder
+    /// ask together, and a second ask whose first is still out — a slow
+    /// mount holds one for its whole deadline — is a queue that only
+    /// grows; the guard keeps one git per folder in the air, no more.
+    /// Touched only on the queue, which is serial.
+    private static var asking: Set<String> = []
+
     /// `git status --porcelain=v2 --branch` in a folder, handed back on
     /// the main thread. Nil when git said nothing usable — not installed,
     /// no repository, or slow past the deadline.
     static func read(cwd: URL, then: @escaping @MainActor (GitStatus?) -> Void) {
         queue.async {
+            guard asking.insert(cwd.path).inserted else { return }
             let said = ask(cwd: cwd)
+            asking.remove(cwd.path)
             Task { @MainActor in then(said) }
         }
     }
@@ -164,10 +173,18 @@ final class TerminalStatusBar: NSView {
 
     private var picture = Picture()
 
-    /// The face the bar writes with — the terminal's own, a step down from
-    /// the dock's, which is a step down from the grid's. Re-read when the
-    /// look changes.
-    private var face = TerminalLook.face(size: 11)
+    /// The face the bar writes with — the terminal's own furniture size
+    /// (see `chrome`). Re-read when the look changes.
+    private var face = TerminalLook.face(size: TerminalStatusBar.chrome)
+    /// The size the frame's furniture writes at: eleven points at the
+    /// configured face's home, and the same share of it anywhere else.
+    /// The bar is two rows of the grid tall, and a face left at eleven
+    /// while the grid grew to twenty-four would be a whisper under a
+    /// shout; one grown past twenty would be furniture shouting over the
+    /// grid. The scrollback's pill takes the same size, so the two agree.
+    static var chrome: CGFloat {
+        min(20, max(10, (11 * TerminalLook.size / TerminalLook.home).rounded()))
+    }
     /// The width of one glyph in it, measured once rather than asked of
     /// every glyph.
     private var advance: CGFloat = 0
@@ -184,7 +201,7 @@ final class TerminalStatusBar: NSView {
 
     /// The look changed: the face, and with it the measure of a cell.
     func refont() {
-        face = TerminalLook.face(size: 11)
+        face = TerminalLook.face(size: TerminalStatusBar.chrome)
         remeasure()
         needsDisplay = true
     }

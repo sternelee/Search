@@ -87,47 +87,13 @@ private final class TerminalLane: @unchecked Sendable {
 
         // The reading itself: woken when there is something to read, fed
         // until the kernel says there is nothing more, the damage handed
-        // over once at the end of it — one look a reading, whether the
+        // over at the end of it — one look a reading, whether the
         // reading was one character or a whole log.
-        let reads = DispatchSource.makeReadSource(fileDescriptor: master, queue: queue)
+        let reads = DispatchSource.makeReadSource(
+            fileDescriptor: master, queue: queue
+        )
         reads.setEventHandler { [weak self] in
-            guard let self, self.reading != nil else { return }
-            var closed = false
-            // Drain everything the kernel has, not one short read per wake:
-            // `poll` says whether there is more, and a read from a ready
-            // pty returns what is there rather than waiting for a full
-            // buffer. A line-at-a-time program then costs one reading for
-            // the whole burst, not one reading per line.
-            var waiting = pollfd(fd: self.master, events: Int16(POLLIN), revents: 0)
-            while true {
-                guard poll(&waiting, 1, 0) > 0 else { break }
-                let flags = waiting.revents
-                waiting.revents = 0
-                if flags & Int16(POLLIN) != 0 {
-                    let taken = read(self.master, &self.buffer, self.buffer.count)
-                    if taken > 0 {
-                        self.parser.feed(self.buffer[0..<taken])
-                        continue
-                    }
-                    if taken == 0 {
-                        closed = true
-                        break
-                    }
-                    if errno == EINTR { continue }
-                    closed = errno == EIO
-                    break
-                }
-                // A slave that has gone leaves the master readable for the
-                // hang-up and nothing else; not saying so would leave the
-                // read source firing at a lane with nothing to read, and
-                // the program's own end waiting behind it forever.
-                if flags & Int16(POLLHUP | POLLERR | POLLNVAL) != 0 { closed = true }
-                break
-            }
-            self.deliver()
-            if closed {
-                reads.cancel()
-            }
+            self?.drain()
         }
         reads.setCancelHandler { [weak self] in
             guard let self else { return }
@@ -166,6 +132,60 @@ private final class TerminalLane: @unchecked Sendable {
         }
         dying = dies
         dies.resume()
+    }
+
+    /// One reading: everything the kernel has, up to one buffer's worth
+    /// parsed and delivered in a turn, the rest left for the queue's next
+    /// turn. A program that writes without end (`yes`) would otherwise
+    /// hold the lane for as long as it can write, and a frame asking for
+    /// the screen (see `Terminal.scene`) would wait behind all of it —
+    /// one buffer a turn is a wait with an end to it, and the turns
+    /// between are where the waiting frame gets in.
+    private func drain() {
+        guard reading != nil else { return }
+        var closed = false
+        // Drain everything the kernel has, not one short read per wake:
+        // `poll` says whether there is more, and a read from a ready
+        // pty returns what is there rather than waiting for a full
+        // buffer. A line-at-a-time program then costs one reading for
+        // the whole burst, not one reading per line.
+        var waiting = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+        while true {
+            guard poll(&waiting, 1, 0) > 0 else { break }
+            let flags = waiting.revents
+            waiting.revents = 0
+            if flags & Int16(POLLIN) != 0 {
+                let taken = read(master, &buffer, buffer.count)
+                if taken > 0 {
+                    parser.feed(buffer[0..<taken])
+                    deliver()
+                    // More said than one reading should hold: the rest on
+                    // the queue's next turn, after whoever is waiting
+                    // behind this one has had their turn.
+                    if poll(&waiting, 1, 0) > 0, waiting.revents & Int16(POLLIN) != 0 {
+                        queue.async { [weak self] in self?.drain() }
+                    }
+                    return
+                }
+                if taken == 0 {
+                    closed = true
+                    break
+                }
+                if errno == EINTR { continue }
+                closed = errno == EIO
+                break
+            }
+            // A slave that has gone leaves the master readable for the
+            // hang-up and nothing else; not saying so would leave the
+            // read source firing at a lane with nothing to read, and
+            // the program's own end waiting behind it forever.
+            if flags & Int16(POLLHUP | POLLERR | POLLNVAL) != 0 { closed = true }
+            break
+        }
+        deliver()
+        if closed {
+            reading?.cancel()
+        }
     }
 
     /// Take the screen's damage and hand it over, with the modes as they

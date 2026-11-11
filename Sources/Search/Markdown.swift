@@ -165,12 +165,12 @@ enum Markdown {
 
 // MARK: - blocks
 
-private indirect enum MarkdownBlock {
+private indirect enum MarkdownParserBlock {
     case heading(Int, String)
     case paragraph(String)
     case code(String?, String)
-    case quote([MarkdownBlock])
-    case list(ordered: Bool, start: Int, items: [[MarkdownBlock]], checks: [Bool?], tight: Bool)
+    case quote([MarkdownParserBlock])
+    case list(ordered: Bool, start: Int, items: [[MarkdownParserBlock]], checks: [Bool?], tight: Bool)
     case rule
     case table(head: [String], aligns: [String?], rows: [[String]])
     /// A line of tags written in the source, rebuilt through Inline.tag.
@@ -190,8 +190,8 @@ private struct MarkdownParser {
 
     // MARK: reading lines into blocks
 
-    func blocks(_ lines: ArraySlice<Substring>) -> [MarkdownBlock] {
-        var out: [MarkdownBlock] = []
+    func blocks(_ lines: ArraySlice<Substring>) -> [MarkdownParserBlock] {
+        var out: [MarkdownParserBlock] = []
         var i = lines.startIndex
         while i < lines.endIndex {
             let line = lines[i]
@@ -340,7 +340,7 @@ private struct MarkdownParser {
         return nil
     }
 
-    static func atx(_ bare: String) -> MarkdownBlock? {
+    static func atx(_ bare: String) -> MarkdownParserBlock? {
         let hashes = bare.prefix(while: { $0 == "#" }).count
         guard (1...6).contains(hashes) else { return nil }
         let rest = bare.dropFirst(hashes)
@@ -410,7 +410,7 @@ private struct MarkdownParser {
         return Marker(indent: indent, ordered: ordered, start: start, sign: sign, content: indent + width)
     }
 
-    func list(_ lines: ArraySlice<Substring>, from begin: Int) -> (MarkdownBlock, Int) {
+    func list(_ lines: ArraySlice<Substring>, from begin: Int) -> (MarkdownParserBlock, Int) {
         guard let first = Self.marker(lines[begin]) else { return (.paragraph(String(lines[begin])), begin + 1) }
         var items: [[Substring]] = []
         var current: [Substring] = []
@@ -460,7 +460,7 @@ private struct MarkdownParser {
         }
         items.append(current)
         // Blank lines at the very end belong to whatever follows.
-        var parsed: [[MarkdownBlock]] = []
+        var parsed: [[MarkdownParserBlock]] = []
         var checks: [Bool?] = []
         for var item in items {
             while item.last?.isEmpty == true { item.removeLast() }
@@ -526,7 +526,7 @@ private struct MarkdownParser {
         return cells
     }
 
-    func table(_ lines: ArraySlice<Substring>, from begin: Int) -> (MarkdownBlock, Int) {
+    func table(_ lines: ArraySlice<Substring>, from begin: Int) -> (MarkdownParserBlock, Int) {
         let head = Self.row(String(lines[begin]))
         let aligns = Self.delimiters(lines[begin + 1]) ?? []
         var rows: [[String]] = []
@@ -543,7 +543,7 @@ private struct MarkdownParser {
     // MARK: drawing blocks
 
     /// A tag that stood aside draws nothing, and leaves no gap for it.
-    mutating func render(_ blocks: [MarkdownBlock], tight: Bool) -> String {
+    mutating func render(_ blocks: [MarkdownParserBlock], tight: Bool) -> String {
         var parts: [String] = []
         for block in blocks {
             let html = render(block, tight: tight)
@@ -552,7 +552,7 @@ private struct MarkdownParser {
         return parts.joined(separator: "\n")
     }
 
-    mutating func render(_ block: MarkdownBlock, tight: Bool) -> String {
+    mutating func render(_ block: MarkdownParserBlock, tight: Bool) -> String {
         switch block {
         case .heading(let level, let text):
             var id = Markdown.slug(text)

@@ -89,7 +89,7 @@ final class TerminalGridTests: XCTestCase {
         XCTAssertEqual(screen.backBase, 0)
         XCTAssertEqual(screen.place(0), 1, "the top row is now the second place there ever was")
         let taken = screen.take()
-        XCTAssertTrue(taken.scrolled)
+        XCTAssertTrue(taken.wroteCells, "the scroll rewrote every row")
     }
 
     func testScrollRegionHoldsItsBounds() {
@@ -267,7 +267,7 @@ final class TerminalGridTests: XCTestCase {
         XCTAssertEqual(screen.x, 0)
         let taken = screen.take()
         XCTAssertTrue(taken.overturned)
-        XCTAssertTrue(taken.scrolled)
+        XCTAssertTrue(taken.wroteCells)
     }
 
     // MARK: Blocks
@@ -299,7 +299,7 @@ final class TerminalGridTests: XCTestCase {
         XCTAssertTrue(screen.take().empty)
         type(screen, "hi")
         let taken = screen.take()
-        XCTAssertEqual(taken.rows, [0])
+        XCTAssertTrue(taken.wroteCells, "the typed row is owed a redraw")
         XCTAssertTrue(screen.take().empty)
         screen.reset()
         XCTAssertTrue(screen.take().overturned)
@@ -316,7 +316,7 @@ final class TerminalGridTests: XCTestCase {
         screen.move(to: 3, row: 2)
         let moved = screen.take()
         XCTAssertTrue(moved.moved, "the caret is somewhere else now")
-        XCTAssertTrue(moved.rows.isEmpty, "and not one cell changed with it")
+        XCTAssertFalse(moved.wroteCells, "and not one cell changed with it")
         XCTAssertTrue(screen.take().empty, "taken, not watched")
     }
 
