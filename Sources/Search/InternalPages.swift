@@ -15,7 +15,7 @@ import SwiftUI
 /// Which of Search's own pages, and where inside it.
 struct InternalPage: Equatable {
     enum Kind: String, CaseIterable {
-        case settings, history, downloads, bookmarks, passwords
+        case settings, history, downloads, bookmarks, passwords, archive
         case importing = "import"
         case notes = "release-notes"
     }
@@ -55,6 +55,7 @@ struct InternalPage: Equatable {
         case .downloads: return "Downloads"
         case .bookmarks: return "Bookmarks"
         case .passwords: return "Passwords"
+        case .archive: return "Archived Tabs"
         case .importing: return "Bring Things Over"
         case .notes: return "What's New"
         }
@@ -67,6 +68,7 @@ struct InternalPage: Equatable {
         case .downloads: return "arrow.down.circle"
         case .bookmarks: return "book"
         case .passwords: return "key"
+        case .archive: return "archivebox"
         case .importing: return "square.and.arrow.down"
         case .notes: return "sparkles"
         }
@@ -124,10 +126,20 @@ struct InternalPageView: View {
     var body: some View {
         content
             .environment(\.asTab, true)
+            // In English, as the words are: symbols the Mac draws per
+            // language (textformat.size) came out as 大小 for someone whose
+            // Mac is in Chinese (#1049). The region stays theirs.
+            .environment(\.locale, Locale(languageCode: .english, languageRegion: Locale.current.region))
             // Its own state for each kind: History's search box doesn't
             // follow you into Downloads.
             .id(page.kind)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // As large as the room it is given and never larger: Settings
+            // can't be narrower than about 540 points, and in a narrower
+            // pane of a pair its frame grew to that and was drawn centred
+            // on the pane, past both of its edges — over the page beside it
+            // and over the tabs column, seen through with Glass on (idea
+            // 833). Held to the pane, from its leading edge, and cut there.
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
             .background(Palette.ground)
             .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
             // In a pair, a click on this page makes it the one with the keys,
@@ -159,6 +171,8 @@ struct InternalPageView: View {
             // yet" while the sign-in box offered the accounts.
             PasswordsPanel(browser: browser)
                 .onAppear { browser.relist() }
+        case .archive:
+            ArchivePanel(browser: browser, archive: browser.archive)
         case .importing:
             ImportPanel(browser: browser)
         case .notes:

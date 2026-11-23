@@ -1,9 +1,11 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // Downloads by its button (Settings › Downloads › Open Downloads): the
-// side panel's card, as wide as the panel is and a quarter of the window's
-// height, floating beside the button instead of taking room from the page.
+// side panel's card, as wide as the panel is and as tall as what it lists,
+// up to half the window's height, floating beside the button instead of
+// taking room from the page.
 // Its own small window, as the site card's is (SiteCard.swift): it never
 // takes the keys, so the page keeps them, and a click on the card is only a
 // click. It grows in from the button's corner and shrinks back into it,
@@ -20,6 +22,8 @@ enum DownloadsFloat {
     private static weak var anchor: NSView?
     private static var edge: Edge = .bottom
     private static var watches: [Any] = []
+    /// The list changing while the card is in: it grows or shrinks to it.
+    private static var listening: [AnyCancellable] = []
     private static var monitor: Any?
 
     /// Beside `button`, in `browser`'s window. `edge`: the side of the button
@@ -32,14 +36,8 @@ enum DownloadsFloat {
         anchor = button
         self.edge = edge
 
-        let card = DownloadsPanel(browser: browser, loot: browser.loot, compact: true,
-                                  close: { browser.downloadsHanging = false })
-            // As tall as the card, as the side panel's list is.
-            .environment(\.asTab, true)
-            .background(Palette.ground)
-            .modifier(CardEdge(on: true))
         let presence = Presence()
-        let host = FirstClick(rootView: AnyView(Arrival(presence: presence, edge: edge) { card }))
+        let host = FirstClick(rootView: content(browser, edge: edge, presence: presence))
         let panel = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                           backing: .buffered, defer: false)
         panel.contentView = host
@@ -50,12 +48,23 @@ enum DownloadsFloat {
         // card's smallest.
         panel.hasShadow = false
         panel.becomesKeyOnlyIfNeeded = true
+        // The window's frame is moved by place() alone, once, animated:
+        // the hosting view must not also resize it to the card's ideal size
+        // as the list changes, which made the two fight.
+        host.sizingOptions = []
         panel.hidesOnDeactivate = true
         panel.appearance = window.appearance
         self.panel = panel
         self.presence = presence
         place()
         window.addChildWindow(panel, ordered: .above)
+        // A download coming in or the list cleared: the card's height
+        // follows. Published before the change, so measured after it.
+        let relayout: (Any) -> Void = { _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { if self.presence === presence { place(animated: true) } } }
+        }
+        listening = [browser.loot.$kept.dropFirst().sink(receiveValue: relayout),
+                     browser.fetches.$entries.dropFirst().sink(receiveValue: relayout)]
         // In, from the next frame: the first one draws it as it starts.
         DispatchQueue.main.async {
             guard self.presence === presence else { return }
@@ -97,6 +106,7 @@ enum DownloadsFloat {
     static func hide(animated: Bool = false) {
         watches.forEach(NotificationCenter.default.removeObserver)
         watches = []
+        listening = []
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         if let leaving { take(leaving) }
@@ -142,43 +152,82 @@ enum DownloadsFloat {
     }
 
     /// Room around the card, inside its window, for its shadow and for it
-    /// to grow into — on every side but the one toward the button, so the
-    /// window, margin and all, never lies over the button and takes the
-    /// click meant for it.
+    /// to grow into. Toward the button only the gap between them, so the
+    /// window, margin and all, reaches the button's edge and never lies over
+    /// it to take the click meant for it. None there cut the card's shadow
+    /// and edge off flat on that side: its left, beside the column.
     static let margin: CGFloat = 24
 
+    /// What the card keeps from its button, which is also the window's margin
+    /// on that side: the card's shadow (radius 9, which reaches about 17 points) fades out inside it.
+    /// At the column's 8 points it was cut off flat at the window's edge.
+    static let nearGap: CGFloat = 18
+
     static func insets(_ edge: Edge) -> EdgeInsets {
-        EdgeInsets(top: edge == .bottom ? 0 : margin, leading: edge == .trailing ? 0 : margin,
-                   bottom: edge == .top ? 0 : margin, trailing: edge == .leading ? 0 : margin)
+        let near = nearGap
+        return EdgeInsets(top: edge == .bottom ? near : margin, leading: edge == .trailing ? near : margin,
+                          bottom: edge == .top ? near : margin, trailing: edge == .leading ? near : margin)
     }
 
-    /// Beside the button, as wide as the side panel and a quarter of the
-    /// window's height: under a button in the row, its right edge with the
-    /// button's; beside one at the column's foot, level with its bottom, on
-    /// the side away from the column's edge. Kept inside the window and its
-    /// screen, and never over the button: short of room on the button's
-    /// side, it is smaller rather than pushed back onto it.
-    private static func place() {
+    /// Beside the button, as wide as the side panel and as tall as what it
+    /// lists, up to half the window's height: under a button in the row,
+    /// its right edge with the button's; beside one at the column's foot,
+    /// level with its bottom, on the side away from the column's edge. Kept
+    /// inside the window and its screen, and never over the button: short
+    /// of room on the button's side, it is smaller rather than pushed back
+    /// onto it.
+    private static func place(animated: Bool = false) {
         guard let panel, let anchor, let window = anchor.window, let owner else { return }
         let gap = Metrics.cardGap
         let button = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
         var room = window.convertToScreen(window.contentLayoutRect).insetBy(dx: gap, dy: gap)
         if let screen = window.screen?.visibleFrame { room = room.intersection(screen) }
+        let windowHeight = window.contentLayoutRect.height
+        let widest = layout(edge: edge, button: button, room: room, width: owner.prefs.sidePanelWidth,
+                            windowHeight: windowHeight)
         let spot = layout(edge: edge, button: button, room: room, width: owner.prefs.sidePanelWidth,
-                          windowHeight: window.contentLayoutRect.height)
-        panel.setFrame(spot.window, display: true)
+                          windowHeight: windowHeight, content: height(of: owner, width: widest.card.width))
+        move(panel, to: spot.window, animated: animated)
+    }
+
+    /// One animation of the window's frame, by Core Animation, while the
+    /// card inside only follows the window's size: its content has no
+    /// animation of its own to compete with it (a height animated by
+    /// SwiftUI and a frame set every pass together was the jank).
+    static func move(_ panel: NSWindow, to frame: NSRect, animated: Bool) {
+        guard animated, !Motion.reduced, panel.isVisible, panel.frame != frame else {
+            panel.setFrame(frame, display: true)
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Motion.light ? 0.16 : 0.22
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(frame, display: true)
+        }
+    }
+
+    /// How tall the card would be to show all it lists, at `width`.
+    static func height(of browser: Browser, width: CGFloat) -> CGFloat {
+        let measure = NSHostingView(rootView: card(browser)
+            .frame(width: width)
+            .fixedSize(horizontal: false, vertical: true))
+        return measure.fittingSize.height
     }
 
     /// Where the card goes, and its window with the margin around it, in
     /// screen points. Apart from the window so the rule — never over the
-    /// button — can be checked for every edge and every squeeze.
+    /// button — can be checked for every edge and every squeeze. `content`:
+    /// how tall the card would be to show everything (nil: as tall as it
+    /// may be).
     static func layout(edge: Edge, button: NSRect, room: NSRect, width asked: CGFloat,
-                       windowHeight: CGFloat) -> (card: NSRect, window: NSRect) {
-        let gap = Metrics.cardGap
+                       windowHeight: CGFloat, content: CGFloat? = nil) -> (card: NSRect, window: NSRect) {
+        let gap = nearGap
         let least: CGFloat = 120
         var width = min(asked, max(240, room.width))
-        // Enough for its title, two downloads and its foot in a short window.
-        var height = min(max(170, windowHeight / 4), room.height)
+        // As tall as what it lists, up to half the window; at most, enough
+        // for its title, two downloads and its foot in a short window.
+        let most = max(170, windowHeight / 2)
+        var height = min(content.map { min($0.rounded(.up), most) } ?? most, room.height)
         var card = NSRect.zero
         switch edge {
         case .bottom:
@@ -205,9 +254,25 @@ enum DownloadsFloat {
         return (card, window)
     }
 
+    /// What the card's window shows: the card, grown and faded by
+    /// `presence`, inside the window's margin.
+    static func content(_ browser: Browser, edge: Edge, presence: Presence) -> AnyView {
+        AnyView(Arrival(presence: presence, edge: edge) { card(browser) })
+    }
+
+    /// The side panel's Downloads, as a card.
+    static func card(_ browser: Browser) -> some View {
+        DownloadsPanel(browser: browser, loot: browser.loot, compact: true,
+                       close: { browser.downloadsHanging = false })
+            // As tall as the card, as the side panel's list is.
+            .environment(\.asTab, true)
+            .background(Palette.ground)
+            .modifier(CardEdge(on: true))
+    }
+
     /// Whether the card is in, for it to grow and fade by.
     @MainActor
-    private final class Presence: ObservableObject {
+    final class Presence: ObservableObject {
         @Published var shown = false
     }
 
@@ -220,7 +285,7 @@ enum DownloadsFloat {
 
         var body: some View {
             card()
-                .shadow(color: .black.opacity(0.16), radius: 14, y: 5)
+                .shadow(color: .black.opacity(0.12), radius: 9, y: 3)
                 .scaleEffect(presence.shown ? 1 : 0.9, anchor: DownloadsFloat.corner(edge))
                 .opacity(presence.shown ? 1 : 0)
                 .padding(DownloadsFloat.insets(edge))

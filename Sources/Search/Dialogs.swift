@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import os
 import WebKit
 
@@ -65,8 +66,6 @@ final class PaneQuestion: Identifiable {
         self.reply = reply
     }
 
-    var open: Bool { reply != nil }
-
     func answer(ok: Bool, text: String? = nil) {
         let reply = reply
         self.reply = nil
@@ -114,15 +113,17 @@ extension Browser {
     /// background — or in another space — waits until you go to that tab, as
     /// in Safari and Chrome: over the tab in front, a prompt() asking for a
     /// password would pass for that page's. A tab closed first gets the
-    /// answer a dismissed dialog gives.
+    /// answer a dismissed dialog gives. A peek hidden behind another tab
+    /// (see peekInFront) waits the same way, until it is in front again.
     @discardableResult
     func ask(from webView: WKWebView, show: @escaping () -> Void, drop: @escaping () -> Void) -> HeldQuestion? {
-        let known = tabs + parkedTabs
+        let known = tabs + parkedTabs + [peekTab].compactMap { $0 }
         // Questions from tabs that have gone some other way than close(_:).
         for id in heldDialogs.keys where !known.contains(where: { $0.id == id }) {
             heldDialogs.removeValue(forKey: id)?.forEach { $0.dismiss() }
         }
-        guard let tab = known.first(where: { $0.built === webView }), tab.id != activeID else {
+        guard let tab = known.first(where: { $0.built === webView }), tab.id != activeID,
+              tab.id != peekTab?.id || !peekInFront else {
             show()
             return nil
         }
@@ -200,6 +201,12 @@ extension Browser {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping ([URL]?) -> Void
     ) {
+        // A coding agent's page never has a file chosen for it: that is
+        // yours to do, in a tab of yours.
+        if tab(for: webView)?.agent == true {
+            AgentControl.log.notice("a file chooser in an agent's tab was refused")
+            return completionHandler(nil)
+        }
         // Over its own page only, as its other questions are (see ask): a
         // page behind, or the other page of a pair, choosing a file would
         // have it chosen under the page you are looking at. A test run never
@@ -244,6 +251,9 @@ extension Browser {
              NSURLAuthenticationMethodHTTPDigest,
              NSURLAuthenticationMethodNTLM:
             signIn(webView, challenge, completionHandler)
+        case NSURLAuthenticationMethodClientCertificate:
+            // Page loads and what they pull in alike (ClientCertificates.swift).
+            clientCertificate(webView, challenge, completionHandler)
         default:
             completionHandler(.performDefaultHandling, nil)
         }
@@ -270,7 +280,10 @@ extension Browser {
             return
         }
         let host = challenge.protectionSpace.host.lowercased()
-        if Dialogs.isLoopback(host) || Dialogs.excused.contains(host) {
+        // The exact certificate that was shown, not the site: another bad one
+        // on the same name asks again.
+        let excuse = Dialogs.excuse(host, trust)
+        if Dialogs.isLoopback(host) || Dialogs.excused.contains(excuse) {
             completionHandler(.useCredential, URLCredential(trust: trust))
             return
         }
@@ -295,7 +308,7 @@ extension Browser {
                     completionHandler(.cancelAuthenticationChallenge, nil)
                     return
                 }
-                Dialogs.excused.insert(host)
+                Dialogs.excused.insert(excuse)
                 completionHandler(.useCredential, URLCredential(trust: trust))
             }
         }, drop: { completionHandler(.cancelAuthenticationChallenge, nil) })
@@ -384,6 +397,7 @@ extension Browser {
 
     private func pageProcessEnded(_ webView: WKWebView, _ end: PageEnd) {
         cancelDisplay(for: webView)
+        if let asking = certificateTab(for: webView) { dropCertificateAsks(for: asking.id) }
         guard let tab = tab(for: webView) else { return }
         dropQuestions(for: tab.id)
         let host = tab.address?.host() ?? ""
@@ -402,8 +416,16 @@ extension Browser {
 }
 
 enum Dialogs {
-    /// Sites with bad certificates that were accepted, for this launch only.
+    /// Bad certificates that were accepted, each with its site, for this
+    /// launch only. See `excuse`.
     static var excused = Set<String>()
+
+    /// A site and the SHA-256 of the leaf certificate it showed.
+    static func excuse(_ host: String, _ trust: SecTrust) -> String {
+        let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first
+        let der = leaf.map { SecCertificateCopyData($0) as Data } ?? Data()
+        return host + "|" + SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+    }
 
     static func alert(from frame: WKFrameInfo, saying message: String) -> NSAlert {
         let alert = NSAlert()

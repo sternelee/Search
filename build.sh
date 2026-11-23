@@ -201,6 +201,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppleScriptEnabled</key><true/>
   <key>OSAScriptingDefinition</key><string>Search.sdef</string>
+  <!-- Handoff of web pages (Handoff.swift): a page picked up from another
+       device opens here when Search is the default browser. -->
+  <key>NSUserActivityTypes</key>
+  <array><string>NSUserActivityTypeBrowsingWeb</string></array>
   <!-- Owning http and https is what sends a link clicked in Mail here.
        Appearing in Desktop & Dock → Default web browser also needs the
        XHTML document type below. -->
@@ -210,6 +214,16 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <key>CFBundleURLName</key><string>Web address</string>
       <key>CFBundleURLSchemes</key>
       <array><string>http</string><string>https</string></array>
+    </dict>
+    <!-- mailto, so Search can be the Mac's email app: an email link then
+         opens the webmail chosen in Settings › General › Email links open
+         in (Webmail.swift). Only ever made the default from that page's
+         button; with no webmail chosen, a link that comes anyway goes on to
+         the next mail app. -->
+    <dict>
+      <key>CFBundleURLName</key><string>Email address</string>
+      <key>CFBundleURLSchemes</key>
+      <array><string>mailto</string></array>
     </dict>
   </array>
   <key>CFBundleDocumentTypes</key>
@@ -247,6 +261,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
        whatever is running on localhost. -->
   <key>NSAppTransportSecurity</key>
   <dict><key>NSAllowsArbitraryLoads</key><true/></dict>
+  <!-- Since macOS 15, reaching a device on the local network (a .local
+       name, a router's or a printer's address) needs the user's yes, and
+       an app without this sentence is refused without being asked (#1348).
+       No NSBonjourServices: a page at printer.local is looked up by name,
+       not browsed for, and that list is only for browsing. Chrome lists
+       one, _googlecast._tcp, for casting; Safari, part of macOS, needs none. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Search uses the local network to open pages on devices and servers in your home or office, such as .local addresses.</string>
   <!-- A browser is asked for these by the pages it shows, not by itself. macOS
        still wants a sentence to put in its own prompt, and touching the APIs
        without one is a crash rather than a refusal. -->
@@ -303,6 +325,29 @@ if [ -f "Search.provisionprofile" ]; then
   cp "Search.provisionprofile" "$APP/Contents/embedded.provisionprofile"
   ENTITLEMENTS="Search.passkeys.entitlements"
   echo "passkeys: profile embedded"
+  # Sync with iCloud (ICloudSync.swift) needs the iCloud entitlements, and
+  # those only open with a profile that carries the container: signed with
+  # them and a profile from before, the app would not start. So they go in
+  # only when the profile names iCloud.com.officecommun.search; otherwise
+  # the build is as before and Settings says it needs a new one. Of the
+  # two keys a profile may or may not carry (the container's environment,
+  # the pushes), only what it does carry is kept.
+  PROFILE_PLIST="$(mktemp -t search-profile)"
+  security cms -D -i "Search.provisionprofile" > "$PROFILE_PLIST" 2>/dev/null || true
+  profile_has() { /usr/libexec/PlistBuddy -c "Print :Entitlements:$1" "$PROFILE_PLIST" >/dev/null 2>&1; }
+  if /usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.developer.icloud-container-identifiers" "$PROFILE_PLIST" 2>/dev/null \
+      | grep -q "iCloud.com.officecommun.search"; then
+    ENTITLEMENTS="build/Search.icloud.entitlements"
+    mkdir -p build
+    cp "Search.icloud.entitlements" "$ENTITLEMENTS"
+    for key in com.apple.developer.icloud-container-environment com.apple.developer.aps-environment; do
+      profile_has "$key" || /usr/libexec/PlistBuddy -c "Delete :$key" "$ENTITLEMENTS" >/dev/null
+    done
+    echo "iCloud: the profile carries iCloud.com.officecommun.search, Sync with iCloud is in"
+  else
+    echo "iCloud: the profile has no iCloud container, built without Sync with iCloud (Settings says it needs a new build)"
+  fi
+  rm -f "$PROFILE_PLIST"
 fi
 if [ -n "$IDENTITY" ]; then
   codesign --force --deep --timestamp --options runtime \

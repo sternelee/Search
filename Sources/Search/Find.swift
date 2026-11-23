@@ -13,10 +13,26 @@ import SwiftUI
 /// half of Metalterm's typing. The curves are read off a leg walked
 /// linearly, which is how a SwiftUI view makes the same motion the
 /// terminal's panel does without a spring standing in for any of it.
+@MainActor
+final class FindState: ObservableObject {
+    @Published var needle = ""
+    @Published var matchCase = false
+    @Published var wholeWords = false
+    @Published var missed = false
+    @Published var focus = 0
+    @Published var result: PageFind.Result?
+}
 struct FindBar: View {
     @ObservedObject var browser: Browser
     var availableWidth: CGFloat? = nil
     var onPillFrame: ((CGRect) -> Void)? = nil
+    /// The words and the page's answer, which `browser` doesn't announce.
+    @ObservedObject private var seeking: FindState
+
+    init(browser: Browser) {
+        self.browser = browser
+        seeking = browser.seeking
+    }
 
     @FocusState private var focused: Bool
 
@@ -73,10 +89,10 @@ struct FindBar: View {
 
             // A pane too narrow for them keeps Return and ⇧Return instead.
             if !narrow {
-                step("chevron.up", label: "Previous match", help: "Find the previous match.") {
+                step("chevron.up", label: "Previous match", help: "Previous Match", shortcut: "edit.findPrevious") {
                     browser.look(forward: false)
                 }
-                step("chevron.down", label: "Next match", help: "Find the next match.") {
+                step("chevron.down", label: "Next match", help: "Next Match", shortcut: "edit.findNext") {
                     browser.look(forward: true)
                 }
             }
@@ -188,6 +204,7 @@ struct FindBar: View {
         _ icon: String,
         label: String,
         help: String,
+        shortcut: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -200,7 +217,7 @@ struct FindBar: View {
         .buttonStyle(.plain)
         .accessibilityLabel(label)
         .accessibilityHint(help)
-        .help(help)
+        .shortcutHelp(help, shortcut)
     }
 }
 

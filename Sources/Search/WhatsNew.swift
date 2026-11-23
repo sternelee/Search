@@ -12,6 +12,11 @@ import SwiftUI
 //
 // A release edits `toggles` (its new switches, marked with its version),
 // `releases` (that it has a card) and `notes` (what it brought).
+//
+// A few switches lead: first on every card, above that version's own, for
+// as long as they are off. Sync with iCloud and Handoff do, since 22 Nov
+// 2026: on for a new install (SyncDefault.swift), offered here to everyone
+// who had Search before and never turned them on.
 
 enum WhatsNew {
     /// A switch the card offers: the same setting as in Settings.
@@ -25,6 +30,8 @@ enum WhatsNew {
         /// Whether it can do anything now: a switch that needs another one
         /// on stays off the card until it is.
         var shown: @MainActor (Preferences) -> Bool = { _ in true }
+        /// First on every card while it is off, whatever its version.
+        var lead = false
     }
 
     /// A version that has a card.
@@ -32,12 +39,82 @@ enum WhatsNew {
         let version: String
     }
 
-    /// Every switch worth meeting, oldest last. The card shows this
-    /// version's, and the older ones still off.
-    static let toggles: [Toggle] = (AI.shipped ? [
+    /// Every switch worth meeting, the leading ones first, then oldest
+    /// last. The card shows the leading ones still off, this version's, and
+    /// the older ones still off.
+    static let toggles: [Toggle] = [
+        // Leading, in this order (see the top of this file).
+        Toggle(title: "Sync with iCloud", detail: "Your tabs, pins and spaces on your iPhone and your other Macs, end-to-end encrypted.",
+               since: "1.0.16", get: { _ in ICloudSync.shared.on },
+               set: { _, on in on ? ICloudSync.shared.turnOnOrWait() : ICloudSync.shared.turnOff() },
+               // Never beside the folder sync: the two would undo each other.
+               shown: { _ in ICloudSync.shared.on || !Sync.shared.on }, lead: true),
+        Toggle(title: "Handoff to your iPhone", detail: "The page in front comes up in your iPhone's and iPad's app switcher.",
+               since: "1.0.16", get: { $0.handoff }, set: { $0.handoff = $1 }, lead: true),
+    ] + (AI.shipped ? [
         Toggle(title: "AI on pages", detail: "Summarize a page or ask about it. Choose where it runs in Settings › AI.",
                since: "1.0.5", get: { $0.ai }, set: { $0.ai = $1 }),
     ] : []) + [
+        Toggle(title: "Sidebar button", detail: "Beside the window's buttons, it hides the sidebar as ⌘S does.",
+               since: "1.0.18", get: { $0.foldButton }, set: { $0.foldButton = $1 }),
+        Toggle(title: "Narrow to icons", detail: "Pull the sidebar narrower and it becomes a strip of site icons.",
+               since: "1.0.18", get: { $0.narrowsToIcons }, set: { $0.narrowsToIcons = $1 }),
+
+        Toggle(title: "Swipe back closes a link's tab", detail: "On the page a link opened, a swipe back closes the tab and takes you to the one you were on.",
+               since: "1.0.17", get: { $0.swipeBackCloses }, set: { $0.swipeBackCloses = $1 }),
+
+        Toggle(title: "⌘T finds your open tabs", detail: "As you type in ⌘T's field, a matching open tab or pin comes first.",
+               since: "1.0.17", get: { $0.arcTabPopup }, set: { $0.arcTabPopup = $1 },
+               shown: { $0.floatingNewTab }),
+        Toggle(title: "Home bookmarks on a new tab", detail: "The sites of your bookmark folder called Home, as tiles.",
+               since: "1.0.17", get: { $0.homeGrid }, set: { $0.homeGrid = $1 }),
+        Toggle(title: "One button per space", detail: "Every space beside the bookmarks, one click away.",
+               since: "1.0.17", get: { $0.spaceButtons }, set: { $0.spaceButtons = $1 },
+               shown: { $0.usesSpaces }),
+        Toggle(title: "Try HTTPS first", detail: "An http:// page loads over HTTPS where the site has it.",
+               since: "1.0.17", get: { $0.triesHTTPSFirst }, set: { $0.triesHTTPSFirst = $1 }),
+
+        Toggle(title: "Always show the address bar", detail: "The page's full address stays in sight, to type in.",
+               since: "1.0.16", get: { $0.addressLine }, set: { $0.addressLine = $1 }),
+        Toggle(title: "Glass window", detail: "The column and the window's edge as frosted glass over your desktop.",
+               since: "1.0.16", get: { $0.glass }, set: { $0.glass = $1 }),
+        Toggle(title: "Buttons at the top", detail: "The column's bottom buttons beside back, forward and reload.",
+               since: "1.0.16", get: { $0.doorsUp }, set: { $0.doorsUp = $1 }),
+        Toggle(title: "Ask which space a link opens in", detail: "For links from other apps.",
+               since: "1.0.16", get: { $0.asksSpaceForLinks }, set: { $0.asksSpaceForLinks = $1 }),
+        Toggle(title: "Dim sleeping tabs", detail: "A tab put to sleep fades until you come back to it.",
+               since: "1.0.16", get: { $0.dimsSleepingTabs }, set: { $0.dimsSleepingTabs = $1 }),
+        Toggle(title: "High contrast tab text", detail: "Tab titles in full black or white.",
+               since: "1.0.16", get: { $0.highContrastText }, set: { $0.highContrastText = $1 }),
+
+        Toggle(title: "⌘1–⌘9 switch spaces", detail: "As in Arc: the tabs move to ⌃1–⌃9.",
+               since: "1.0.15", get: { $0.spacesOnCommand }, set: { $0.spacesOnCommand = $1 },
+               shown: { $0.usesSpaces }),
+        Toggle(title: "Same tabs in every window", detail: "Every window lists the same open tabs, as Arc's sidebar does.",
+               since: "1.0.15", get: { $0.mirrorsTabs }, set: { $0.mirrorsTabs = $1 }),
+        Toggle(title: "⌥-click a link opens it in Split View", detail: "Beside the page you're reading.",
+               since: "1.0.15", get: { $0.optionClickSplits }, set: { $0.optionClickSplits = $1 }),
+        Toggle(title: "Bounce at the top and bottom", detail: "Pages stretch past their ends and spring back, as in Safari.",
+               since: "1.0.15", get: { $0.bounces }, set: { $0.bounces = $1 }),
+        Toggle(title: "Slide the column in and out", detail: "An eased slide for ⌘S and the column that hides.",
+               since: "1.0.15", get: { $0.slidesColumn }, set: { $0.slidesColumn = $1 }),
+
+        Toggle(title: "Your own style for a site", detail: "Edit Site Style… in the View menu: your CSS for the site you're on, as Arc's Boosts.",
+               since: "1.0.14", get: { $0.sitesStyles }, set: { $0.sitesStyles = $1 }),
+        Toggle(title: "Keep the card in full screen", detail: "The page keeps its room and rounded corners when the window fills the screen.",
+               since: "1.0.14", get: { $0.cardsInFullScreen }, set: { $0.cardsInFullScreen = $1 },
+               shown: { $0.sidebar && $0.cards }),
+        Toggle(title: "⌘-click on a pin opens a new tab", detail: "As in Arc, or takes a page that wandered off into the loose tabs.",
+               since: "1.0.14", get: { $0.pinCommandOpensTab }, set: { $0.pinCommandOpensTab = $1 }),
+
+        Toggle(title: "Commands in the address field", detail: "Type the name of any menu command or setting, as in Arc's Command Bar.",
+               since: "1.0.13", get: { $0.commandBar }, set: { $0.commandBar = $1 }),
+        Toggle(title: "Capture", detail: "View › Capture… takes a picture of part of a page, or all of it.",
+               since: "1.0.13", get: { $0.capturesPages }, set: { $0.capturesPages = $1 }),
+        Toggle(title: "Folders in pinned rows", detail: "Pinned rows in folders that fold, as in Arc.",
+               since: "1.0.13", get: { $0.pinFolders }, set: { $0.pinFolders = $1 },
+               shown: { $0.listsPins }),
+
         Toggle(title: "Send links to a space", detail: "Links to the sites you choose open in their space, with its sign-ins, as in Arc.",
                since: "1.0.11", get: { $0.sendsLinksToSpaces }, set: { $0.sendsLinksToSpaces = $1 },
                shown: { $0.usesSpaces }),
@@ -105,6 +182,12 @@ enum WhatsNew {
     ]
 
     static let releases: [Release] = [
+        Release(version: "1.0.18"),
+        Release(version: "1.0.17"),
+        Release(version: "1.0.16"),
+        Release(version: "1.0.15"),
+        Release(version: "1.0.14"),
+        Release(version: "1.0.13"),
         Release(version: "1.0.12"),
         Release(version: "1.0.11"),
         Release(version: "1.0.10"),
@@ -115,6 +198,15 @@ enum WhatsNew {
         Release(version: "1.0.5"),
         Release(version: "1.0.4"),
     ]
+
+    /// What a card opened now lists: first the leading switches still off,
+    /// then the version's own; under their caption, the earlier ones still
+    /// off.
+    @MainActor static func rows(for release: Release, prefs: Preferences) -> (leading: [Toggle], own: [Toggle], earlier: [Toggle]) {
+        (toggles.filter { $0.lead && !$0.get(prefs) && $0.shown(prefs) },
+         toggles.filter { !$0.lead && $0.since == release.version && $0.shown(prefs) },
+         toggles.filter { !$0.lead && older($0.since, than: release.version) && !$0.get(prefs) && $0.shown(prefs) })
+    }
 
     /// This version's card, when it has one.
     static var current: Release? { releases.first { $0.version == Updater.version } }
@@ -162,6 +254,134 @@ enum WhatsNew {
 
     /// Newest first.
     static let notes: [Notes] = [
+        Notes(
+            version: "1.0.18", date: "22 November 2026",
+            headline: "Sync on from the start, news by email, and your fixes.",
+            new: [
+                "Sync with iCloud and Handoff are on for a new install, with both switches on the welcome's first page.",
+                "News by email and the Search for iPhone beta: leave your email on this card, in the welcome or in Settings › About.",
+                "A sidebar button beside the window's buttons, and a sidebar that narrows to icons. Settings › Appearance › Tabs.",
+            ],
+            better: [
+                "⌘S is smooth again with several spaces and the column made icons only.",
+                "With the tabs across the top, an open group shows where it starts and ends.",
+                "Buttons say the key you set for them in Settings › Shortcuts.",
+            ],
+            fixed: [
+                "In full screen, the menu bar no longer comes down over the tabs.",
+                "Selecting text in a field at the very top of a page, and Rename on a pinned square.",
+                "Asking to save a password nobody typed, and YouTube previews floating as a video.",
+                "Windows coming back twice, sites at .local names, and tabs showing a lone \u{2026}.",
+            ]
+        ),
+        Notes(
+            version: "1.0.17", date: "22 November 2026",
+            headline: "Spaces from Zen, more browsers to come from, and your fixes.",
+            new: [
+                "Coming from Zen brings its spaces, pins and folders, and open tabs come over from Firefox and Zen.",
+                "Eleven more browsers to come from, and Safari directly when macOS allows it.",
+                "Themes for the blank tab, your Home bookmarks as tiles, and ⌘T finding your open tabs. Settings › Themes and Settings › Tabs.",
+                "A split pinned as a split, one button per space, and Try HTTPS first. Settings › Spaces & Pins and Settings › Privacy.",
+            ],
+            better: [
+                "⌘S slides the column smoothly again, as in 1.0.15.",
+                "Any space can be deleted, the first one included, and profiles can be put in any order.",
+                "A bookmarks folder of thousands opens at once.",
+            ],
+            fixed: [
+                "Pinned-row folders syncing between Macs, and the history of signed-out spaces.",
+                "YouTube videos held at 0:00, YouTube Music's floating player, and Reddit's promoted posts.",
+                "Client certificates for company sign-ins, security keys with passkeys off, and games locking the pointer.",
+                "Stylus, Monarch Money, Floccus, Similarweb and Brandsearch.",
+            ]
+        ),
+        Notes(
+            version: "1.0.16", date: "20 November 2026",
+            headline: "Sync with your iPhone, Handoff, and two days of your fixes.",
+            new: [
+                "Sync with iCloud: open tabs, pins, spaces and bookmarks with Search on iPhone, in public beta. Settings › General.",
+                "Handoff of the page in front to your iPhone and iPad. Settings › General.",
+                "The address bar always in sight, a glass window, and buttons at the top. Settings › Appearance.",
+                "Choose the space a link from another app opens in. Settings › Spaces & Pins.",
+            ],
+            better: [
+                "Switching spaces is about three times quicker with many tabs.",
+                "The accounts under a sign-in box answer ↓, ↑ and Return.",
+                "A sideways scroll in Google Sheets scrolls the sheet instead of going back.",
+            ],
+            fixed: [
+                "Swish and other window managers moving the window, and ⌃⌘F.",
+                "Teams' Shared tab, PDFs that stopped zooming, and Zotero Connector.",
+                "⌘S forgetting the hidden column, and spelling corrected with correction off.",
+                "A crash on macOS 27.2.",
+            ]
+        ),
+        Notes(
+            version: "1.0.15", date: "18 November 2026",
+            headline: "Space gradients, extensions that work, coding agents, and a day of your fixes.",
+            new: [
+                "A gradient or a stronger colour for a space. The space's menu › Colour….",
+                "The same tabs in every window. Settings › Tabs.",
+                "⌘1–⌘9 switch spaces, as in Arc. Settings › Spaces & Pins.",
+                "Email links open in Gmail, Outlook.com, Fastmail or Proton Mail. Settings › General.",
+                "Choose where each extension runs: all sites, some, or on click. Settings › Extensions.",
+                "Claude Code or Codex can browse in tabs of their own while you watch. Settings › About › Developer.",
+            ],
+            better: [
+                "Pages load faster with extensions on.",
+                "Spread two fingers on a peek to open it as a tab.",
+                "A right-click anywhere in the tab column has a menu.",
+            ],
+            fixed: [
+                "Eagle, Cosmos, Raindrop.io, Language Reactor and Voice-over-Translation.",
+                "Signing in to X with passkeys off, and 1Password passkeys.",
+                "Claude's side panel once signed in.",
+                "Extensions reopening their welcome tab at every launch.",
+            ]
+        ),
+        Notes(
+            version: "1.0.14", date: "17 November 2026",
+            headline: "Live folders, your own style for a site, space colours on the window, and your fixes.",
+            new: [
+                "Live folders: a folder in the pinned rows that fills itself from a feed. Right-click a pinned row › New Live Folder….",
+                "Your own CSS for a site, as Arc's Boosts. Turn it on in Settings › Browsing.",
+                "Keep the page as a card in full screen. Settings › Appearance › Window.",
+                "⌘-click on a pin opens a new tab, as in Arc. Settings › Spaces & Pins.",
+            ],
+            better: [
+                "A space with a colour gives the window a faint wash of it.",
+            ],
+            fixed: [
+                "⌘1–⌘9 counting a group's closed tabs.",
+                "⌫ leaving the page you were typing in.",
+                "Extension popups that open themselves, such as Inoreader's.",
+            ]
+        ),
+        Notes(
+            version: "1.0.13", date: "17 November 2026",
+            headline: "Folders in pinned rows, Split View with four pages, sync between your Macs, and your fixes.",
+            new: [
+                "Sync your spaces, pins, bookmarks and a few settings between your Macs, through a folder they share. Settings › General.",
+                "Folders in pinned rows, as in Arc. Settings › Spaces & Pins.",
+                "Capture… in the View menu: a picture of part of a page, or all of it.",
+                "Commands in the address field, as Arc's Command Bar.",
+                "History › Archived Tabs: the tabs Search closed by itself, for 30 days.",
+                "A colour for each space, from the space's menu.",
+                "The address field from any app, with a key of your own. Settings › Keyboard & Mouse.",
+            ],
+            better: [
+                "Split View holds up to four pages.",
+                "Switching tabs shows the page sooner.",
+                "A new install starts with the tabs down the side, and links from other apps in a small window.",
+            ],
+            fixed: [
+                "⌘T opening its page in a group, from an empty tab left there.",
+                "A window opened with ⌘N that the menus didn't act on.",
+                "Control Panel for YouTube not saving its switches.",
+                "The floating video coming back small in its tab.",
+                "A link from another app bringing up the browser's window beside its small one.",
+            ]
+        ),
         Notes(
             version: "1.0.12", date: "9 November 2026",
             headline: "Your contact details in forms, a tab dragged across the top again, and your fixes.",
@@ -492,27 +712,48 @@ struct WhatsNewCard: View {
     @ObservedObject var prefs: Preferences
     let close: () -> Void
     let notes: () -> Void
+    /// A link from the card (the privacy page), opened in a tab.
+    var open: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// For pictures: the email block's state, and whether it is offered
+    /// whatever this Mac remembers.
+    var optInStart: OptInForm.Phase = .idle
+    var optInEmail = ""
+    var optInForced: Bool? = nil
 
-    /// Read once, as the card opens: a switch turned on here stays in the
-    /// list rather than vanishing under the hand.
-    @State private var earlier: [WhatsNew.Toggle]?
+    /// The leading and earlier switches, read once as the card opens
+    /// (WhatsNew.rows): one turned on here stays in the list rather than
+    /// vanishing under the hand. The version's own are read as they stand.
+    @State private var listed: (leading: [WhatsNew.Toggle], own: [WhatsNew.Toggle], earlier: [WhatsNew.Toggle])?
+    /// Sync with iCloud's switch is its own, not a preference's.
+    @ObservedObject private var icloud = ICloudSync.shared
+    /// The email block (OptIn.swift), read once as the card opens: offered
+    /// until an email has been given, and kept after one is, for its thanks.
+    @State private var offering: Bool?
+    @ObservedObject private var reach = OptIn.Reach.shared
 
-    private var fresh: [WhatsNew.Toggle] { WhatsNew.toggles.filter { $0.since == release.version && $0.shown(prefs) } }
+    /// Pinned under the list, outside its scroll, so it is always in sight;
+    /// left off while the Mac is offline, where a press could only fail.
+    private var showsOptIn: Bool { (optInForced ?? offering ?? OptIn.offered()) && (optInForced != nil || reach.online) }
 
     var body: some View {
         Plate("New in Search \(release.version)", width: 460, close: close) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    rows(fresh)
-                    if let earlier, !earlier.isEmpty {
-                        Caption("From earlier versions, in case you missed them")
-                            .padding(.top, 6)
-                        rows(earlier)
+            VStack(alignment: .leading, spacing: 14) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        rows((listed?.leading ?? []) + WhatsNew.rows(for: release, prefs: prefs).own)
+                        if let earlier = listed?.earlier, !earlier.isEmpty {
+                            Caption("From earlier versions, in case you missed them")
+                                .padding(.top, 6)
+                            rows(earlier)
+                        }
                     }
                 }
+                .frame(maxHeight: showsOptIn ? 360 : 470)
+                .fixedSize(horizontal: false, vertical: true)
+                if showsOptIn {
+                    OptInBlock(source: .whatsNew, open: open, start: optInStart, startEmail: optInEmail)
+                }
             }
-            .frame(maxHeight: 470)
-            .fixedSize(horizontal: false, vertical: true)
         } foot: {
             HStack {
                 Button(action: notes) {
@@ -526,9 +767,8 @@ struct WhatsNewCard: View {
             }
         }
         .onAppear {
-            if earlier == nil {
-                earlier = WhatsNew.toggles.filter { WhatsNew.older($0.since, than: release.version) && !$0.get(prefs) && $0.shown(prefs) }
-            }
+            if offering == nil { offering = OptIn.offered() }
+            if listed == nil { listed = WhatsNew.rows(for: release, prefs: prefs) }
         }
     }
 

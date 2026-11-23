@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // Bookmarks: folders and sites, kept in a small file.
@@ -223,6 +224,13 @@ final class Bookmarks {
         first { $0.id == id }
     }
 
+    /// The sites of the top-level folder called Home, for a blank tab's grid
+    /// (HomeGrid.swift): sixteen at most, four to a row.
+    var homeSites: [Bookmark] {
+        let home = roots.first { $0.isFolder && $0.title.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("Home") == .orderedSame }
+        return Array((home?.children ?? []).filter { !$0.isFolder && $0.address != nil }.prefix(16))
+    }
+
     private func first(where test: (Bookmark) -> Bool) -> Bookmark? {
         func walk(_ nodes: [Bookmark]) -> Bookmark? {
             for node in nodes {
@@ -232,6 +240,31 @@ final class Bookmarks {
             return nil
         }
         return walk(roots)
+    }
+
+    /// The folder last picked on a bookmark's card (BookmarkCard): the
+    /// next page bookmarked goes there too, as in Safari and Chrome. One
+    /// for each profile, as its bookmarks are. Nil for the top level, and
+    /// once that folder is gone.
+    var lastFolder: Bookmark.ID? {
+        get {
+            Store.settings.string(forKey: lastFolderKey).flatMap(UUID.init)
+                .flatMap { id in bookmark(id)?.isFolder == true ? id : nil }
+        }
+        set {
+            if let newValue { Store.settings.set(newValue.uuidString, forKey: lastFolderKey) }
+            else { Store.settings.removeObject(forKey: lastFolderKey) }
+        }
+    }
+
+    /// Named after its file, which is the profile's.
+    private var lastFolderKey: String { "bookmarks.lastFolder." + fileName }
+
+    /// Filed in `folder` (the top level for nil) from its card, and the
+    /// next page bookmarked goes there too.
+    func file(_ id: Bookmark.ID, into folder: Bookmark.ID?) {
+        move(id, into: folder)
+        lastFolder = folder
     }
 
     // MARK: - changing
@@ -699,6 +732,17 @@ final class Bookmarks {
         let snapshot = roots
         // One after another, the newest last (see Disk).
         Disk.write(file) { try? JSONEncoder().encode(snapshot) }
+        NotificationCenter.default.post(name: Bookmarks.saved, object: self)
+    }
+
+    /// The list was saved: Sync takes it to the other Macs.
+    static let saved = Notification.Name("SearchBookmarksSaved")
+
+    /// The list as another Mac left it (see Sync.swift).
+    func adopt(_ nodes: [Bookmark]) {
+        guard nodes != roots else { return }
+        roots = nodes
+        save()
     }
 }
 
@@ -725,9 +769,48 @@ struct BookmarkOutline: View {
     /// deep without being dropped on the way.
     @State private var spring: DispatchWorkItem?
 
+    /// One line of the list as it shows: a bookmark or folder, with where
+    /// it sits, or the "Empty" under an open folder holding nothing.
+    struct Shown: Identifiable {
+        let node: Bookmark
+        let depth: Int
+        let parent: Bookmark.ID?
+        let index: Int
+        let isOpen: Bool
+        /// The "Empty" line under `node`, an open empty folder.
+        var empty = false
+        var id: String { empty ? "empty " + node.id.uuidString : node.id.uuidString }
+    }
+
+    /// Every line that shows, the folders in `expanded` open, in order.
+    static func lines(_ nodes: [Bookmark], expanded: Set<Bookmark.ID>, depth: Int = 0,
+                      parent: Bookmark.ID? = nil, into out: inout [Shown]) {
+        for (index, node) in nodes.enumerated() {
+            let isOpen = node.isFolder && expanded.contains(node.id)
+            out.append(Shown(node: node, depth: depth, parent: parent, index: index, isOpen: isOpen))
+            guard isOpen else { continue }
+            if let kids = node.children, !kids.isEmpty {
+                lines(kids, expanded: expanded, depth: depth + 1, parent: node.id, into: &out)
+            } else {
+                out.append(Shown(node: node, depth: depth, parent: parent, index: index, isOpen: true, empty: true))
+            }
+        }
+    }
+
+    /// The rows are built as they come into sight, a lazy stack over the
+    /// list laid flat: a folder of thousands, open, had every row built at
+    /// once, and the window stalled for seconds (#1306). What every row
+    /// shares — whether there are folders, the folders to move to — is
+    /// worked out once for the list, not once a row.
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            rows(bookmarks.roots, depth: 0, parent: nil)
+        var showing: [Shown] = []
+        Self.lines(bookmarks.roots, expanded: expanded, into: &showing)
+        let arrows = bookmarks.roots.contains(where: \.isFolder)
+        let folders = Bookmarks.folders(bookmarks.roots)
+        return LazyVStack(alignment: .leading, spacing: 1) {
+            ForEach(showing) { line in
+                if line.empty { empty(under: line) } else { row(line, arrows: arrows, folders: folders) }
+            }
             // Past the last row: the end of the top level, which "after" on
             // an open folder at the bottom can't reach. Only there while a
             // row is carried, or it is an empty band under the list (#391).
@@ -746,85 +829,77 @@ struct BookmarkOutline: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
-    private func rows(_ nodes: [Bookmark], depth: Int, parent: Bookmark.ID?) -> some View {
-        ForEach(Array(nodes.enumerated()), id: \.element.id) { index, node in
-            let isOpen = node.isFolder && expanded.contains(node.id)
-            Row(
-                node: node,
-                depth: depth,
-                // A folder's arrow has a place in front of every row, so the
-                // icons line up; with no folder at all, it is only a gap.
-                arrows: bookmarks.roots.contains(where: \.isFolder),
-                // An extension can write an address that does not parse,
-                // and the menu below already unwraps this the same way.
-                open: node.isFolder ? nil : { if let text = node.url, let url = URL(string: text) { open(url) } },
-                isOpen: isOpen,
-                dragging: dragging == node.id,
-                aim: aimed?.id == node.id ? aimed?.zone : nil,
-                shown: shown == node.id,
-                toggle: node.isFolder ? { toggle(node.id) } : nil,
-                moveTargets: Bookmarks.folders(bookmarks.roots).filter { !Bookmarks.holds($0.node.id, node) },
-                moveTo: { bookmarks.move(node.id, into: $0) },
-                rename: { bookmarks.askRename(node) },
-                newFolder: node.isFolder ? {
-                    bookmarks.askNewFolder(in: node.id) { _ in expanded.insert(node.id) }
-                } : nil,
-                remove: { bookmarks.askRemove(node) }
-            )
-            .id(node.id)
-            .overlay {
-                if let url = node.url.flatMap(URL.init(string:)) {
-                    MiddleClick { openInNewTab(url) }
-                }
-            }
-            .onDrag {
-                dragging = node.id
-                settleWhenLetGo()
-                return NSItemProvider(object: node.id.uuidString as NSString)
-            }
-            .modifier(Landing(
-                isFolder: node.isFolder,
-                allowed: { allows(node.id) },
-                aim: { aim($0.map { Aim(id: node.id, zone: $0) }) },
-                land: { zone, providers in
-                    drop(providers) { id in
-                        switch zone {
-                        case .before: bookmarks.move(id, into: parent, at: index)
-                        // Below an open folder's row is above its first
-                        // child, so that is where it goes.
-                        case .after where isOpen: bookmarks.move(id, into: node.id, at: 0)
-                        case .after: bookmarks.move(id, into: parent, at: index + 1)
-                        case .into: bookmarks.move(id, into: node.id)
-                        }
-                    }
-                }
-            ))
-
-            if isOpen {
-                if let kids = node.children, !kids.isEmpty {
-                    // Type-erased: a view that calls itself can't let Swift
-                    // infer its own opaque return type from its own body.
-                    AnyView(rows(kids, depth: depth + 1, parent: node.id))
-                } else {
-                    // Where its first bookmark would be, so a drop here goes
-                    // in, shown as the folder's own lower edge shows it.
-                    Text("Empty")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.faint)
-                        .padding(.leading, indent(depth + 1) + 26)
-                        .padding(.vertical, 5)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .modifier(Landing(
-                            isFolder: false,
-                            allowed: { allows(node.id) },
-                            aim: { aim($0.map { _ in Aim(id: node.id, zone: .after) }) },
-                            land: { _, providers in drop(providers) { bookmarks.move($0, into: node.id) } }
-                        ))
-                }
+    private func row(_ line: Shown, arrows: Bool, folders: [(node: Bookmark, depth: Int)]) -> some View {
+        let node = line.node, depth = line.depth, parent = line.parent, index = line.index, isOpen = line.isOpen
+        return Row(
+            node: node,
+            depth: depth,
+            // A folder's arrow has a place in front of every row, so the
+            // icons line up; with no folder at all, it is only a gap.
+            arrows: arrows,
+            // An extension can write an address that does not parse,
+            // and the menu below already unwraps this the same way.
+            open: node.isFolder ? nil : { if let text = node.url, let url = URL(string: text) { open(url) } },
+            isOpen: isOpen,
+            dragging: dragging == node.id,
+            aim: aimed?.id == node.id ? aimed?.zone : nil,
+            shown: shown == node.id,
+            toggle: node.isFolder ? { toggle(node.id) } : nil,
+            moveTargets: { folders.filter { !Bookmarks.holds($0.node.id, node) } },
+            moveTo: { bookmarks.move(node.id, into: $0) },
+            rename: { bookmarks.askRename(node) },
+            newFolder: node.isFolder ? {
+                bookmarks.askNewFolder(in: node.id) { _ in expanded.insert(node.id) }
+            } : nil,
+            remove: { bookmarks.askRemove(node) }
+        )
+        .id(node.id)
+        .overlay {
+            if let url = node.url.flatMap(URL.init(string:)) {
+                MiddleClick { openInNewTab(url) }
             }
         }
+        .onDrag {
+            dragging = node.id
+            settleWhenLetGo()
+            return NSItemProvider(object: node.id.uuidString as NSString)
+        }
+        .modifier(Landing(
+            isFolder: node.isFolder,
+            allowed: { allows(node.id) },
+            aim: { aim($0.map { Aim(id: node.id, zone: $0) }) },
+            land: { zone, providers in
+                drop(providers) { id in
+                    switch zone {
+                    case .before: bookmarks.move(id, into: parent, at: index)
+                    // Below an open folder's row is above its first
+                    // child, so that is where it goes.
+                    case .after where isOpen: bookmarks.move(id, into: node.id, at: 0)
+                    case .after: bookmarks.move(id, into: parent, at: index + 1)
+                    case .into: bookmarks.move(id, into: node.id)
+                    }
+                }
+            }
+        ))
+    }
+
+    /// Where an open empty folder's first bookmark would be, so a drop here
+    /// goes in, shown as the folder's own lower edge shows it.
+    private func empty(under line: Shown) -> some View {
+        let node = line.node
+        return Text("Empty")
+            .font(.system(size: 12))
+            .foregroundStyle(Palette.faint)
+            .padding(.leading, indent(line.depth + 1) + 26)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .modifier(Landing(
+                isFolder: false,
+                allowed: { allows(node.id) },
+                aim: { aim($0.map { _ in Aim(id: node.id, zone: .after) }) },
+                land: { _, providers in drop(providers) { bookmarks.move($0, into: node.id) } }
+            ))
     }
 
     private func toggle(_ id: Bookmark.ID) {
@@ -959,7 +1034,8 @@ struct BookmarkOutline: View {
         let aim: Zone?
         let shown: Bool
         let toggle: (() -> Void)?
-        let moveTargets: [(node: Bookmark, depth: Int)]
+        /// Worked out as the menu is, not with every row.
+        let moveTargets: () -> [(node: Bookmark, depth: Int)]
         let moveTo: (Bookmark.ID?) -> Void
         let rename: () -> Void
         /// A folder in this one: only on a folder.
@@ -969,7 +1045,8 @@ struct BookmarkOutline: View {
         @State private var hovering = false
 
         var body: some View {
-            HStack(spacing: 8) {
+            if Store.testing { Bench.bodies["bookmarkRow", default: 0] += 1 }
+            return HStack(spacing: 8) {
                 if node.isFolder {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
@@ -1024,9 +1101,10 @@ struct BookmarkOutline: View {
                 }
                 Menu("Move to") {
                     Button("Top Level", action: { moveTo(nil) })
-                    if !moveTargets.isEmpty {
+                    let targets = moveTargets()
+                    if !targets.isEmpty {
                         Divider()
-                        ForEach(moveTargets, id: \.node.id) { target in
+                        ForEach(targets, id: \.node.id) { target in
                             Button(String(repeating: "   ", count: target.depth) + target.node.title) {
                                 moveTo(target.node.id)
                             }
@@ -1064,7 +1142,7 @@ struct BookmarkDoor: View {
                 BookmarkDoor.door(browser, kept: false)
             }
         }
-        .popover(isPresented: $browser.bookmarksOpen, arrowEdge: arrowEdge) {
+        .popover(isPresented: $browser.bookmarksOpen, hangingFrom: arrowEdge) {
             if let id = browser.bookmarkCard {
                 BookmarkCard(browser: browser, bookmarks: browser.bookmarks, id: id)
             } else {
@@ -1135,7 +1213,7 @@ struct BookmarkCard: View {
         }
         .padding(14)
         .frame(width: 280)
-        .popoverGround(card: true)
+        .popoverGround()
         .onAppear {
             title = bookmarks.bookmark(id)?.title ?? ""
             // The popover's window takes the keyboard only after this, and
@@ -1148,21 +1226,20 @@ struct BookmarkCard: View {
     private var folder: some View {
         let here = bookmarks.path(to: id)?.last
         return Menu {
-            Button("Top Level") { bookmarks.move(id, into: nil) }
+            Button("Top Level") { file(into: nil) }
             let folders = Bookmarks.folders(bookmarks.roots)
             if !folders.isEmpty {
                 Divider()
                 ForEach(folders, id: \.node.id) { target in
                     Button(String(repeating: "   ", count: target.depth) + target.node.title) {
-                        bookmarks.move(id, into: target.node.id)
+                        file(into: target.node.id)
                     }
                 }
             }
             Divider()
             Button("New Folder\u{2026}") {
                 Ask.name("New Folder", placeholder: "Name", confirm: "Create") { name in
-                    let made = bookmarks.insert(.folder(name, []), into: nil)
-                    bookmarks.move(id, into: made.id)
+                    file(into: bookmarks.insert(.folder(name, []), into: nil).id)
                 }
             }
         } label: {
@@ -1188,6 +1265,8 @@ struct BookmarkCard: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
     }
+
+    private func file(into folder: Bookmark.ID?) { bookmarks.file(id, into: folder) }
 
     private func line(_ name: String, @ViewBuilder _ control: () -> some View) -> some View {
         HStack(spacing: 10) {
@@ -1256,6 +1335,9 @@ struct BookmarksDropdown: View {
                     .padding(6)
                 }
                 .frame(height: listHeight)
+                .onReceive(Self.benchToggle) { id in
+                    if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+                }
             }
             Divider().overlay(Palette.hairline)
             VStack(spacing: 1) {
@@ -1267,34 +1349,42 @@ struct BookmarksDropdown: View {
             .padding(6)
         }
         .frame(width: 280)
-        .popoverGround(card: true)
+        .popoverGround()
     }
 
-    /// The list as tall as the whole tree would be with every folder open,
-    /// up to 360 points. The popover takes its height once, from what the
-    /// list holds as it opens, and doesn't grow with a folder opened in it:
-    /// a list of one closed folder was one row high, and the folder opened
-    /// into a sliver above Add This Page.
-    var listHeight: CGFloat {
+    /// The list as tall as the rows it shows, up to 360 points: the popover
+    /// follows it, growing as a folder opens and shrinking as one closes.
+    /// It was once sized for the tree with every folder open, which left a
+    /// tall empty gap above Add This Page with them closed (#1309); and
+    /// before that by its rows as it opened, without following them, so a
+    /// folder opened into a sliver.
+    var listHeight: CGFloat { Self.listHeight(bookmarks.roots, open: expanded) }
+
+    static func listHeight(_ roots: [Bookmark], open: Set<Bookmark.ID>?) -> CGFloat {
         let most: CGFloat = 360
         var lines = 0
-        Self.count(bookmarks.roots, into: &lines, upTo: Int(most / Self.line) + 1)
-        return min(most, CGFloat(lines) * Self.line + 12)
+        count(roots, open: open, into: &lines, upTo: Int(most / line) + 1)
+        return min(most, CGFloat(lines) * line + 12)
     }
 
     /// A row's height and the gap under it (see BookmarkOutline.Row).
     private static let line: CGFloat = 28
 
-    /// Every row with every folder open, an empty one's "Empty" included,
-    /// counted only as far as the list can be tall.
-    private static func count(_ nodes: [Bookmark], into lines: inout Int, upTo limit: Int) {
+    /// Every row that shows with the folders in `open` open (every folder,
+    /// for nil), an empty one's "Empty" included, counted only as far as
+    /// the list can be tall.
+    private static func count(_ nodes: [Bookmark], open: Set<Bookmark.ID>?, into lines: inout Int, upTo limit: Int) {
         for node in nodes {
             guard lines < limit else { return }
             lines += 1
-            guard node.isFolder else { continue }
-            if let kids = node.children, !kids.isEmpty { count(kids, into: &lines, upTo: limit) } else { lines += 1 }
+            guard node.isFolder, open?.contains(node.id) ?? true else { continue }
+            if let kids = node.children, !kids.isEmpty { count(kids, open: open, into: &lines, upTo: limit) } else { lines += 1 }
         }
     }
+
+    /// A folder opened or closed in the list by the bench, as a click on
+    /// its row does. Only a test run sends it.
+    static let benchToggle = PassthroughSubject<Bookmark.ID, Never>()
 
     private struct Foot: View {
         let symbol: String?
@@ -1508,13 +1598,25 @@ struct BookmarksPanel: View {
 /// menu out afresh each time it opens — anything added beside them was
 /// gone by then. So its delegate is wrapped: SwiftUI does its update,
 /// then the bookmarks go in after it. SwiftUI puts its delegate back on
-/// every update, so the wrapping is put back too (see `start`).
+/// every update, and may hand over a new menu, so the wrapping is put
+/// back too, at every turn of the run loop (see `start`).
+///
+/// They are put in only while the menu bar is in use. SwiftUI updates the
+/// menu bar many times a second while a tab's title keeps changing (a live
+/// price in a trading chart's title, #1137), and each update went through
+/// here: every bookmark taken out and made again in a closed menu, for
+/// rows nobody could see, and the Bookmarks menu's title flickered.
 @MainActor
 final class BookmarkMenu: NSObject, NSMenuDelegate {
     static let shared = BookmarkMenu()
 
     private weak var browser: Browser?
     private var watch: [Any] = []
+    /// Looks after each turn of the run loop: see `start`.
+    private var looking: CFRunLoopObserver?
+    /// The menu bar is in use: from the moment it is clicked (or reached
+    /// from the keyboard) until it is let go of.
+    private var tracking = false
     private let relay = Relay()
     /// What each folder's submenu holds, until it opens.
     private var folders: [ObjectIdentifier: [Bookmark]] = [:]
@@ -1526,32 +1628,55 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
     func start(for browser: Browser) {
         guard self.browser == nil else { return }
         self.browser = browser
-        relay.after = { [weak self] menu in self?.fill(menu) }
+        relay.after = { [weak self] menu in
+            guard let self, tracking else { return }
+            fill(menu)
+        }
         // SwiftUI puts its own delegate back whenever it updates the menu
-        // bar, which is whenever anything in the window changes. So: after
-        // each event, and as the menu bar starts to be used, before any of
-        // its menus opens.
+        // bar, which is whenever anything in the window changes — a tab's
+        // title too, which arrives from the page and not from an event, so
+        // looking only after each event left SwiftUI's delegate in place
+        // until the next one. And it may put a new menu in the old one's
+        // place. So: at every turn of the run loop, menus open or not, the
+        // menu there now is wrapped; while the menu bar is in use, it holds
+        // the bookmarks, put back as soon as a turn finds them gone. A
+        // lookup among a dozen items, and nothing more while all is well.
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.look() }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        looking = observer
         let centre = NotificationCenter.default
         watch = [
-            centre.addObserver(forName: NSApplication.didUpdateNotification, object: nil, queue: nil) { [weak self] _ in
-                MainActor.assumeIsolated { self?.wrap() }
-            },
+            // As the menu bar starts to be used, before any of its menus
+            // opens: the bookmarks go in now, not a turn later.
             centre.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { [weak self] note in
                 MainActor.assumeIsolated {
-                    guard (note.object as? NSMenu) === NSApp.mainMenu else { return }
-                    self?.wrap()
+                    guard let self, (note.object as? NSMenu) === NSApp.mainMenu else { return }
+                    self.tracking = true
+                    self.look()
                 }
             },
-            // However the menu bar is let go of, even if SwiftUI's delegate
-            // got the menu's own close instead.
+            // However the menu bar is let go of.
             centre.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: nil) { [weak self] note in
                 MainActor.assumeIsolated {
                     guard (note.object as? NSMenu) === NSApp.mainMenu else { return }
-                    self?.closed()
+                    self?.tracking = false
                 }
             },
         ]
         wrap()
+    }
+
+    /// The menu there now wrapped, and, while the menu bar is in use,
+    /// holding the bookmarks. An open menu is updated by SwiftUI itself,
+    /// straight through its own delegate, whenever anything it shows could
+    /// have changed — a tab's title, every second on a download page — and
+    /// that took the bookmarks out from under the pointer.
+    private func look() {
+        guard let menu else { return }
+        wrap(menu)
+        if tracking, !menu.items.contains(where: { $0.tag == Self.mark }) { fill(menu) }
     }
 
     private var menu: NSMenu? { NSApp.mainMenu?.items.first(where: { $0.title == "Bookmarks" })?.submenu }
@@ -1559,34 +1684,8 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
     /// The window in front's: its profile's bookmarks (see Profiles.swift).
     private var shown: Browser? { Browsers.front.flatMap { !$0.isPopup ? $0 : nil } ?? browser }
 
-    /// Looks, while the menu is open, after each turn of the run loop.
-    private var looking: CFRunLoopObserver?
-
-    /// An open menu is updated by SwiftUI itself, straight through its own
-    /// delegate, whenever anything it shows could have changed — a tab's
-    /// title, every second on a download page — and that took the bookmarks
-    /// out from under the pointer. While it is open, they go back in as soon
-    /// as a turn of the run loop finds them gone.
-    fileprivate func opened(_ menu: NSMenu) {
-        guard looking == nil else { return }
-        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { [weak self, weak menu] _, _ in
-            MainActor.assumeIsolated {
-                guard let self, let menu, !menu.items.contains(where: { $0.tag == Self.mark }) else { return }
-                self.fill(menu)
-            }
-        }
-        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
-        looking = observer
-    }
-
-    fileprivate func closed() {
-        guard let looking else { return }
-        CFRunLoopObserverInvalidate(looking)
-        self.looking = nil
-    }
-
-    private func wrap() {
-        guard let menu, menu.delegate !== relay
+    private func wrap(_ menu: NSMenu? = nil) {
+        guard let menu = menu ?? self.menu, menu.delegate !== relay
         else { return }
         relay.inner = menu.delegate
         menu.delegate = relay
@@ -1629,6 +1728,20 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
         for item in made { menu.addItem(item) }
         addOpenAll(to: menu, folder.children ?? [])
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+
+    /// The bookmarks bar's », at the pointer: those the bar has no room
+    /// for, as their folders' menus show them, folders opening as they are
+    /// reached (idea 958).
+    func popUp(_ nodes: [Bookmark], title: String) {
+        overflow(nodes, title: title).popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+
+    /// That menu, unshown. The bench reads and picks from it.
+    func overflow(_ nodes: [Bookmark], title: String) -> NSMenu {
+        let menu = NSMenu(title: title)
+        for item in items(for: nodes) { menu.addItem(item) }
+        return menu
     }
 
     private func items(for nodes: [Bookmark]) -> [NSMenuItem] {
@@ -1744,16 +1857,6 @@ final class BookmarkMenu: NSObject, NSMenuDelegate {
         func menuNeedsUpdate(_ menu: NSMenu) {
             inner?.menuNeedsUpdate?(menu)
             MainActor.assumeIsolated { after?(menu) }
-        }
-
-        func menuWillOpen(_ menu: NSMenu) {
-            inner?.menuWillOpen?(menu)
-            MainActor.assumeIsolated { BookmarkMenu.shared.opened(menu) }
-        }
-
-        func menuDidClose(_ menu: NSMenu) {
-            inner?.menuDidClose?(menu)
-            MainActor.assumeIsolated { BookmarkMenu.shared.closed() }
         }
 
         /// Only for its own items: the bookmarks aren't SwiftUI's to know.

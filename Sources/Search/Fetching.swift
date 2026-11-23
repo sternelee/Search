@@ -177,7 +177,9 @@ final class FetchEntry: ObservableObject, Identifiable {
     func failed(_ error: Error, resumeData: Data?) {
         download = nil
         pendingStop = nil
-        self.resumeData = resumeData
+        // Resuming picks up the same partial file, so a failure writing that
+        // file would only fail again: Retry starts it fresh instead.
+        self.resumeData = Self.failedWritingFile(error) ? nil : resumeData
         errorDescription = Self.reason(for: error)
         state = .failed
     }
@@ -224,6 +226,13 @@ final class FetchEntry: ObservableObject, Identifiable {
         fraction = nil
         completedBytes = 0
         totalBytes = 0
+    }
+
+    static func failedWritingFile(_ error: Error) -> Bool {
+        let error = error as NSError
+        guard error.domain == NSURLErrorDomain else { return false }
+        return [NSURLErrorCannotCreateFile, NSURLErrorCannotOpenFile, NSURLErrorCannotWriteToFile,
+                NSURLErrorCannotMoveFile, NSURLErrorCannotRemoveFile].contains(error.code)
     }
 
     private static func reason(for error: Error) -> String {
@@ -661,6 +670,11 @@ struct FetchDoor: View {
     /// Which side of it the floating card stands on: under it in the row,
     /// beside it at the column's foot.
     let arrowEdge: Edge
+    /// Whether this is the copy the person can see. With the doors up or at
+    /// the foot, the column draws both rows and hides the one not in use, and
+    /// both copies hear the list being asked for: the hidden one standing the
+    /// card beside a button nobody sees put it at the column's top (#1350).
+    let live: Bool
 
     @State private var hovering = false
     /// Its view, for the card to stand beside. Held, not drawn from.
@@ -670,11 +684,12 @@ struct FetchDoor: View {
         weak var view: NSView?
     }
 
-    init(browser: Browser, fetches: Fetches, arrowEdge: Edge = .bottom) {
+    init(browser: Browser, fetches: Fetches, arrowEdge: Edge = .bottom, live: Bool = true) {
         self.browser = browser
         self.fetches = fetches
         self.prefs = browser.prefs
         self.arrowEdge = arrowEdge
+        self.live = live
     }
 
     /// Whether it is in the row, for those that make room for it. Its list
@@ -686,7 +701,7 @@ struct FetchDoor: View {
 
     private func float(_ on: Bool) {
         guard on else { return DownloadsFloat.hide(for: browser, animated: true) }
-        guard let view = spot.view, view.window != nil else { return }
+        guard live, let view = spot.view, view.window != nil else { return }
         DownloadsFloat.show(browser, from: view, edge: arrowEdge)
     }
 
@@ -742,9 +757,11 @@ struct FetchDoor: View {
             }
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
-            .help("Downloads (⇧⌘J)")
+            .shortcutHelp("Downloads", "history.downloads")
             .background(ButtonSpot { spot.view = $0; if browser.downloadsHanging { float(true) } })
             .onChange(of: browser.downloadsHanging) { _, on in float(on) }
+            // The doors moving while the list hangs: it follows them.
+            .onChange(of: live) { _, _ in float(browser.downloadsHanging) }
             .onDisappear { DownloadsFloat.hide(for: browser) }
             .transition(.scale(scale: 0.6).combined(with: .opacity))
             .animation(Motion.quick, value: fetches.done)

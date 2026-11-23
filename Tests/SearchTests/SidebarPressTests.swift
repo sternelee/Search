@@ -12,7 +12,14 @@ final class SidebarPressTests: XCTestCase {
 
     override func tearDown() async throws {
         for window in windows { window.contentView = nil; window.close() }
-        for browser in browsers { browser.cancelTabEdit(); browser.closeAll() }
+        // Pins are kept for the space in every window (Pins.swift): put down,
+        // or the next test's column starts with them, its rows lower than
+        // rowPoint has them, and a drag from there carries a pin, not the row.
+        for browser in browsers {
+            browser.cancelTabEdit()
+            for tab in browser.tabs where tab.pin != nil { browser.unpin(tab) }
+            browser.closeAll()
+        }
         restorePreferences?()
         if let activationPolicy { NSApp.setActivationPolicy(activationPolicy) }
         windows.removeAll()
@@ -22,7 +29,7 @@ final class SidebarPressTests: XCTestCase {
     }
 
     override class func setUp() {
-        setenv("SEARCH_PROBE", "sidebar-press-\(getpid())", 1)
+        TestWorld.enter()
         super.setUp()
     }
 
@@ -40,6 +47,44 @@ final class SidebarPressTests: XCTestCase {
         try await send(.leftMouseDown, at: point, in: window)
         try await send(.leftMouseUp, at: point, in: window)
         XCTAssertEqual(browser.editingTab, first.id, "A fresh click on the active row still edits")
+    }
+
+    func testEditedRowTakesTheKeys() async throws {
+        let browser = makeBrowser()
+        let window = makeWindow(browser)
+        try await settle()
+        let point = rowPoint(0, in: window)
+        for _ in 0..<2 {
+            try await send(.leftMouseDown, at: point, in: window)
+            try await send(.leftMouseUp, at: point, in: window)
+        }
+        try await settle()
+        XCTAssertEqual(browser.editingTab, browser.tabs[0].id)
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView, "The row's field must have the keys")
+        XCTAssertEqual(editor.selectedRange().length, (editor.string as NSString).length)
+        XCTAssertFalse(editor.string.isEmpty)
+    }
+
+    func testRowLeftPickedAloneSelectsOnPressAgain() async throws {
+        let browser = makeBrowser()
+        let active = try XCTUnwrap(browser.active)
+        let index = try XCTUnwrap(browser.shownTabs.firstIndex { $0.id != active.id })
+        let other = browser.shownTabs[index]
+        let window = makeWindow(browser)
+        try await settle()
+        // ⌘ picks it along with the tab you're on.
+        browser.extendTabSelection(to: other, modifiers: .command)
+        try await settle()
+        XCTAssertTrue(browser.isPickedAmongOthers(other))
+        // Still picked, but alone now: its row's press is a plain press again.
+        browser.extendTabSelection(to: active, modifiers: .command)
+        try await settle()
+        XCTAssertEqual(browser.selectedTabIDs, [other.id])
+        XCTAssertFalse(browser.isPickedAmongOthers(other))
+        let point = rowPoint(index, in: window)
+        try await send(.leftMouseDown, at: point, in: window)
+        XCTAssertEqual(browser.activeID, other.id, "The page must change while the button is held")
+        try await send(.leftMouseUp, at: point, in: window)
     }
 
     func testPressThenDragStillReordersWithoutEditing() async throws {

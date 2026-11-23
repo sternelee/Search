@@ -14,6 +14,8 @@ struct SearchApp: App {
     @ObservedObject private var shortcuts = ShortcutStore.shared
     /// Only for the File menu's Profile list, once there is a second one.
     @ObservedObject private var profiles = Profiles.shared
+    /// Only for History's tabs on your other devices (Sync with iCloud).
+    @ObservedObject private var icloud = ICloudSync.shared
     /// Links from other apps, and the Dock icon.
     @NSApplicationDelegateAdaptor(Links.self) private var links
 
@@ -91,6 +93,10 @@ struct SearchApp: App {
                 Divider()
                 Button("Open Address…") { browser.edit() }
                     .shortcut("file.openAddress")
+                // A page, PDF or picture on this Mac, as Safari's File ›
+                // Open File… (idea 755).
+                Button("Open File…") { browser.openFile() }
+                    .shortcut("file.openFile")
                 Divider()
                 // Another browser's bookmarks, history, passwords and the
                 // rest, as Safari's File › Import From: the one sheet every
@@ -102,6 +108,8 @@ struct SearchApp: App {
                     .shortcut("file.closeTab")
                 Button("Close Window") { browser.closeWindow() }
                     .shortcut("file.closeWindow")
+                // A coding agent connected (AgentControl): Stop, one click away.
+                StopAgentMenuItem()
             }
             CommandGroup(replacing: .printItem) {
                 Button("Share…") { browser.share() }
@@ -118,6 +126,10 @@ struct SearchApp: App {
                     .disabled(!(browser.active?.isWeb ?? false))
             }
             CommandGroup(after: .pasteboard) {
+                // As Safari's: what ⇧⌘V already does while you type, said
+                // in the menu (idea 814).
+                Button("Paste and Match Style") { Browser.pasteMatchingStyle() }
+                    .shortcut("edit.pasteMatchStyle")
                 Button("Copy Clean Link") { browser.copyCleanLink() }
                     .shortcut("edit.copyCleanLink")
                     .disabled(browser.active?.isBlank ?? true)
@@ -146,12 +158,17 @@ struct SearchApp: App {
                         ))
                     }
                 }
-                // Moved here from Settings, as Safari has it. WebKit reads it
-                // once, so it counts from the next page on.
+                // Moved here from Settings, as Safari has it: every page,
+                // open or to come (Preferences.switchWebKit).
                 Menu("Spelling and Grammar") {
                     Toggle("Correct Spelling Automatically", isOn: Binding(
                         get: { browser.prefs.autocorrect },
                         set: { browser.prefs.autocorrect = $0 }
+                    ))
+                    // Off unless switched on here, whatever the Mac says.
+                    Toggle("Show Inline Predictions", isOn: Binding(
+                        get: { browser.prefs.inlinePredictions },
+                        set: { browser.prefs.inlinePredictions = $0 }
                     ))
                 }
             }
@@ -238,16 +255,28 @@ struct SearchApp: App {
                         .disabled(!(browser.active?.isWeb ?? false))
                 }
                 Divider()
+                // Only once it is on (Settings › Browsing › Pages).
+                if browser.prefs.capturesPages {
+                    Button("Capture…") { browser.toggleSnap() }
+                        .shortcut("view.capture")
+                        .disabled(!(browser.active?.isWeb ?? false))
+                }
                 Button("Hide Elements…") { browser.toggleHiding() }
                     .shortcut("view.hide")
                 Button("Hidden on This Site…") { browser.reviewing.toggle() }
                     .shortcut("view.hidden")
+                // Only once it is on (Settings › Browsing › Pages).
+                if browser.prefs.sitesStyles {
+                    Button("Edit Site Style…") { browser.editSiteStyle() }
+                        .shortcut("view.style")
+                        .disabled(!(browser.active?.isWeb ?? false) || browser.active?.shy == true)
+                }
                 Divider()
                 Button("Zoom In") { browser.zoom(by: 1.1) }
                     .shortcut("view.zoomIn")
                 Button("Zoom Out") { browser.zoom(by: 1 / 1.1) }
                     .shortcut("view.zoomOut")
-                Button("Actual Size") { browser.resetZoom() }
+                Button(browser.prefs.actualSizeTitle) { browser.resetZoom() }
                     .shortcut("view.actualSize")
                 Divider()
                 // The Web Inspector, on the keys Chrome and Arc use (see Inspector.swift).
@@ -257,6 +286,14 @@ struct SearchApp: App {
                     .shortcut("view.console")
                 Button("Inspect Element") { browser.inspectElement() }
                     .shortcut("view.inspect")
+                // The system's own item, which replacing the toolbar group
+                // above took with it: ⌃⌘F did nothing (#1176). The key is
+                // the Mac's, never offered in Settings › Shortcuts.
+                Divider()
+                Button(browser.fullScreen ? "Exit Full Screen" : "Enter Full Screen") {
+                    (NSApp.keyWindow ?? browser.window)?.toggleFullScreen(nil)
+                }
+                .keyboardShortcut("f", modifiers: [.control, .command])
             }
             CommandMenu("Tabs") {
                 Button("Back") { browser.back() }
@@ -339,11 +376,17 @@ struct SearchApp: App {
                 if browser.prefs.splitView {
                     // The same key puts a pair apart: on a pair, the item
                     // says so, and the one below it without a key goes.
-                    Button(browser.activeSplit == nil || browser.pickedPair != nil ? "Split Current Page" : "Separate Split Tabs") {
+                    Button(browser.activeSplit == nil || browser.pickedSplit != nil ? "Split Current Page" : "Separate Split Tabs") {
                         browser.splitKey()
                     }
                         .shortcut("tabs.split")
                         .disabled(browser.active == nil || browser.active?.bench == true)
+                    // On a split with room: one more page, empty, beside
+                    // the one with the keys (up to four).
+                    if browser.activeSplit != nil {
+                        Button("Add Page to Split View") { browser.addPaneToSplit() }
+                            .disabled(!browser.canAddPane)
+                    }
                     Button("Focus Left Page") { browser.focusPane(onLeft: true) }
                         .shortcut("tabs.focusLeftPane")
                         .disabled(browser.activeSplit == nil)
@@ -353,14 +396,14 @@ struct SearchApp: App {
                     Button("Swap Pages") { browser.swapSplit() }
                         .shortcut("tabs.swapSplit")
                         .disabled(browser.activeSplit == nil)
-                    if browser.activeSplit == nil || browser.pickedPair != nil {
+                    if browser.activeSplit == nil || browser.pickedSplit != nil {
                         Button("Separate Split Tabs") {
                             if let tab = browser.active { browser.detachSplit(tab) }
                         }
                         .shortcut("tabs.separateSplit")
                         .disabled(browser.activeSplit == nil)
                     }
-                    Button("Close Both Pages") { browser.closeSplit() }
+                    Button((browser.activeSplit?.tabs.count ?? 2) > 2 ? "Close All Pages" : "Close Both Pages") { browser.closeSplit() }
                         .disabled(browser.activeSplit == nil)
                     Divider()
                 }
@@ -368,9 +411,11 @@ struct SearchApp: App {
                     let rows = browser.prefs.showsPinRows
                     if tab.pin == nil {
                         Button("Pin Tab") { browser.pin(tab) }
+                            .shortcut("tabs.pin")
                             .disabled(!tab.isWeb || tab.shy)
                         if rows {
                             Button("Pin Tab as Row") { browser.pin(tab, listed: true) }
+                                .shortcut("tabs.pinRow")
                                 .disabled(!tab.isWeb || tab.shy)
                         }
                     } else {
@@ -381,6 +426,7 @@ struct SearchApp: App {
                             Button("Change Letter") { browser.editLetter(tab) }
                         }
                         Button("Unpin Tab") { browser.unpin(tab) }
+                            .shortcut(rows && tab.listed ? "tabs.pinRow" : "tabs.pin")
                     }
                 }
                 Button("Rename Tab") { if let tab = browser.active { browser.beginTabRename(tab) } }
@@ -391,6 +437,14 @@ struct SearchApp: App {
                     // ⌘D belongs to the room on a terminal (no web page to
                     // copy); Split Terminal Right above takes the key there.
                     .disabled(!(browser.active?.isWeb ?? false))
+                // Only with small windows turned on in Settings › General:
+                // someone who never asked for them never sees them.
+                if browser.prefs.littleLinks {
+                    Button("Open in Small Window") {
+                        if let tab = browser.active { browser.openInLittleWindow(tab) }
+                    }
+                        .disabled(!(browser.active.map(browser.liftable) ?? false))
+                }
                 Button("Copy Address") { browser.copyAddress() }
                     .shortcut("tabs.copyAddress")
                     .disabled(!(browser.active?.isWeb ?? false))
@@ -441,11 +495,35 @@ struct SearchApp: App {
                         }
                     }
                 }
+                // As Safari's iCloud Tabs: what is open on your iPhone and
+                // other Macs, a menu each, opened here only when picked.
+                if icloud.on, !icloud.devices.isEmpty {
+                    Section("Tabs on Your Other Devices") {
+                        ForEach(icloud.devices, id: \.id) { device in
+                            Menu(ICloudSync.title(device.tabs)) {
+                                ForEach(device.tabs.tabs, id: \.self) { page in
+                                    if let url = URL(string: page.url) {
+                                        Button {
+                                            browser.open(url, foreground: true)
+                                        } label: {
+                                            MenuLine(title: page.title.isEmpty ? Address.withoutWWW(page.url) : page.title, url: url)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 Divider()
                 Button("Show History…") { browser.recalling = true }
                     .shortcut("history.show")
                 Button("Downloads…") { browser.showDownloads() }
                     .shortcut("history.downloads")
+                // Only while tabs close by themselves (Closing.swift).
+                if browser.prefs.tabLife != .never {
+                    Button("Archived Tabs…") { browser.archiving = true }
+                        .shortcut("history.archive")
+                }
                 Divider()
                 Button("Clear Browsing Data…") { browser.clearBrowsingData() }
                     .shortcut("history.clearData")
@@ -553,6 +631,7 @@ struct ContentView: View {
     @State private var held = WeakWindow()
     private var window: NSWindow? { held.window }
     @State private var resting: RestingLights?
+    @State private var reveal: FullScreenReveal?
     /// The room the page leaves for the column and the strip, set without
     /// animation (see `make(room:after:)`); nil only before the window is up.
     @State private var room: CGSize?
@@ -560,6 +639,10 @@ struct ContentView: View {
     @State private var immersionRevision = 0
     /// The window's width, for a side panel that leaves the page some room.
     @State private var across: CGFloat = 0
+    /// And its height, for a space's gradient to run across the whole window.
+    @State private var tall: CGFloat = 0
+    /// The column's and the side panel's widths while their edges are held.
+    @StateObject private var edges = HeldEdges()
 
 
     /// The window: room at the top, one stage for the page, and the row when
@@ -570,7 +653,17 @@ struct ContentView: View {
             // that survives the transition is not a white band across the top.
             // With the tabs down the side, the ground the page's card and the
             // column sit on (see CardEdge).
-            (fullscreenTab != nil ? Color.black : cards ? Palette.frame : Palette.ground)
+            if fullscreenTab != nil {
+                Color.black
+            } else if browser.glassy {
+                GlassGround(prefs: browser.prefs, look: browser.wash)
+            } else {
+                cards ? Palette.frame : Palette.ground
+            }
+            // As cards, the column, the bookmarks bar and the gaps around the
+            // page share that ground, so the space's colour washes all of it
+            // alike. Edge to edge the column and the strip bring their own.
+            if cards && !browser.glassy { SpaceWash(look: browser.wash) }
 
             // One stage, always. It starts beside the column and under the
             // strip, not behind them — a page sliding beneath floating chrome
@@ -587,6 +680,14 @@ struct ContentView: View {
             // side by side are a card each (see PaneStage).
             stage
                 .modifier(CardEdge(on: cards && !browser.prefs.splitView))
+                // The tabs folded away: a line says the page is coming
+                // (Settings, idea 269), clear of the card's round corners.
+                .overlay(alignment: .top) {
+                    if browser.folded, browser.prefs.showsLoadingLine, fullscreenTab == nil, let tab = browser.active {
+                        TabLoadingLine(tab: tab)
+                            .padding(.horizontal, cards ? Metrics.cardRadius : 0)
+                    }
+                }
                 .padding(.leading, sideOnRight ? farGap + panelRoom : 0)
                 .padding(.trailing, sideOnRight ? 0 : farGap + panelRoom)
                 .padding(.bottom, farGap)
@@ -637,10 +738,32 @@ struct ContentView: View {
                 .allowsHitTesting(true)
             }
         }
+        .background { GeometryReader { geo in Color.clear.onAppear { across = geo.size.width; tall = geo.size.height }
+            .onChange(of: geo.size.width) { _, width in across = width }
+            .onChange(of: geo.size.height) { _, height in tall = height } } }
         .animation(Motion.glide, value: browser.prefs.sidebar)
         .animation(Motion.glide, value: browser.prefs.sidePosition)
         .onAppear { if room == nil { room = chrome } }
         .onChange(of: chrome) { old, new in make(room: new, after: old) }
+        // The column's edge let go where it was: the page its room at last.
+        .onChange(of: edges.side == nil) { _, free in
+            guard free, roomed != chrome else { return }
+            roomTicket += 1
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) { room = chrome }
+        }
+        // ⌘S folding the column: the page its room now, the column still
+        // out over it, its far side past the window's edge; called off, the
+        // column's room back. Never slid: what moves is the column, after.
+        .onChange(of: browser.foldingAway) { _, away in
+            roomTicket += 1
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) {
+                if away, sidebar { room = CGSize(width: foldedWidth, height: roomed.height) } else { room = chrome }
+            }
+        }
     }
 
     // With Split View off, the stage is the one it always was: a single
@@ -723,11 +846,18 @@ struct ContentView: View {
     private var chrome: CGSize {
         let bar = barShown ? BookmarksBar.height : 0
         if cards {
-            return CGSize(width: sidebar ? browser.prefs.columnWidth : Metrics.cardGap,
+            return CGSize(width: sidebar ? sideWidth : Metrics.cardGap,
                           height: barShown ? bar : Metrics.cardGap)
         }
-        return CGSize(width: sidebar ? browser.prefs.columnWidth : 0, height: band + bar)
+        return CGSize(width: sidebar ? sideWidth : 0, height: band + bar)
     }
+
+    /// The column's width folded away: the room ⌘S gives the page before
+    /// the column slides (see Browser.toggleFold).
+    private var foldedWidth: CGFloat { cards ? Metrics.cardGap : 0 }
+
+    /// The column's width: the setting, or where its edge is while held.
+    private var sideWidth: CGFloat { edges.side ?? browser.prefs.columnWidth }
 
     /// The page as a card on the window's ground: with the tabs down the
     /// side, the column out or folded away, the switch on, and neither the
@@ -748,7 +878,7 @@ struct ContentView: View {
     /// The side panel's width as drawn: as you left it, or narrower in a
     /// window too narrow to keep 320 points of page beside it.
     private var panelWidth: CGFloat {
-        let asked = browser.prefs.sidePanelWidth
+        let asked = edges.panel ?? browser.prefs.sidePanelWidth
         guard across > 0 else { return asked }
         let left = across - chrome.width - farGap * 2 - 320
         return max(240, min(asked, left))
@@ -762,7 +892,7 @@ struct ContentView: View {
 
     private var sidePanel: some View {
         SidePanelBeside(browser: browser, prefs: browser.prefs, onLeft: sideOnRight,
-                        card: cards, width: panelWidth)
+                        card: cards, width: panelWidth, onDrag: { [edges] in edges.panel = $0 })
             .padding(.top, chrome.height)
             .padding(.bottom, farGap)
             .padding(sideOnRight ? .leading : .trailing, farGap)
@@ -771,10 +901,11 @@ struct ContentView: View {
             .transition(.opacity)
     }
 
-    /// The bookmarks bar is up: asked for, there are bookmarks, and the tabs
-    /// aren't folded away or under a video filling the screen.
+    /// The bookmarks bar is up: asked for, there are bookmarks, the tabs
+    /// aren't folded away or under a video filling the screen, and it isn't
+    /// in the column instead (SideBookmarks).
     private var barShown: Bool {
-        browser.prefs.bookmarksBar && !browser.bookmarks.isEmpty && !browser.folded
+        browser.prefs.bookmarksBar && !browser.prefs.sideBookmarks && !browser.bookmarks.isEmpty && !browser.folded
             && fullscreenTab == nil
     }
 
@@ -791,6 +922,19 @@ struct ContentView: View {
     /// A column being dragged wider or narrower is followed as it goes.
     private func make(room new: CGSize, after old: CGSize) {
         let now = roomed
+        // The column's edge held: the page slides with it rather than being
+        // laid out again at every width it goes through. Wider, it runs on
+        // past the window's far edge; narrower, it is resized only every 40
+        // points, each time with that much to spare. Let go, it is resized
+        // once, to its room (below).
+        if edges.side != nil, new.height == now.height, new.width > Metrics.cardGap {
+            roomTicket += 1
+            guard new.width < now.width else { return }
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) { room = CGSize(width: max(Metrics.sideMin, new.width - 40), height: new.height) }
+            return
+        }
         // Given already, with the chrome itself (see `immersing`).
         if now == new {
             roomTicket += 1
@@ -821,6 +965,9 @@ struct ContentView: View {
     private var bars: some View {
         VStack(spacing: 8) {
             announcement
+            // A coding agent's question; never anything over the page once
+            // it is answered (AgentBanner).
+            AgentBar(browser: browser)
             if let ask = browser.asking {
                 Group {
                     if ask.screen { ScreenQuestion(browser: browser, ask: ask) }
@@ -834,7 +981,7 @@ struct ContentView: View {
             }
             StoreOffer(browser: browser)
             if browser.veiling {
-                hint("Click anything to hide it   ⌘Z undo   esc done")
+                hint("Click anything to hide it   ↑↓ wider, narrower   ⌘Z undo   esc done")
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -851,13 +998,20 @@ struct ContentView: View {
         // SplitStage owns the field whenever Split View is enabled, including
         // an ordinary tab that is not currently paired. Drawing it here too
         // leaves two offset address fields on a blank tab.
-        if !browser.prefs.splitView {
-            Omnibox(browser: browser, over: !(browser.active?.isBlank ?? true))
-                // Centred on the page, not on the window. The column of tabs
-                // is not what the field is standing over, and dimming it along
-                // with the page says otherwise.
-                .padding(.leading, sidebar && !sideOnRight ? browser.prefs.columnWidth : 0)
-                .padding(.trailing, sidebar && sideOnRight ? browser.prefs.columnWidth : 0)
+        if browser.fieldOnWindow {
+            // Settings › The field in the middle of the window: over the
+            // whole window, as Arc's, in place of the page's (idea 753).
+            Omnibox(browser: browser, over: true, high: true)
+        } else if !browser.prefs.splitView {
+            ZStack {
+                HomeGrid(browser: browser)
+                Omnibox(browser: browser, over: !(browser.active?.isBlank ?? true))
+            }
+            // Centred on the page, not on the window. The column of tabs
+            // is not what the field is standing over, and dimming it along
+            // with the page says otherwise.
+            .padding(.leading, sidebar && !sideOnRight ? sideWidth : 0)
+            .padding(.trailing, sidebar && sideOnRight ? sideWidth : 0)
         }
     }
 
@@ -876,10 +1030,13 @@ struct ContentView: View {
         // version's notes are a tab.
         if browser.newsShowing, let release = WhatsNew.current {
             sheet {
-                WhatsNewCard(release: release, prefs: browser.prefs, close: { browser.newsShowing = false }) {
+                WhatsNewCard(release: release, prefs: browser.prefs, close: { browser.newsShowing = false }, notes: {
                     browser.newsShowing = false
                     browser.show(InternalPage(.notes))
-                }
+                }, open: { url in
+                    browser.newsShowing = false
+                    _ = browser.open(url, foreground: true)
+                })
             } close: { browser.newsShowing = false }
         }
         if browser.reviewing {
@@ -890,6 +1047,21 @@ struct ContentView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { browser.reviewing = false }
                 HiddenPanel(browser: browser)
+                    .padding(.top, Metrics.strip + 8)
+                    .padding(.trailing, 14)
+                    .transition(.scale(scale: 0.97, anchor: .topTrailing).combined(with: .opacity))
+            }
+            .ignoresSafeArea()
+            .transition(.opacity)
+        }
+        if let host = browser.styling {
+            // The same: the page stays in view, wearing what you type.
+            ZStack(alignment: .topTrailing) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { browser.styling = nil }
+                StylePanel(browser: browser, host: host)
+                    .id(host)
                     .padding(.top, Metrics.strip + 8)
                     .padding(.trailing, 14)
                     .transition(.scale(scale: 0.97, anchor: .topTrailing).combined(with: .opacity))
@@ -911,11 +1083,19 @@ struct ContentView: View {
     }
 
     /// The window held, dressed and named for the page in front (see
-    /// WindowTitle.swift).
+    /// WindowTitle.swift), which it offers to your other devices too (see
+    /// Handoff.swift).
     private var windowSetup: some View {
         ZStack {
             WindowSetup(ready: setUp)
-            if let tab = browser.active { WindowTitle(tab: tab, window: window).id(tab.id) }
+            if let tab = browser.active {
+                WindowTitle(tab: tab, window: window).id(tab.id)
+                Handoff(tab: tab, prefs: browser.prefs, window: window).id(tab.id)
+            }
+        }
+        // With no tab in front, nothing stays offered from the last one.
+        .onChange(of: browser.activeID) { _, id in
+            if id == nil, let window { Handoff.offer(nil, in: window) }
         }
     }
 
@@ -923,7 +1103,9 @@ struct ContentView: View {
         window_
             // The column folded away, and out again at the edge (see Fold.swift).
             .overlay(alignment: sideOnRight ? .trailing : .leading) {
-                if fullscreenTab == nil { Fold(browser: browser, prefs: browser.prefs) }
+                if fullscreenTab == nil {
+                    Fold(browser: browser, prefs: browser.prefs, onDrag: { [edges] in edges.side = $0 })
+                }
             }
             .overlay(alignment: .bottom) { bars }
             .overlay {
@@ -938,28 +1120,64 @@ struct ContentView: View {
                     .ignoresSafeArea()
             }
             .overlay { field }
+            // The card for a new space with the column as icons: too narrow
+            // for its name and field, it comes over the page, beside the
+            // column, as wide as it is anywhere else (idea 835).
+            .overlay(alignment: sideOnRight ? .topTrailing : .topLeading) {
+                if browser.makingSpace, sidebar, browser.prefs.iconColumn {
+                    NewSpaceCard(browser: browser)
+                        .frame(width: 260)
+                        .background(Palette.ground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.12), radius: 18, y: 6)
+                        .padding(sideOnRight ? .trailing : .leading, sideWidth + 12)
+                        .padding(.top, 60)
+                        .transition(.opacity)
+                }
+            }
             .overlay { panels }
             .overlay { switcherOverlay }
             .overlay(alignment: .topTrailing) {
                 if let job = browser.fileImport { ImportProgress(browser: browser, job: job) }
             }
             .environment(\.tabShortcutNumbers, browser.tabShortcutNumbers)
+            // One gradient across the column, the bars and the ground alike.
+            .environment(\.washRoom, CGSize(width: across, height: tall))
+            // And as strongly, Subtle, Rich or Vivid, as the space on screen asks.
+            .environment(\.washStrength, browser.washStrength)
+            // The live tab as a pane of Liquid Glass, where the Mac has it.
+            .environment(\.liquidTabs, browser.prefs.liquidTabs && LiquidTab.available)
             // The field comes on its spring, and goes quickly: once Return
             // is pressed the page is on its way, and the field is not what
             // there is to watch.
             .animation(browser.fieldShowing ? Motion.settle : Motion.quick, value: browser.fieldShowing)
+            // The menu bar brought down in full screen takes the top: the bars
+            // start under it (see FullScreenReveal).
+            .padding(.top, browser.revealInset)
+            .ignoresSafeArea()
             .background(windowSetup)
             .onChange(of: browser.prefs.sidebar) { _, _ in
                 DispatchQueue.main.async { Lights.refresh(window); measureLights() }
             }
-            .onChange(of: browser.asCards) { _, cards in
+            .onChange(of: browser.asCards) { _, _ in
                 // The ground the page's card sits on, or the page's own.
-                window?.backgroundColor = cards ? Palette.NS.frame : Palette.NS.ground
+                browser.paintGround(window)
+            }
+            .onChange(of: browser.glassy) { _, _ in browser.paintGround(window) }
+            // The lights sit on the strip's middle, which moves with its height.
+            .onChange(of: browser.prefs.compactStrip) { _, _ in
+                DispatchQueue.main.async { Lights.refresh(window); measureLights() }
             }
             .onChange(of: browser.prefs.sidePosition) { _, _ in
                 DispatchQueue.main.async { Lights.refresh(window); measureLights() }
             }
             .onChange(of: browser.prefs.columnWidth) { _, _ in
+                DispatchQueue.main.async { Lights.refresh(window); measureLights() }
+            }
+            // On the right, the lights sit in the column's corner, which
+            // moves with its edge.
+            .onChange(of: edges.side) { _, _ in
+                guard sideOnRight else { return }
                 DispatchQueue.main.async { Lights.refresh(window); measureLights() }
             }
             // Stepping away to another app: macOS draws its own resting
@@ -969,7 +1187,11 @@ struct ContentView: View {
                 browser.tabSwitcher.cancel()
                 if browser.commandHeld { browser.commandHeld = false }
                 measureLights()
-                resting?.isHidden = false
+                // Not in full screen, a split's half included: there macOS
+                // brings its own buttons down with the title bar, and ours,
+                // left where the window's buttons were before, made a second
+                // row of them under it (idea 929).
+                resting?.isHidden = window?.styleMask.contains(.fullScreen) ?? false
                 // Only the window you were in, or every window's video would come.
                 browser.appLeft()
             }
@@ -986,10 +1208,10 @@ struct ContentView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { note in
-                if let window, (note.object as? NSWindow) === window { browser.fullScreen = true }
+                if let window, (note.object as? NSWindow) === window { browser.fullScreen = true; reveal?.entering(); resting?.isHidden = true }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { note in
-                if let window, (note.object as? NSWindow) === window { browser.fullScreen = false }
+                if let window, (note.object as? NSWindow) === window { browser.fullScreen = false; reveal?.leaving() }
             }
             // And as it is once there, or back: a way in that macOS gave up
             // on half way says so only by where the window ends up.
@@ -1014,6 +1236,7 @@ struct ContentView: View {
             .animation(Motion.settle, value: browser.welcoming)
             .animation(Motion.settle, value: browser.newsShowing)
             .animation(Motion.settle, value: browser.reviewing)
+            .animation(Motion.settle, value: browser.styling)
         .onAppear {
             watchKeys()
             browser.askFocus()
@@ -1151,11 +1374,8 @@ struct ContentView: View {
     @ViewBuilder
     private var fullscreenWatch: some View {
         if browser.prefs.splitView, let split = browser.activeSplit {
-            if let left = browser.tabs.first(where: { $0.id == split.left }) {
-                TabImmersionWatch(tab: left) { immersing() }.id(left.id)
-            }
-            if let right = browser.tabs.first(where: { $0.id == split.right }) {
-                TabImmersionWatch(tab: right) { immersing() }.id(right.id)
+            ForEach(browser.tabs.filter { split.contains($0.id) }) { pane in
+                TabImmersionWatch(tab: pane) { immersing() }.id(pane.id)
             }
         } else if let active = browser.active {
             TabImmersionWatch(tab: active) { immersing() }.id(active.id)
@@ -1200,7 +1420,7 @@ struct ContentView: View {
         view.spots = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
             .compactMap { window.standardWindowButton($0) }
             .map { $0.convert($0.bounds, to: titlebar) }
-        view.isHidden = NSApp.isActive
+        view.isHidden = NSApp.isActive || window.styleMask.contains(.fullScreen)
     }
 
     /// The window, once there is one: held, dressed, and named for the page
@@ -1216,6 +1436,16 @@ struct ContentView: View {
         // Off screen at once, while a link's small window keeps the browser's
         // windows away (see Browsers.keepAway).
         Browsers.putAway()
+        // Tucked behind another profile's window before it had one: SwiftUI's
+        // window, whose browser a relaunch tucks (Browsers.restore runs as
+        // the scene appears, before this) when another profile was on screen
+        // at quit. Nothing could order it out then, so it goes now, as a
+        // tucked window opened by hand never comes in (#1060).
+        if browser.tucked {
+            window.animationBehavior = .none
+            window.isExcludedFromWindowsMenu = true
+            window.orderOut(nil)
+        }
         window.tabbingMode = .disallowed
         // Light or dark is the app's to say (Settings › Appearance); the
         // window only has to be the ground colour that goes with it.
@@ -1223,7 +1453,9 @@ struct ContentView: View {
         window.titleVisibility = .hidden
         // A window put back in full screen is so before any notice says it.
         browser.fullScreen = window.styleMask.contains(.fullScreen)
-        window.backgroundColor = browser.asCards ? Palette.NS.frame : Palette.NS.ground
+        if reveal == nil { reveal = FullScreenReveal(window: window, browser: browser) }
+        if browser.fullScreen { reveal?.entering() }
+        browser.paintGround(window)
         // The strip does the dragging, so the page underneath can't be grabbed
         // by accident while selecting text.
         window.isMovableByWindowBackground = false
@@ -1240,9 +1472,10 @@ struct ContentView: View {
         // height, in both modes, without a toolbar's rounder corners — see
         // Lights.swift. The column's first row is the strip's height too, so
         // its three doors sit on the lights' line.
+        let edges = self.edges
         Lights.keep(window, centreX: { window in
             browser.prefs.sidebar && browser.prefs.sidePosition == .right
-                ? window.frame.width - browser.prefs.columnWidth + Lights.centre.x
+                ? window.frame.width - (edges.side ?? browser.prefs.columnWidth) + Lights.centre.x
                 : Lights.centre.x
         }, vertical: { _ in browser.prefs.iconColumn }) { measureLights() }
         DispatchQueue.main.async { measureLights() }
@@ -1281,23 +1514,38 @@ struct ContentView: View {
     private func watchKeys() {
         let id = ObjectIdentifier(browser)
         if let old = ContentView.monitors[id] { NSEvent.removeMonitor(old) }
-        ContentView.monitors[id] = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .leftMouseDown]) { event in
-            // A click on the tab switcher, in this window only (see
-            // Browser.clickTabSwitcher), turned into the top-left coordinates
-            // SwiftUI's frames are in.
-            if event.type == .leftMouseDown {
-                guard let window, event.window === window, let height = window.contentView?.bounds.height
+        ContentView.monitors[id] = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { event in
+            if event.type != .keyDown, event.type != .flagsChanged {
+                // A click in this window means a close is no longer the last
+                // thing done (Browser.lastClose). On the way down, so the
+                // close a click on a tab's cross makes, on the way up, is.
+                guard let window, event.window === window else { return event }
+                Browser.lastClose = nil
+                // A click on the tab switcher, in this window only (see
+                // Browser.clickTabSwitcher), turned into the top-left
+                // coordinates SwiftUI's frames are in.
+                guard event.type == .leftMouseDown, let height = window.contentView?.bounds.height
                 else { return event }
                 let at = event.locationInWindow
                 return browser.clickTabSwitcher(at: CGPoint(x: at.x, y: height - at.y)) ? nil : event
             }
             // Every window has a monitor, and every monitor hears every key:
             // each takes only its own window's, and the one in front takes
-            // those of windows that aren't a browser's (a panel, the little
-            // window).
+            // those of windows that aren't a browser's (a panel). A small
+            // window's are its own (LittleWindow.watchKeys).
+            // The address field raised from another app answers its own keys
+            // (Launcher.swift), as does the panel asking which space a link
+            // opens in (LinkChooserPanel.swift): taken here, Escape would put
+            // away what is up in the window behind it, ⌘W close a tab there,
+            // and a key typed while this window's field is on its way be held
+            // for it.
+            if event.window is LauncherPanel { return event }
             guard mine(event) else { return event }
             guard event.type == .keyDown else {
-                let held = browser.prefs.showsTabShortcuts && event.modifierFlags.contains(.command)
+                // ⌃ with the tab numbers on it (Settings › Spaces & Pins) is
+                // also the switcher's: its cards are up, not the numbers.
+                let held = browser.prefs.showsTabShortcuts && KeyCombo.holdsTabNumbers(event.modifierFlags)
+                    && !(KeyCombo.spacesOnCommand && browser.tabSwitcher.active)
                 if browser.commandHeld != held { browser.commandHeld = held }
                 // ⌃ let go of switches to the tab the switcher is on — or
                 // whichever its key is held with (Settings › Shortcuts).
@@ -1308,6 +1556,11 @@ struct ContentView: View {
                 if !event.modifierFlags.contains(.command) { browser.landSummon() }
                 return event
             }
+            ContentView.keyed(event)
+            // Escape while a page holds the pointer (a game, see PointerLock)
+            // is the page's, which lets the pointer go on it, ahead of the
+            // find bar, the field, or a full screen's Esc twice.
+            if PointerLock.shared.escape(event) { return event }
             // Escape on a page filling the screen is WebKit's, which leaves
             // on the first one, as Safari does. Its window isn't a browser's,
             // so the key came here first and put away what was left up in
@@ -1321,6 +1574,13 @@ struct ContentView: View {
                 if browser.tabSwitcher.active { browser.tabSwitcher.cancel() }
                 guard browser.prefs.escapeTwice else { return event }
                 return FullScreenEscape.shared.passes(event, to: page) ? event : nil
+            }
+            // ⌃Tab, ⌘T and ⌘1–⌘9 on a page filling the screen act on the
+            // window behind it, as they did, and also end the page's full
+            // screen as its own button does: the key says the video is being
+            // left, and the tab they went to was there only after Esc (#1042).
+            if let page = ContentView.pageFillingScreen(event), ContentView.movesTab(event) {
+                page.evaluateInSearch("if (document.fullscreenElement) document.exitFullscreen(); void 0")
             }
             // A key typed while the field is on its way is the field's (holdKey),
             // Escape in a full-screen window included.
@@ -1336,6 +1596,22 @@ struct ContentView: View {
             // AppKit and counted instead (see FullScreenEscape): the first
             // puts the reminder up, a second within two seconds leaves. Held
             // down, its repeats are kept and count for nothing.
+            // Without it, as in Safari: the press is the page's, to close
+            // its own pop-up, and the window stays in full screen even when
+            // the page has no use for it (idea 582). WebKit hands a key it
+            // didn't use back through the app; that copy goes no further,
+            // where AppKit would have taken the window out on it.
+            if event.keyCode == 53, !browser.prefs.escapeTwice, let window, event.window === window,
+               window.styleMask.contains(.fullScreen) {
+                if FullScreenEscape.shared.cameBack(event) { return nil }
+                if take(event) { return nil }
+                if let page = (window.firstResponder as? NSView).flatMap(FullScreenEscape.page(holding:)) {
+                    FullScreenEscape.shared.handOver(event)
+                    page.keyDown(with: event)
+                    return nil
+                }
+                return event
+            }
             if event.keyCode == 53, browser.prefs.escapeTwice, let window, event.window === window,
                window.styleMask.contains(.fullScreen) {
                 if event.isARepeat { return nil }
@@ -1345,13 +1621,32 @@ struct ContentView: View {
             }
             return take(event) ? nil : event
         }
-        ContentView.keyHooks[id] = { event in take(event) ? nil : event }
+        ContentView.keyHooks[id] = { event in
+            ContentView.keyed(event)
+            return take(event) ? nil : event
+        }
+    }
+
+    /// Any key but ⌘Z itself means a close is no longer the last thing
+    /// done, and ⌘Z no longer undoes it (Browser.lastClose). Before anything
+    /// acts on the key: ⌘W's own close is then the last.
+    private static func keyed(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        if flags != .command || event.shortcutCharacters != "z" { Browser.lastClose = nil }
     }
 
     /// Each browser's key monitor. Kept here rather than in the view, so
     /// that a window closed for good takes its monitor and hook with it
     /// (see `forget`), and they no longer hold its browser.
     private static var monitors: [ObjectIdentifier: Any] = [:]
+
+    /// The browser whose monitor takes a popup window's keys: the window in
+    /// front that isn't a popup, or else the first that still listens.
+    private static var popupKeys: Browser? {
+        let front = Browsers.frontBrowser
+        if monitors[ObjectIdentifier(front)] != nil { return front }
+        return Browsers.all.first { monitors[ObjectIdentifier($0)] != nil }
+    }
 
     static func forget(_ browser: Browser) {
         let id = ObjectIdentifier(browser)
@@ -1362,8 +1657,11 @@ struct ContentView: View {
     /// Whether a key is this window's to act on.
     private func mine(_ event: NSEvent) -> Bool {
         if let window = event.window, let owner = Browsers.browser(for: window) {
-            // Popup hosts have no ContentView monitor of their own.
-            return owner.isPopup ? Browsers.acting === browser : window === self.window
+            // Popup hosts have no ContentView monitor of their own: a window
+            // behind takes their keys. Not `acting`, which is the popup
+            // itself once it has opened in front (#1146), so no monitor took
+            // them and Escape left its camera question up.
+            return owner.isPopup ? ContentView.popupKeys === browser : window === self.window
         }
         return Browsers.acting === browser
     }
@@ -1376,6 +1674,15 @@ struct ContentView: View {
         let fills = page.fullscreenState != .notInFullscreen
             || Browsers.all.contains { $0.tabs.contains { $0.immersed && $0.built === page } }
         return fills ? page : nil
+    }
+
+    /// A key that goes to another tab or a new one: the switcher's, ⌘T,
+    /// ⌘1 through ⌘9 (⌃1–⌃9 while ⌘1–⌘9 switch spaces).
+    private static func movesTab(_ event: NSEvent) -> Bool {
+        if ShortcutStore.shared.recentSwitch(event) != nil { return true }
+        let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        if let number = digits[event.keyCode], number != 0, flags == KeyCombo.tabNumberModifier { return true }
+        return flags == .command && event.shortcutCharacters == "t"
     }
 
     /// The same handling the key monitor gives an event, for the bench to
@@ -1426,6 +1733,38 @@ struct ContentView: View {
             || browser.active?.built?.inputContext != nil
     }
 
+    /// Menu items wearing a caret key — ⌘ or ⌥ with an arrow — set aside for
+    /// one press so the field can have it. Put back on the next turn, after
+    /// this event has been delivered: restoring before then would let the
+    /// menu run the command in the same breath.
+    static func silenceCaretEquivalents() -> [(NSMenuItem, String, NSEvent.ModifierFlags)] {
+        guard let main = NSApp.mainMenu else { return [] }
+        let arrows = Set([
+            NSLeftArrowFunctionKey, NSRightArrowFunctionKey, NSUpArrowFunctionKey, NSDownArrowFunctionKey,
+        ].map { String(UnicodeScalar($0)!) })
+        var stolen: [(NSMenuItem, String, NSEvent.ModifierFlags)] = []
+        func walk(_ menu: NSMenu) {
+            for item in menu.items {
+                if let submenu = item.submenu { walk(submenu) }
+                let mask = item.keyEquivalentModifierMask
+                let commandOnly = mask.contains(.command) && !mask.contains(.option) && !mask.contains(.control)
+                let optionOnly = mask.contains(.option) && !mask.contains(.command) && !mask.contains(.control)
+                guard arrows.contains(item.keyEquivalent), commandOnly || optionOnly else { continue }
+                stolen.append((item, item.keyEquivalent, mask))
+                item.keyEquivalent = ""
+            }
+        }
+        walk(main)
+        return stolen
+    }
+
+    static func restoreCaretEquivalents(_ stolen: [(NSMenuItem, String, NSEvent.ModifierFlags)]) {
+        for (item, key, mask) in stolen {
+            item.keyEquivalent = key
+            item.keyEquivalentModifierMask = mask
+        }
+    }
+
     /// Whether the caret is in the window's address field: its field editor
     /// answers to the field, and the field to AddressField (Omnibox.swift).
     private static func inAddressField(_ window: NSWindow) -> Bool {
@@ -1441,9 +1780,9 @@ struct ContentView: View {
         // Settings, History and the rest are tabs, and ⌃Tab goes to and
         // from them like any other.
         return !browser.welcoming &&
-            !browser.reviewing && !browser.bookmarksOpen &&
+            !browser.reviewing && browser.styling == nil && !browser.bookmarksOpen &&
             !browser.veiling && !browser.summoning && !browser.makingSpace &&
-            browser.peekTab == nil && browser.editingTab == nil &&
+            !browser.peekInFront && browser.editingTab == nil &&
             browser.asking == nil && browser.offering == nil && browser.suggesting == nil
     }
 
@@ -1457,8 +1796,13 @@ struct ContentView: View {
         // there is its Cancel: taken here, it closed the panel under it and
         // left the question up, with Return still on its first button.
         if event.window?.sheetParent != nil || NSApp.modalWindow != nil { return false }
-        // A small window's keys are its own (see Little.swift).
-        if let little = LittleWindow.owning(event.window) { return little.take(event) }
+        // A small window's keys are its own monitor's (LittleWindow.watchKeys),
+        // there with or without a browser window. Taken here too, ⌘[ was
+        // gone before the page had it.
+        if LittleWindow.owning(event.window) != nil { return false }
+        // Nor the address field raised from another app's (Launcher.swift),
+        // or the panel asking which space a link opens in.
+        if event.window is LauncherPanel { return false }
         // A popup window: ⌘W closes it, not a tab of the
         // window menus act on. New tabs return to its browser; Escape
         // dismisses its permission question.
@@ -1511,6 +1855,25 @@ struct ContentView: View {
             if event.keyCode == 53 { return true }
         }
 
+        // The accounts hanging from the sign-in box the caret is in: ↓ and ↑
+        // move through them, as in Safari and Chrome, and Return takes the
+        // one lit, as a click would (⇧Return: one of your card's rows into
+        // the box alone). Until an arrow lights one, Return is the page's and
+        // sends its form, and ↑ moves the caret as it always did.
+        // A word still being composed (Japanese, Chinese, Korean input) keeps
+        // ↓, ↑ and Return for its own candidates.
+        if browser.suggesting != nil, let page = event.window?.firstResponder as? PageView,
+           !((page as AnyObject as? NSTextInputClient)?.hasMarkedText() ?? false),
+           flags.intersection([.command, .option, .control]).isEmpty {
+            let shifted = flags.contains(.shift)
+            switch event.keyCode {
+            case 125 where !shifted: if browser.moveChoice(by: 1) { return true }
+            case 126 where !shifted: if browser.moveChoice(by: -1) { return true }
+            case 36, 76: if browser.takeLitChoice(alone: shifted) { return true }
+            default: break
+            }
+        }
+
         // Escape puts the page back. On a blank tab there is no page to put
         // back, so it belongs to whatever else wants it.
         if event.keyCode == 53 {
@@ -1518,7 +1881,7 @@ struct ContentView: View {
                 browser.cancelTabEdit()
                 return true
             }
-            if browser.peekTab != nil {
+            if browser.peekInFront {
                 browser.closePeek()
                 return true
             }
@@ -1545,8 +1908,16 @@ struct ContentView: View {
                 browser.toggleHiding()
                 return true
             }
+            if browser.snapping {
+                browser.stopSnapping()
+                return true
+            }
             if browser.reviewing {
                 browser.reviewing = false
+                return true
+            }
+            if browser.styling != nil {
+                browser.styling = nil
                 return true
             }
             if browser.finding {
@@ -1589,7 +1960,8 @@ struct ContentView: View {
         // Keep split focus ahead of WebKit's arrow-key handling. Its panes
         // remain native first responders, so the menu shortcut alone would
         // never see ⌃⌘→ on a page.
-        if browser.prefs.splitView, browser.activeSplit != nil, let combo = KeyCombo(event: event) {
+        if browser.prefs.splitView, browser.activeSplit != nil, let combo = KeyCombo(event: event),
+           !(combo.movesCaret && caretIn(event)) {
             let store = ShortcutStore.shared
             if combo == store.key(for: "tabs.focusLeftPane") { browser.focusPane(onLeft: true); return true }
             if combo == store.key(for: "tabs.focusRightPane") { browser.focusPane(onLeft: false); return true }
@@ -1605,8 +1977,12 @@ struct ContentView: View {
         if event.keyCode == 36 || event.keyCode == 76,
            flags.intersection([.command, .shift, .option, .control]) == .command
             || (browser.prefs.splitView && flags.intersection([.command, .shift, .option, .control]) == [.command, .option]),
-           let peek = browser.peekTab, !peek.typing, peek.built?.inputContext == nil {
+           browser.peekInFront, let peek = browser.peekTab, !peek.typing, peek.built?.inputContext == nil {
             browser.keepPeek(beside: flags.contains(.option))
+            return true
+        }
+        if key == "o", flags.intersection([.command, .shift, .option, .control]) == .command, browser.peekInFront {
+            browser.keepPeek()
             return true
         }
 
@@ -1656,6 +2032,15 @@ struct ContentView: View {
             return browser.submitToShiftEngine()
         }
 
+        // ⌃1–⌃9 pick a tab while ⌘1–⌘9 switch spaces (Settings › Spaces &
+        // Pins), as in Arc: by the key, as ⌘1–⌘9 below, and before any
+        // command a ⌃ digit was given while it was free.
+        if KeyCombo.spacesOnCommand, flags.intersection([.command, .shift, .option, .control]) == .control,
+           let number = ContentView.digits[event.keyCode], number != 0 {
+            browser.select(index: number == 9 ? browser.tabShortcutTargets.count - 1 : number - 1)
+            return true
+        }
+
         // Space keys have no menu; other commands arrive here when rebound.
         // A key taken off a command goes back to the page.
         if ShortcutStore.shared.anyChanged || browser.prefs.usesSpaces, let combo = KeyCombo(event: event) {
@@ -1664,6 +2049,21 @@ struct ContentView: View {
                 if Command.split.contains(command.id), !browser.prefs.splitView { return false }
                 if Command.ai.contains(command.id), !browser.prefs.ai { return false }
                 if Command.dusk.contains(command.id), !browser.prefs.darkensPages { return false }
+                if Command.archive.contains(command.id), browser.prefs.tabLife == .never { return false }
+                if Command.capture.contains(command.id), !browser.prefs.capturesPages { return false }
+                if Command.styles.contains(command.id), !browser.prefs.sitesStyles { return false }
+                // An arrow the text system uses moves the caret, whichever
+                // command wears it — Back on ⌘←, or anything else on ⌘↑ or
+                // ⌥→. The menu wears the same key, so it is taken off for
+                // this press and the event goes on to the field. A letter
+                // shortcut is not one of these and still runs.
+                if combo.movesCaret, caretIn(event) {
+                    let stolen = ContentView.silenceCaretEquivalents()
+                    if !stolen.isEmpty {
+                        DispatchQueue.main.async { [stolen] in ContentView.restoreCaretEquivalents(stolen) }
+                    }
+                    return false
+                }
                 command.run(browser)
                 return true
             }
@@ -1723,6 +2123,9 @@ struct ContentView: View {
         if !shifted, let number = ContentView.digits[event.keyCode] {
             if number == 0 {
                 browser.resetZoom()
+            } else if KeyCombo.spacesOnCommand {
+                // The spaces' (above), unless one was taken off: the page's then.
+                return false
             } else {
                 browser.select(index: number == 9 ? browser.tabShortcutTargets.count - 1 : number - 1)
             }
@@ -1740,7 +2143,9 @@ struct ContentView: View {
 
         switch key {
         case "t" where !shifted:
-            browser.launch()
+            // Held down, the field stays as the press left it: its repeats
+            // would put it away and raise it again, over and over.
+            if !event.isARepeat { browser.launch() }
         case "t" where shifted:
             browser.reopen()
         case "c" where shifted:
@@ -1760,6 +2165,9 @@ struct ContentView: View {
             browser.recalling = true
         case "j" where shifted:
             browser.showDownloads()
+        case "v" where shifted && flags.contains(.option):
+            // ⌥⇧⌘V, Paste and Match Style as in Safari: never Paste and Go.
+            Browser.pasteMatchingStyle()
         case "v" where shifted:
             // In a text field this key is paste without formatting — a Google
             // Doc, a form, the address field. It only means Paste and Go when
@@ -1803,9 +2211,22 @@ struct ContentView: View {
         case "u" where shifted:
             browser.reviewing.toggle()
         case "z" where !shifted:
-            // Only while pointing. Everywhere else undo belongs to the page.
-            guard browser.veiling else { return false }
-            browser.undoHiding()
+            // While pointing, the last thing hidden comes back.
+            if browser.veiling {
+                browser.undoHiding()
+                return true
+            }
+            // With Settings › Tabs › ⌘Z reopens a closed tab on, the tab
+            // just closed, as ⇧⌘T would bring it back, while closing it is
+            // still the last thing done (Browser.lastClose): anything typed
+            // or clicked since, and ⌘Z is the page's as before. A caret in a
+            // text box the tab landed on doesn't keep it: nothing has been
+            // typed there to undo. Only once the page has left the key
+            // unused (pageFirst): a document or a drawing keeps its own
+            // undo. Not in a panel or another window.
+            guard browser.prefs.undoReopensTab, let window, event.window === window,
+                  browser.canUndoClose else { return false }
+            browser.undoClose()
         // ⌘+ arrives as "=" or "+" depending on the keyboard; both mean bigger.
         case "=", "+":
             browser.zoom(by: 1.1)

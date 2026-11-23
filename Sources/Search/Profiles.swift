@@ -27,8 +27,10 @@ import WebKit
 struct Profile: Codable, Identifiable, Equatable {
     var id: UUID
     var name: String
-    /// Its first space, which can't be deleted while the profile lives:
-    /// what a window of the profile shows with spaces off.
+    /// Its first space: what a window of the profile shows with spaces
+    /// off. Any space can be deleted while the profile keeps another; the
+    /// home's going makes the next one in the order the home (Personal's
+    /// too, kept in profiles.json; an older Search reads the first back).
     var home: UUID
 
     static let personalID = UUID(uuidString: "00000000-0000-0000-0000-0000000000A1") ?? UUID()
@@ -40,7 +42,8 @@ struct Profile: Codable, Identifiable, Equatable {
 final class Profiles: ObservableObject {
     static let shared = Profiles()
 
-    /// Every profile, Personal first.
+    /// Every profile, in the order the user put them: Personal first
+    /// unless moved (see move). The order is profiles.json's own.
     @Published private(set) var list: [Profile]
 
     private init() { list = Profiles.read() }
@@ -56,8 +59,14 @@ final class Profiles: ObservableObject {
 
     nonisolated static func read() -> [Profile] {
         let saved = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([Profile].self, from: $0) } ?? []
-        let personal = saved.first(where: \.isPersonal).map { Profile(id: Profile.personalID, name: $0.name, home: Space.firstID) } ?? .personal
-        return [personal] + saved.filter { !$0.isPersonal }
+        let personal = saved.first(where: \.isPersonal).map { Profile(id: Profile.personalID, name: $0.name, home: $0.home) } ?? .personal
+        let others = saved.filter { !$0.isPersonal }
+        // Where Personal stands in the file is where it was moved to; a file
+        // without it (only ever written by hand) has it first.
+        guard let at = saved.firstIndex(where: \.isPersonal) else { return [personal] + others }
+        var list = others
+        list.insert(personal, at: min(saved[..<at].filter { !$0.isPersonal }.count, list.count))
+        return list
     }
 
     private func write() {
@@ -147,6 +156,21 @@ final class Profiles: ObservableObject {
         write()
     }
 
+    /// One place to the left (-1) or right (1), with its spaces: the order
+    /// of the space's menu, ⌃1–⌃9 and the swipe with profiles in one window.
+    func move(_ id: UUID, by step: Int) {
+        guard let at = list.firstIndex(where: { $0.id == id }), list.indices.contains(at + step) else { return }
+        list.swapAt(at, at + step)
+        write()
+    }
+
+    /// Its home deleted: the space that takes its place.
+    func rehome(_ id: UUID, to space: UUID) {
+        guard let at = list.firstIndex(where: { $0.id == id }), list[at].home != space else { return }
+        list[at].home = space
+        write()
+    }
+
     /// A profile and all it holds, gone: its windows close, its spaces go
     /// with their tabs and pins, and its cookies, sign-ins, site data,
     /// history and bookmarks are erased from this Mac. Personal stays.
@@ -173,6 +197,7 @@ final class Profiles: ObservableObject {
         Spaces.eraseStore(Profiles.stores.removeValue(forKey: id), id: id)
         Profiles.histories.removeValue(forKey: id)?.retire()
         Profiles.bookmarkLists.removeValue(forKey: id)?.retire()
+        Archive.forget(profile: id)
         // Never opened this run: their files go all the same.
         for name in ["history-\(id.uuidString).json", "bookmarks-\(id.uuidString).json"] {
             Disk.remove(Store.file(name))
@@ -202,12 +227,16 @@ extension Browsers {
             show(open)
             return open
         }
-        let space = Store.settings.string(forKey: "space.current.\(id.uuidString)").flatMap(UUID.init)
-            .flatMap { last in Spaces.read(profile: id).first { $0.id == last }?.id }
-            ?? Profiles.shared.profile(id).home
-        let browser = Browser(record: WindowRecord(space: space))
+        let browser = Browser(record: WindowRecord(space: lastSpace(profile: id)))
         open(browser, frame: nil)
         return browser
+    }
+
+    /// The space a profile's window was last in, or its home.
+    static func lastSpace(profile id: UUID) -> UUID {
+        Store.settings.string(forKey: "space.current.\(id.uuidString)").flatMap(UUID.init)
+            .flatMap { last in Spaces.read(profile: id).first { $0.id == last }?.id }
+            ?? Profiles.shared.profile(id).home
     }
 }
 
@@ -217,6 +246,9 @@ extension Browsers {
 /// space's icon, only once there is more than one profile. A click opens
 /// the list; choosing another brings its window, as in Chrome.
 struct ProfileBadge: View {
+    /// Its width in the row across the top.
+    static let width: CGFloat = 26
+
     @ObservedObject var browser: Browser
     @ObservedObject var profiles = Profiles.shared
     @State private var hovering = false
@@ -230,7 +262,7 @@ struct ProfileBadge: View {
                 .foregroundStyle(hovering ? Palette.ink : Palette.muted)
                 .frame(width: 17, height: 17)
                 .background(Circle().strokeBorder(hovering ? Palette.ink.opacity(0.5) : Palette.muted.opacity(0.6), lineWidth: 1.2))
-                .frame(width: 26, height: 26)
+                .frame(width: Self.width, height: Self.width)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(hovering ? Palette.hover : .clear)

@@ -2,13 +2,23 @@ import SwiftUI
 
 /// The first time. Four short pages over the window, in the app's own
 /// language: what this is, what to bring over, how to hold it, and whether
-/// links from other apps should come here. Nothing is asked twice, and every
-/// page can be skipped.
+/// links from other apps should come here — and a fifth, until an email has
+/// been given once, offering the iPhone beta and news by email (OptIn.swift).
+/// Nothing is asked twice, and every page can be skipped.
+///
+/// The first page also holds Sync with iCloud and Handoff, on for a new
+/// install (SyncDefault.swift): there, before Skip or Continue, so nobody
+/// leaves without having seen them. They take effect when the welcome is
+/// left, however it is; nothing goes anywhere while it is up.
 struct WelcomePanel: View {
     @ObservedObject var browser: Browser
     @ObservedObject var prefs: Preferences
 
     @State private var page = 0
+    // Sync with iCloud and Handoff, as they will be once the welcome is
+    // left (SyncDefault.starts).
+    @State private var syncs = SyncDefault.startsNow().sync
+    @State private var handsOff = SyncDefault.startsNow().handoff
     @State private var forward = true
 
     // Bringing things over. Nil until one is picked, which means the first:
@@ -28,7 +38,16 @@ struct WelcomePanel: View {
 
     private var importsPasswords: Bool { (source ?? ImportSource.installed().first)?.importsPasswords ?? false }
 
-    private let pages = 4
+    /// Read once: the email page stays to the end once it is there, for
+    /// its thanks.
+    @State private var offersEmail = OptIn.offered()
+    /// For pictures: the page to open at, and the email page's state.
+    var startPage = 0
+    var optInStart: OptInForm.Phase = .idle
+    var optInEmail = ""
+    @State private var began = false
+
+    private var pages: Int { offersEmail ? 5 : 4 }
 
     var body: some View {
         ZStack {
@@ -41,7 +60,8 @@ struct WelcomePanel: View {
                     case 0: welcome
                     case 1: bring
                     case 2: hold
-                    default: links
+                    case 3: links
+                    default: early
                     }
                 }
                 .frame(maxWidth: 520)
@@ -57,6 +77,11 @@ struct WelcomePanel: View {
         }
         .animation(Motion.glide, value: page)
         .transition(.opacity)
+        .onAppear {
+            guard !began else { return }
+            began = true
+            page = min(startPage, pages - 1)
+        }
     }
 
     // MARK: - the pages
@@ -75,7 +100,28 @@ struct WelcomePanel: View {
                     .lineSpacing(3)
                     .frame(maxWidth: 400)
             }
+            devices
+                .padding(.top, 10)
         }
+    }
+
+    /// Sync with iCloud and Handoff, in sight before anything starts.
+    private var devices: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
+                Choice("Sync with iCloud", "Open tabs, pins, spaces, bookmarks and a few settings, on your iPhone and other Macs. End-to-end encrypted, in your own iCloud.", on: $syncs, plain: true)
+                Rule(inset: 0)
+                Choice("Handoff", "The page in front shows up on your iPhone and iPad.", on: $handsOff, plain: true)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(Palette.wash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            Text("Nothing starts until you leave this welcome. Both are in Settings › General.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Palette.muted)
+                .padding(.horizontal, 4)
+        }
+        .frame(maxWidth: 440)
     }
 
     private var bring: some View {
@@ -103,10 +149,17 @@ struct WelcomePanel: View {
                             .font(.system(size: 13))
                             .foregroundStyle(Palette.muted)
                     }
+                    // What can come from it at all; spaces and open tabs
+                    // are in the full sheet (File › Bring Things Over…).
+                    Text("\((source ?? sources[0]).name) can bring: \((source ?? sources[0]).canBringLine.lowercased())")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.faint)
                     if importsPasswords {
                         Choice("Passwords", "macOS will ask once for that browser's keychain key", on: $wantsPasswords)
                     } else {
-                        Text("Passwords from \((source ?? sources[0]).name) aren't supported yet.")
+                        Text((source ?? sources[0]).passwordsInPasswordsApp
+                             ? "\((source ?? sources[0]).name) keeps passwords in the Passwords app: export them there, then bring in the file below."
+                             : "Passwords from \((source ?? sources[0]).name) aren't supported yet.")
                             .font(.system(size: 13)).foregroundStyle(Palette.muted)
                     }
                     Choice("Bookmarks", "Folders and all, behind the bookmark button", on: $wantsBookmarks)
@@ -142,13 +195,13 @@ struct WelcomePanel: View {
 
     private var hold: some View {
         VStack(alignment: .leading, spacing: 22) {
-            heading("Two ways to hold it.", "Titles across the top, or down the side. The grey slides to the tab you pick either way, and you can change your mind with ⇧⌘S.")
+            heading("Two ways to hold it.", "Titles down the side, or across the top. The grey slides to the tab you pick either way, and you can change your mind with ⇧⌘S.")
             HStack(spacing: 12) {
-                Way(title: "Tab strip", sidebar: false, chosen: !prefs.sidebar) {
-                    withAnimation(Motion.glide) { prefs.sidebar = false }
-                }
-                Way(title: "Sidebar", sidebar: true, chosen: prefs.sidebar) {
+                Way(title: "Sidebar", sidebar: true, glyph: prefs.glyph, chosen: prefs.sidebar) {
                     withAnimation(Motion.glide) { prefs.sidebar = true }
+                }
+                Way(title: "Tab strip", sidebar: false, glyph: prefs.glyph, chosen: !prefs.sidebar) {
+                    withAnimation(Motion.glide) { prefs.sidebar = false }
                 }
             }
             HStack(spacing: 12) {
@@ -198,9 +251,10 @@ struct WelcomePanel: View {
                 Key("⌘,", "Settings, including passwords and updates. ⌘F there finds any setting.")
                 Key("⌃1", "Spaces: separate tabs and sign-ins. Turn them on in Settings › Spaces & Pins, or Set Up Like Arc there.")
                 Key("⌥⌘N", "Split a page in two, ⌥-click a tab to put it beside the page, or drag a tab onto a page; ⌃⌘← and ⌃⌘→ go from one page to the other, and ⌥⌘N again puts them apart.")
-                Key("⌘O", "Links from other apps can open in a small window. Settings › Browsing.")
+                Key("⌘O", "Links from other apps open in a small window; ⌘O keeps one as a tab. Settings › Browsing.")
                 Key("⌘L", "Suggestions from your search engine as you type — off until you turn them on in Settings › Browsing.")
                 Key("⌘", "Held, it can show each tab's number for ⌘1–9. Settings › Tabs.")
+                Key("⌘,", "A painted wall behind the blank tab, if you want one — Settings › Themes. Off until you choose.")
                 Key("⌘1", "Pressed again on its pin, back to where you were.")
                 Key("⇧⌘P", "Float a video in Search's window, or in macOS's picture in picture. Settings › Browsing.")
                 Key("⌃-click", "Claude or ChatGPT in a side panel beside the page: right-click a tab › Open in Side Panel, or View › Side Panel.")
@@ -213,6 +267,15 @@ struct WelcomePanel: View {
                     Key("⌘,", "AI summaries and questions about a page — off until you turn it on in Settings › AI.")
                 }
             }
+        }
+    }
+
+    /// Light, and skippable like every page: Start browsing goes on
+    /// without it (OptIn.swift).
+    private var early: some View {
+        OptInWelcomePage(start: optInStart, startEmail: optInEmail) { url in
+            finish()
+            _ = browser.open(url, foreground: true)
         }
     }
 
@@ -297,6 +360,7 @@ struct WelcomePanel: View {
     }
 
     private func finish() {
+        SyncDefault.welcomeLeft(sync: syncs, handoff: handsOff, prefs: prefs, icloud: ICloudSync.shared)
         prefs.welcomed = true
         withAnimation(Motion.settle) { browser.welcoming = false }
     }
@@ -359,18 +423,22 @@ struct WelcomePanel: View {
         let title: String
         let detail: String
         @Binding var on: Bool
+        /// The line under in the darker grey, for one that must be read.
+        var plain = false
 
-        init(_ title: String, _ detail: String, on: Binding<Bool>) {
+        init(_ title: String, _ detail: String, on: Binding<Bool>, plain: Bool = false) {
             self.title = title
             self.detail = detail
             _on = on
+            self.plain = plain
         }
 
         var body: some View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.system(size: 13.5)).foregroundStyle(Palette.ink)
-                    Text(detail).font(.system(size: 11.5)).foregroundStyle(Palette.faint)
+                    Text(detail).font(.system(size: 11.5)).foregroundStyle(plain ? Palette.muted : Palette.faint)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 Switch(on: $on)
@@ -382,6 +450,7 @@ struct WelcomePanel: View {
     private struct Way: View {
         let title: String
         let sidebar: Bool
+        let glyph: Glyph
         let chosen: Bool
         let pick: () -> Void
         @State private var hovering = false
@@ -397,7 +466,10 @@ struct WelcomePanel: View {
                                     HStack(spacing: 3) { ForEach(0..<3, id: \.self) { _ in Circle().fill(Palette.faint).frame(width: 5, height: 5) } }
                                         .padding(.bottom, 4)
                                     ForEach(0..<4, id: \.self) { i in
-                                        RoundedRectangle(cornerRadius: 3).fill(i == 0 ? Palette.wash : Palette.hover).frame(height: 8)
+                                        HStack(spacing: 3) {
+                                            Wear(glyph: glyph, tab: i)
+                                            RoundedRectangle(cornerRadius: 3).fill(i == 0 ? Palette.wash : Palette.hover).frame(height: 8)
+                                        }
                                     }
                                 }
                                 .padding(8)
@@ -410,7 +482,11 @@ struct WelcomePanel: View {
                                 HStack(spacing: 3) { ForEach(0..<3, id: \.self) { _ in Circle().fill(Palette.faint).frame(width: 5, height: 5) } }
                                     .padding(.trailing, 6)
                                 ForEach(0..<4, id: \.self) { i in
-                                    RoundedRectangle(cornerRadius: 3).fill(i == 0 ? Palette.wash : Palette.hover).frame(width: 30, height: 8)
+                                    HStack(spacing: 3) {
+                                        Wear(glyph: glyph, tab: i)
+                                        RoundedRectangle(cornerRadius: 3).fill(i == 0 ? Palette.wash : Palette.hover).frame(width: 24, height: 8)
+                                    }
+                                    .padding(.trailing, 3)
                                 }
                             }
                             .padding(8)
@@ -437,6 +513,32 @@ struct WelcomePanel: View {
             .onHover { hovering = $0 }
             .animation(Motion.quick, value: hovering)
             .animation(Motion.settle, value: chosen)
+        }
+    }
+
+    /// What a tab wears in the two small pictures, as Tabs wear has it: a
+    /// letter in a faint square, as Mark draws one, or a patch of colour
+    /// where a site's own icon would be. Seen before it is chosen: letters
+    /// were taken for icons that hadn't loaded (#1271).
+    private struct Wear: View {
+        let glyph: Glyph
+        let tab: Int
+
+        private static let letters = ["G", "M", "Y", "W"]
+        private static let tints: [NSColor] = [.systemRed, .systemBlue, .systemGreen, .systemOrange]
+
+        var body: some View {
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                .fill(glyph == .icons ? Color(nsColor: Wear.tints[tab]).opacity(0.7) : Palette.ink.opacity(0.06))
+                .frame(width: 10, height: 10)
+                .overlay {
+                    if glyph == .letters {
+                        Text(Wear.letters[tab])
+                            .font(.system(size: 6.5, weight: .medium))
+                            .foregroundStyle(Palette.muted)
+                    }
+                }
+                .animation(Motion.quick, value: glyph)
         }
     }
 

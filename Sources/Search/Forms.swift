@@ -31,6 +31,13 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
               let kind = body["kind"] as? String
         else { return }
         MainActor.assumeIsolated {
+            // A frame only ever says where the caret is, and only a frame of
+            // the page's own origin (the script runs in no other). Anything
+            // else from a frame — a sign-in sent, a full screen — is not its
+            // to say, and is dropped.
+            if !message.frameInfo.isMainFrame {
+                guard kind == "focus", Self.sameOrigin(message.frameInfo.securityOrigin, as: tab?.pageAddress) else { return }
+            }
             switch kind {
             case "form":
                 tab?.foundSignIn()
@@ -82,14 +89,34 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         }
     }
 
+    /// Whether a frame's origin is the page's own: scheme, host and port,
+    /// a port left out standing for the scheme's own.
+    nonisolated static func sameOrigin(_ origin: WKSecurityOrigin, as page: URL?) -> Bool {
+        sameOrigin(scheme: origin.protocol, host: origin.host, port: origin.port, as: page)
+    }
+
+    nonisolated static func sameOrigin(scheme: String, host: String, port: Int, as page: URL?) -> Bool {
+        guard let page, let pageScheme = page.scheme?.lowercased(), let pageHost = page.host()?.lowercased(),
+              !pageHost.isEmpty
+        else { return false }
+        let scheme = scheme.lowercased()
+        func plain(_ host: String) -> String { host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]")) }
+        func usual(_ port: Int?) -> Int {
+            guard let port, port != 0 else { return 0 }
+            return (scheme == "http" && port == 80) || (scheme == "https" && port == 443) ? 0 : port
+        }
+        return scheme == pageScheme && plain(host) == plain(pageHost) && usual(port) == usual(page.port)
+    }
+
     /// Whether sites are offered passkeys here (Settings › Passwords).
     ///
     /// A build without Apple's browser entitlement can't do them: WebKit then
     /// answers isUserVerifyingPlatformAuthenticatorAvailable() with false,
     /// yet the API object exists, so sites offer the passkey path and strand
-    /// you there. Taken away, they go straight to the password. Signed with
-    /// the entitlement, as releases are, this is on, and Search carries out
-    /// the sites' requests itself (see Passkeys.swift).
+    /// you there. Told there are none, they go straight to the password
+    /// (see withoutPasskeys). Signed with the entitlement, as releases are,
+    /// this is on, and Search carries out the sites' requests itself (see
+    /// Passkeys.swift).
     ///
     /// Held here, not read from the store: a build of your own running beside
     /// a release shares the store, and its first run writes passkeys off into
@@ -98,15 +125,35 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
     /// first page, and so does every flip of the switch.
     static var passkeysOffered = false
 
-    /// Only the passkey object goes. navigator.credentials itself stays: sites
-    /// use it for stored passwords too, and that half still works.
+    /// The passkey object stays, and says there are none here, as Safari's
+    /// does on a Mac with nothing to sign in with: isConditionalMediation
+    /// Available() and isUserVerifyingPlatformAuthenticatorAvailable() are
+    /// false, getClientCapabilities() offers none, and a passkey asked for
+    /// or made is refused at once (NotAllowedError), under the name field
+    /// too. Sites take that to mean the password. navigator.credentials
+    /// keeps its other half — stored passwords, identities — untouched.
+    ///
+    /// It used to be taken away, its name left on the window with nothing
+    /// in it: a site that looks for a method on it (X's sign-in asks
+    /// `'isUserVerifyingPlatformAuthenticatorAvailable' in
+    /// window.PublicKeyCredential`) threw there and never went on to the
+    /// password, and a request under the field never ended.
     ///
     /// Unless an extension answers passkey requests itself — a password
     /// manager with your passkeys in it, as 1Password is. It puts its own get
     /// and create on navigator.credentials, and reaches for the passkey object
-    /// from its own script as it does; from then on sites see the object, and
-    /// the extension is the one they ask. Whatever it leaves to the browser is
-    /// refused at once, as if you had said no, where WebKit would try and fail.
+    /// from its own script as it does; from then on sites hear WebKit's own
+    /// answers to those questions, or the extension's where it gives its own,
+    /// and the extension is the one they ask. Whatever it leaves to the
+    /// browser is refused at once, as if you had said no, where WebKit would
+    /// try and fail.
+    ///
+    /// Save for a security key. Where Search's own handling stands ahead of
+    /// this (PasskeyRelay.keysOnly, in a build that can reach a key), a
+    /// request only a key answers goes to it: a sign-in naming a key over
+    /// USB, NFC or Bluetooth, or a key to be made on one. Search's side asks
+    /// the same of it again (Passkeys.forSecurityKey) and offers the key
+    /// alone, never the Mac's passkeys.
     static let withoutPasskeys = """
     (function () {
       var real = window.PublicKeyCredential;
@@ -120,37 +167,54 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         } catch (e) {}
         return claimed;
       }
-      try {
-        Object.defineProperty(window, 'PublicKeyCredential', {
-          configurable: true,
-          get: function () { return answered() ? real : undefined; },
-          set: function (value) { real = value; }
-        });
-      } catch (e) {
-        try { delete window.PublicKeyCredential; } catch (ignored) {}
-        return;
-      }
+      function refused() { return new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'); }
+      // Methods, not arrow functions: their names and lengths are WebKit's.
+      var none = {
+        isConditionalMediationAvailable() { return Promise.resolve(false); },
+        isUserVerifyingPlatformAuthenticatorAvailable() { return Promise.resolve(false); },
+        getClientCapabilities() {
+          var native = none.native.getClientCapabilities;
+          return Promise.resolve(native ? native.call(real) : {}).then(function (caps) {
+            var told = {};
+            Object.keys(caps || {}).forEach(function (key) { told[key] = caps[key]; });
+            ['conditionalCreate', 'conditionalGet', 'hybridTransport', 'passkeyPlatformAuthenticator',
+             'userVerifyingPlatformAuthenticator'].forEach(function (key) { told[key] = false; });
+            return told;
+          });
+        },
+        native: {}
+      };
+      ['isConditionalMediationAvailable', 'isUserVerifyingPlatformAuthenticatorAvailable', 'getClientCapabilities'].forEach(function (name) {
+        var native = real[name];
+        if (typeof native !== 'function') return;
+        none.native[name] = native;
+        var ours = none[name];
+        var wrapped = { [name]() { return answered() ? native.apply(this, arguments) : ours.apply(this, arguments); } }[name];
+        try { Object.defineProperty(real, name, { configurable: true, writable: true, enumerable: true, value: wrapped }); } catch (e) {}
+      });
       var proto = CredentialsContainer.prototype;
+      // Search's own handling, if it stands ahead of this: then `native` is it.
+      var relayed = !!proto[Symbol.for('search.passkeys')];
+      function forKey(name, options) {
+        var pk = options.publicKey;
+        if (name === 'create') return !!(pk.authenticatorSelection && pk.authenticatorSelection.authenticatorAttachment === 'cross-platform');
+        if (options.mediation === 'conditional') return false;
+        return Array.prototype.some.call(pk.allowCredentials || [], function (c) {
+          return Array.prototype.some.call((c && c.transports) || [], function (t) { return t === 'usb' || t === 'nfc' || t === 'ble'; });
+        });
+      }
       ['get', 'create'].forEach(function (name) {
         var native = proto[name];
         try {
           Object.defineProperty(proto, name, {
             configurable: true, writable: true,
-            value: function (options) {
+            value: { [name](options) {
               if (!options || !options.publicKey) return native.apply(this, arguments);
               var signal = options.signal;
-              // Under the name field: nothing to offer, so it waits, as it
-              // would while nobody picks one, until the page lets it go.
-              if (name === 'get' && options.mediation === 'conditional') {
-                return new Promise(function (resolve, reject) {
-                  if (!signal) return;
-                  var aborted = function () { return signal.reason || new DOMException('The operation was aborted.', 'AbortError'); };
-                  if (signal.aborted) return reject(aborted());
-                  signal.addEventListener('abort', function () { reject(aborted()); }, { once: true });
-                });
-              }
-              return Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'));
-            }
+              if (signal && signal.aborted) return Promise.reject(signal.reason || new DOMException('The operation was aborted.', 'AbortError'));
+              try { if (relayed && forKey(name, options)) return native.apply(this, arguments); } catch (e) {}
+              return Promise.reject(refused());
+            } }[name]
           });
         } catch (e) {}
       });
@@ -159,27 +223,202 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
 
     static let script = """
     (function () {
-      if (window.__officeForms) return;
+      // Search's own forms object carries this; a page's frame named
+      // "__officeForms" is reachable by that name too, and doesn't.
+      var mark = Symbol.for('search.forms');
+      try { if (window.__officeForms && window.__officeForms[mark] === true) return; } catch (err) {}
+      // A frame runs this only when it is of the page's own origin, and so
+      // is every frame between it and the page: a sign-in a portal puts in
+      // a frame of its own is offered the page's accounts there, and the
+      // page's fill reaches it (inFrame). A frame of anywhere else is never
+      // looked at, offered anything or filled. A frame only hangs the list
+      // from its boxes: what a sign-in sends is the page's to watch.
+      var framed = window !== window.top;
+      if (framed) {
+        try {
+          for (var w = window; w !== w.top; w = w.parent) {
+            if (!w.frameElement || w.location.origin !== w.parent.location.origin) return;
+          }
+        } catch (err) { return; }
+      }
+
+      // Fields that hold a secret, kept in Search's own world where no page
+      // reaches: a password box from the moment it is focused or typed in,
+      // and every box Search fills with a password or a code. A coding
+      // agent's reads, checks and pictures (PageScripts, AgentControl)
+      // keep their values back for good, even after a "show password"
+      // button turns one into a text box.
+      var secrets = globalThis.__searchSecrets || (globalThis.__searchSecrets = new WeakSet());
+      function keepSecret(box) { try { if (box) secrets.add(box); } catch (e) {} }
+      // A password box, or a text box that says it takes the password (a
+      // page that draws its own dots, or a "show password" left on).
+      function passwordBox(el) {
+        if (!el || el.tagName !== 'INPUT') return false;
+        var kind = (el.type || '').toLowerCase();
+        return kind === 'password' || (kind === 'text' && /(^|\\s)current-password(\\s|$)/i.test(el.getAttribute('autocomplete') || ''));
+      }
+      // A password box a password can be put in: a text box only while it
+      // draws dots over what is typed (-webkit-text-security), so a fill
+      // never shows the password in clear text.
+      function maskedBox(el) {
+        if (!passwordBox(el)) return false;
+        if ((el.type || '').toLowerCase() === 'password') return true;
+        try {
+          var s = getComputedStyle(el);
+          var mask = s.webkitTextSecurity || s.getPropertyValue('-webkit-text-security') || 'none';
+          return mask !== 'none';
+        } catch (e) { return false; }
+      }
+      // A box there to see and type in, asked of the boxes a sign-in could
+      // be filled into: a few pixels each way at least, not faded to
+      // nothing, hidden or clipped away, and somewhere on the page rather
+      // than far off past its edges. A box kept out of sight ahead of the
+      // real one, to catch robots or a password, is passed over.
+      function shown(el) {
+        var r = el.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) return false;
+        var doc = document.documentElement, x = window.scrollX, y = window.scrollY;
+        if (r.right + x <= 0 || r.bottom + y <= 0
+            || r.left + x >= Math.max(doc.scrollWidth, doc.clientWidth)
+            || r.top + y >= Math.max(doc.scrollHeight, doc.clientHeight)) return false;
+        try {
+          if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
+        } catch (e) {}
+        for (var up = el, i = 0; up && up.nodeType === 1 && i < 12; up = up.parentElement || (up.getRootNode && up.getRootNode().host), i++) {
+          var s = getComputedStyle(up);
+          if (!(parseFloat(s.opacity) > 0)) return false;
+          if (up === el && s.visibility !== 'visible') return false;
+          if (/inset\\(\\s*(50|100)%|circle\\(\\s*0|polygon\\(\\s*0(px)?\\s+0(px)?\\s*\\)/.test(s.clipPath || '')) return false;
+          var clip = /^rect\\((.*)\\)$/.exec(s.clip || '');
+          if (clip && (s.position === 'absolute' || s.position === 'fixed')) {
+            var edge = clip[1].split(/[\\s,]+/).map(parseFloat);
+            if (edge.length === 4 && edge.every(isFinite) && (edge[1] - edge[3] < 4 || edge[2] - edge[0] < 4)) return false;
+          }
+          if (up !== el && (s.overflowX !== 'visible' || s.overflowY !== 'visible')) {
+            var b = up.getBoundingClientRect();
+            if (b.width < 4 || b.height < 4) return false;
+          }
+        }
+        return true;
+      }
+      var passwordBoxes = 'input[type="password"], input[autocomplete~="current-password" i]';
+      // The box the caret is in, inside open shadow roots too: from out
+      // here, the active element is only their host.
+      function active() {
+        var a = document.activeElement;
+        for (var i = 0; a && a.shadowRoot && a.shadowRoot.activeElement && i < 32; i++) a = a.shadowRoot.activeElement;
+        return a;
+      }
+      // Every box on the page in its order, those in open shadow roots
+      // where their host is: web components (a design system's inputs,
+      // a sign-in widget) keep theirs there. Only looked through for a box
+      // in a shadow root.
+      function deepInputs() {
+        var out = [];
+        (function walk(root, depth) {
+          var all = root.querySelectorAll('*');
+          for (var i = 0; i < all.length; i++) {
+            if (all[i].tagName === 'INPUT') out.push(all[i]);
+            if (all[i].shadowRoot && depth < 8) walk(all[i].shadowRoot, depth + 1);
+          }
+        })(document, 0);
+        return out;
+      }
+      // Password boxes something typed or filled into: a keystroke, a
+      // paste, a password manager or Search's own fill all say so with an
+      // input or a change. Only their passwords are offered a place in the
+      // keychain. A box the page filled by itself — a masked key or secret
+      // shown on a dashboard — never is, whatever button is pressed near it.
+      var touched = new WeakSet(), lastTyped = null;
+      function touch(box) { try { if (box) { touched.add(box); lastTyped = box; } } catch (e) {} }
+      // The box itself, inside an open shadow root too: the event's target
+      // is only its host from out here.
+      function boxOf(e) { var path = e.composedPath ? e.composedPath() : []; return path[0] || e.target; }
+      ['focusin', 'input', 'change'].forEach(function (kind) {
+        document.addEventListener(kind, function (e) {
+          var box = boxOf(e);
+          if (passwordBox(box)) { if (kind !== 'focusin') touch(box); return keepSecret(box); }
+          // A code typed in by hand: a one-time-code box, or one of a row
+          // of one-character boxes.
+          if (kind !== 'focusin' && box && box.tagName === 'INPUT') {
+            try { if ((box.getAttribute('autocomplete') || '').indexOf('one-time-code') >= 0 || saysCode(box) || cells(box)) keepSecret(box); } catch (err) {}
+          }
+        }, true);
+      });
+      Array.prototype.forEach.call(document.querySelectorAll('input[type="password"]'), keepSecret);
+      // A "show password" that swaps the box for a new one holding the
+      // same value: the new one is as secret as the one it replaced.
+      try {
+        new MutationObserver(function (changes) {
+          var gone = [], came = [];
+          function inputs(node, into) {
+            if (!node || node.nodeType !== 1) return;
+            if (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA') into.push(node);
+            if (node.querySelectorAll) Array.prototype.push.apply(into, node.querySelectorAll('input, textarea'));
+          }
+          changes.forEach(function (c) {
+            Array.prototype.forEach.call(c.removedNodes, function (n) { inputs(n, gone); });
+            Array.prototype.forEach.call(c.addedNodes, function (n) { inputs(n, came); });
+          });
+          var held = gone.filter(function (b) { return secrets.has(b) && b.value; }).map(function (b) { return b.value; });
+          if (!held.length) return;
+          var typed = gone.filter(function (b) { return touched.has(b) && b.value; }).map(function (b) { return b.value; });
+          came.forEach(function (b) {
+            if (held.indexOf(b.value) >= 0) keepSecret(b);
+            if (typed.indexOf(b.value) >= 0) touch(b);
+          });
+        }).observe(document, { childList: true, subtree: true });
+      } catch (err) {}
 
       // The password box, and the last box before it that could hold a name.
-      function pair() {
-        var boxes = document.querySelectorAll('input[type="password"]');
-        var pass = null;
-        for (var p = 0; p < boxes.length; p++) {
-          var b = boxes[p];
-          var r = b.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) { pass = b; break; }
+      // `near`, the box the caret is in: the password box it is, or the
+      // first after it in its form, or else on the page. Without it, or
+      // with nothing to go by, the first password box to see on the page —
+      // which on a page with a sign-up form above the sign-in, or a box
+      // kept out of sight ahead of the real one, is not the sign-in's.
+      function pair(near) {
+        var root = near && near.getRootNode ? near.getRootNode() : document;
+        var shadowed = root !== document && root.nodeType === 11;
+        function seenBox(b) { return maskedBox(b) && shown(b); }
+        var boxes = Array.prototype.filter.call((shadowed ? root : document).querySelectorAll(passwordBoxes), seenBox);
+        if (shadowed && !boxes.length) boxes = deepInputs().filter(seenBox);
+        if (!boxes.length) return null;
+        var pass = boxes[0];
+        if (near && boxes.indexOf(near) >= 0) {
+          pass = near;
+        } else if (near && near.tagName === 'INPUT') {
+          var form = formOf(near);
+          var mine = form ? boxes.filter(function (b) { return formOf(b) === form; }) : boxes;
+          var after = mine.filter(function (b) { return near.compareDocumentPosition(b) === Node.DOCUMENT_POSITION_FOLLOWING; });
+          if (after.length) pass = after[0];
+          else if (form && mine.length) pass = mine[0];
         }
-        if (!pass) return null;
-        var scope = pass.form || (pass.closest && pass.closest('form')) || document;
-        var all = scope.querySelectorAll('input');
+        var scope = formOf(pass);
+        var all = scope ? scope.querySelectorAll('input')
+          : pass.getRootNode() === document ? document.querySelectorAll('input') : deepInputs();
         var user = null;
         for (var i = 0; i < all.length; i++) {
           if (all[i] === pass) break;
-          var kind = (all[i].type || 'text').toLowerCase();
-          if (kind === 'text' || kind === 'email' || kind === 'tel') user = all[i];
+          if (couldBeName(all[i], !scope)) user = all[i];
         }
         return { user: user, pass: pass };
+      }
+      // A box a sign-in's name could be in: one to type text, an address
+      // or a phone number into, that is there to see and to type in. Not a
+      // list's picker, a page size, a search or a code: a dashboard's
+      // "40 items" was offered as the name. One marked autocomplete=
+      // "username" or "email" is, even hidden or read-only, as the name a
+      // password step keeps out of sight for password managers. With no
+      // form around the password, any box on the page comes before it, so
+      // only one that says it takes a name counts.
+      function couldBeName(el, loose) {
+        var kind = (el.type || 'text').toLowerCase();
+        if (kind !== 'text' && kind !== 'email' && kind !== 'tel') return false;
+        if (passwordBox(el)) return false;
+        if (vouched(el) && !elsewhere(el)) return true;
+        if (el.disabled || el.readOnly || el.getAttribute('aria-hidden') === 'true') return false;
+        if (!shown(el)) return false;
+        return !aside(el) && !elsewhere(el) && (!loose || claimsName(el));
       }
 
       // Which boxes a saved account is offered in. Strict on purpose, as
@@ -292,7 +531,7 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       // What a box the caret is in is offered: null for nothing.
       function judge(el) {
         if (!el || (el.tagName || '').toLowerCase() !== 'input') return null;
-        var both = pair();
+        var both = pair(el);
         if (both) {
           if (el === both.pass) return newPassword(el) ? null : { name: false, wide: true };
           if (el !== both.user || newPassword(both.pass)) return null;
@@ -308,7 +547,7 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       // more than a handful of boxes to type in is not a first step.
       function named() {
         if (pair()) return null;
-        var el = document.activeElement;
+        var el = active();
         if (nameBox(el)) return el;
         var all = document.querySelectorAll('input'), seen = [];
         for (var i = 0; i < all.length; i++) {
@@ -554,13 +793,13 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         return boxIds.get(el);
       }
       // Lists you have chosen from yourself, which a pick never changes back.
-      var touched = new WeakSet();
+      var chosen = new WeakSet();
       ['input', 'change'].forEach(function (kind) {
-        document.addEventListener(kind, function (e) { if (e.isTrusted && e.target) touched.add(e.target); }, true);
+        document.addEventListener(kind, function (e) { if (e.isTrusted && e.target) chosen.add(e.target); }, true);
       });
       // A list still showing what it came with, or asking you to choose.
       function unchosen(select) {
-        if (touched.has(select)) return false;
+        if (chosen.has(select)) return false;
         var o = select.options[select.selectedIndex];
         return !o || o.disabled || !o.value || o.defaultSelected || select.selectedIndex === 0;
       }
@@ -615,7 +854,7 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       // one only. `box`: the box the list was offered under, which has to be
       // the one the caret is still in. `tint`: the colour they flash, if.
       function fillContact(card, alone, box, tint) {
-        var el = document.activeElement;
+        var el = active();
         if (box != null && (!el || boxId(el) !== box)) return 0;
         var kind = contactBox(el);
         if (!kind) return 0;
@@ -648,48 +887,47 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         return filled;
       }
 
-      // What was typed by hand and not yet sent, box by box. A page whose
-      // boxes still hold it is not put to sleep: waking it couldn't bring
-      // that back. A box emptied by sending — a chat's composer — no longer
-      // counts, and neither does a search box.
-      var typed = [];
-      document.addEventListener('input', function (e) {
-        if (!e.isTrusted) return;
-        var el = e.target;
-        if (!el || typed.indexOf(el) >= 0) return;
-        typed.push(el);
-        if (typed.length > 40) typed.shift();
-      }, true);
-      function unsaved() {
-        for (var i = 0; i < typed.length; i++) {
-          var el = typed[i];
-          if (!el.isConnected) continue;
-          var tag = (el.tagName || '').toLowerCase();
-          if (tag === 'textarea') {
-            if (el.value.trim() && el.value !== el.defaultValue) return true;
-          } else if (tag === 'input') {
-            var kind = (el.type || 'text').toLowerCase();
-            if (['text', 'email', 'url', 'tel', 'number'].indexOf(kind) < 0) continue;
-            if (el.value.trim() && el.value !== el.defaultValue) return true;
-          } else if (el.isContentEditable) {
-            if ((el.textContent || '').trim()) return true;
-          }
-        }
-        return false;
+      // The forms of a frame, if it is of this page's origin and this
+      // script runs there: checked for the mark, since a frame of anywhere
+      // else can put a frame of its own named "__officeForms" where they
+      // would be. Null for any other frame.
+      function formsOf(frame) {
+        try {
+          var w = frame.contentWindow;
+          if (!w || w.location.origin !== location.origin) return null;
+          var forms = w.__officeForms;
+          return forms && forms[mark] === true ? forms : null;
+        } catch (e) { return null; }
       }
-
+      function isFrame(el) { return !!el && /^i?frame$/i.test(el.tagName || ''); }
+      // The same-origin frame the caret is in, if this script runs there:
+      // what the page is asked to fill goes to it. With the caret in any
+      // other frame, `false`: nothing is filled anywhere, least of all the
+      // page's own first password box.
+      function inFrame() {
+        var a = active();
+        if (!isFrame(a)) return null;
+        return formsOf(a) || false;
+      }
       window.__officeForms = {
-        unsaved: unsaved,
         fill: function (user, password) {
-          var both = pair();
+          var frame = inFrame();
+          if (frame === false) return false;
+          if (frame) return frame.fill(user, password);
+          var both = pair(active());
           if (!both) return false;
           if (both.user && !both.user.value) put(both.user, user);
+          keepSecret(both.pass);
+          touch(both.pass);
           put(both.pass, password);
           return true;
         },
         // The name alone, into a first step's box: there is no password
         // box yet, and none is filled anywhere.
         name: function (user) {
+          var frame = inFrame();
+          if (frame === false) return false;
+          if (frame) return frame.name(user);
           var box = named();
           if (!box) return false;
           put(box, user);
@@ -698,16 +936,19 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         // A verification code, into the box it was offered under: digit by
         // digit across a row of boxes, and only if it fits.
         code: function (value) {
-          var box = codeBox(document.activeElement) ? document.activeElement : codeAt;
+          var frame = inFrame();
+          if (frame === false) return false;
+          if (frame) return frame.code(value);
+          var box = codeBox(active()) ? active() : codeAt;
           if (!box || !box.isConnected || !codeBox(box)) return false;
           var row = cells(box);
-          if (!row) { put(box, value); return true; }
+          if (!row) { keepSecret(box); put(box, value); return true; }
           if (row.length !== value.length) return false;
-          row.forEach(function (b, i) { put(b, value.charAt(i)); });
+          row.forEach(function (b, i) { keepSecret(b); put(b, value.charAt(i)); });
           return true;
         },
         // Whether a box is offered codes, for the tests.
-        coded: function (el) { return codeBox(el || document.activeElement); },
+        coded: function (el) { return codeBox(el || active()); },
         // Whether there is still a sign-in on the page. Asked after a
         // password went out, to tell a sign-in that took from one refused.
         hasPassword: function () { return !!pair(); },
@@ -716,11 +957,13 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         contact: function (card, alone, box, tint) { return fillContact(card || {}, !!alone, box, tint); },
         // What a box is offered from your card, for the tests: a kind
         // ("email", "postal-code"…) or null.
-        contactVerdict: function (el) { return contactBox(el || document.activeElement); },
+        contactVerdict: function (el) { return contactBox(el || active()); },
         // What a box would be offered, for the tests: null, or whether a
         // pick puts in the name alone and whether the site's other hosts'
         // accounts come too.
-        verdict: function (el) { return judge(el || document.activeElement); },
+        verdict: function (el) { return judge(el || active()); },
+        // The page scrolled under a frame's box: the list follows it.
+        moved: function () { moved(); },
         // A form the browser has just seen go out. Sent from the page's
         // script — form.submit() fires no submit event, and the link or
         // timer that called it is no button — nothing below heard it.
@@ -729,6 +972,7 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         // saved instead.
         sent: function () { if (Date.now() - offered > 2000) offer(); }
       };
+      try { Object.defineProperty(window.__officeForms, mark, { value: true }); } catch (err) {}
 
       // What is in the boxes when they are sent. Said every time — a click
       // on "show password" says it too — because the browser only listens
@@ -739,6 +983,7 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       // under.
       var offered = 0;
       function offer() {
+        if (framed) return;
         var both = pair();
         if (!both) {
           var box = named();
@@ -749,7 +994,11 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
           }
           return;
         }
-        if (!both.pass.value) return;
+        // Only a password that was typed or filled in: one the page put
+        // there by itself is not a sign-in going out. The one last typed in
+        // goes with its own name, not a sign-up form's above it.
+        if (lastTyped && lastTyped.isConnected && lastTyped !== both.pass) both = pair(lastTyped) || both;
+        if (!both.pass.value || !touched.has(both.pass)) return;
         offered = Date.now();
         window.webkit.messageHandlers.officeForms.postMessage({
           kind: 'submit',
@@ -761,9 +1010,9 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       document.addEventListener('submit', offer, true);
       document.addEventListener('keydown', function (e) {
         if (e.key !== 'Enter') return;
-        var both = pair();
-        if (both && (document.activeElement === both.pass || document.activeElement === both.user)) offer();
-        else if (!both && nameBox(document.activeElement)) offer();
+        var el = active(), both = pair(el);
+        if (both && (el === both.pass || el === both.user)) offer();
+        else if (!both && nameBox(el)) offer();
       }, true);
       // Plenty of sign-in buttons aren't in a form and never fire submit.
       document.addEventListener('click', function (e) {
@@ -776,7 +1025,7 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
 
       var told = false;
       function tell() {
-        if (told || !pair()) return;
+        if (framed || told || !pair()) return;
         told = true;
         window.webkit.messageHandlers.officeForms.postMessage({ kind: 'form' });
       }
@@ -806,7 +1055,7 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
           window.webkit.messageHandlers.officeForms.postMessage({ kind: 'settled' });
         }, 400);
       }
-      new MutationObserver(function () {
+      if (!framed) new MutationObserver(function () {
         if (!looking) looking = setTimeout(look, 250);
       }).observe(document.documentElement, { childList: true, subtree: true });
 
@@ -850,8 +1099,26 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
       // What the box the caret is in was judged to be: judged again when the
       // caret moves, not on every frame of a scroll, which only moves it.
       var judged = { el: null, verdict: null, code: false, sure: false, contact: null };
+      // Where a frame's boxes are on the page: its frames' places added up.
+      function offset() {
+        var x = 0, y = 0;
+        try {
+          for (var w = window; w !== w.top; w = w.parent) {
+            var f = w.frameElement, r = f.getBoundingClientRect(), s = w.parent.getComputedStyle(f);
+            x += r.left + f.clientLeft + (parseFloat(s.paddingLeft) || 0);
+            y += r.top + f.clientTop + (parseFloat(s.paddingTop) || 0);
+          }
+        } catch (e) { return null; }
+        return { x: x, y: y };
+      }
       function caret(scrolled) {
-        var el = document.activeElement;
+        var el = active();
+        // The caret in a frame that runs this: the frame says where it is,
+        // and follows a scroll of the page around it.
+        if (isFrame(el)) {
+          var frame = formsOf(el);
+          if (frame) { if (scrolled === true) frame.moved(); return; }
+        }
         // The boxes are only looked for with the caret in one: this runs on
         // every frame of every scroll, and looking goes through the whole page.
         if (scrolled !== true || judged.el !== el) {
@@ -873,10 +1140,13 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
         var name = !!(verdict && verdict.name);
         var wide = code ? judged.sure : !verdict || verdict.wide;
         if (passwords || code || contact || forPasskeys(el)) {
-          var r = el.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) rect = { x: r.left, y: r.top, w: r.width, h: r.height };
+          var r = el.getBoundingClientRect(), at = framed ? offset() : { x: 0, y: 0 };
+          if (at && r.width > 0 && r.height > 0) rect = { x: r.left + at.x, y: r.top + at.y, w: r.width, h: r.height };
         }
         var typing = editable(el);
+        // A frame the caret has left says nothing: where it went speaks,
+        // and would be talked over.
+        if (framed && !rect && !document.hasFocus()) return;
         var now = typing + (rect ? ' ' + passwords + ' ' + name + ' ' + wide + ' ' + code + ' ' + contact + ' ' + rect.x + ' ' + rect.y + ' ' + rect.w + ' ' + rect.h : '');
         if (scrolled === true && now === said) return;
         said = now;
@@ -923,8 +1193,10 @@ final class FormRelay: NSObject, WKScriptMessageHandler {
           kind: 'fullscreen', on: on
         });
       }
-      document.addEventListener('fullscreenchange', immersed, true);
-      document.addEventListener('webkitfullscreenchange', immersed, true);
+      if (!framed) {
+        document.addEventListener('fullscreenchange', immersed, true);
+        document.addEventListener('webkitfullscreenchange', immersed, true);
+      }
 
       document.addEventListener('focusin', caret, true);
       document.addEventListener('focusout', function () { setTimeout(caret, 0); }, true);

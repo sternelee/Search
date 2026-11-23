@@ -36,8 +36,16 @@ enum Session {
         /// bring the window back (Windows.closed). Never written: it can
         /// hold what was typed into the page, and is left out of the keys.
         var keepsake: Browser.Keepsake? = nil
+        /// An open tab's identity, the same in every window, while Settings ›
+        /// Tabs › Same tabs in every window is on (see Twins.swift). Nil, and
+        /// so not written, otherwise.
+        var twinID: UUID? = nil
+        /// The id of the tab this entry is, while it sits in a small window
+        /// (Browser.openInLittleWindow). Closing that window takes out this
+        /// entry and no other: two tabs can have the same address.
+        var lifted: UUID? = nil
 
-        enum CodingKeys: String, CodingKey { case url, title, pin, name, home, groupID, pinID, touched, letGo, listed, terminal, muted }
+        enum CodingKeys: String, CodingKey { case url, title, pin, name, home, groupID, pinID, touched, letGo, listed, terminal, muted, twinID, lifted }
     }
 
     struct Shape: Codable {
@@ -143,9 +151,7 @@ enum Session {
 // key it isn't asked for. In extensions, so the memberwise initialisers stay.
 
 extension Session.Entry {
-    private enum Keys: String, CodingKey {
-        case url, title, pin, name, home, groupID, pinID, touched, letGo, listed, terminal, muted
-    }
+    private enum Keys: String, CodingKey { case url, title, pin, name, home, groupID, pinID, touched, letGo, listed, terminal, muted, twinID, lifted }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -161,6 +167,8 @@ extension Session.Entry {
         listed = try? c.decodeIfPresent(Bool.self, forKey: .listed)
         terminal = try? c.decodeIfPresent(Bool.self, forKey: .terminal)
         muted = (try? c.decodeIfPresent(Bool.self, forKey: .muted)) ?? false
+        twinID = try? c.decodeIfPresent(UUID.self, forKey: .twinID)
+        lifted = try? c.decodeIfPresent(UUID.self, forKey: .lifted)
     }
 }
 

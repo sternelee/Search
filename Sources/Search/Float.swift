@@ -34,6 +34,9 @@ final class Float {
     /// Asked every half second while the window is up, for the line along the
     /// bottom edge.
     var onProgress: ((@escaping (Double, Bool) -> Void) -> Void)?
+    /// Asked every half second while the window is up: whether the video
+    /// has gone from its page (Isolate.gone), and the window with it.
+    var onGone: ((@escaping (Bool) -> Void) -> Void)?
 
     private var ticker: Timer?
 
@@ -59,6 +62,16 @@ final class Float {
     /// Two fingers flick the window to a corner instead of pushing it
     /// along (Settings › General). Off unless asked for.
     static var flicks = false
+
+    /// A button that tucks the window into a corner (Settings › Browsing).
+    /// Off unless asked for. The window up now hears a change at once.
+    static weak var shown: Float?
+    static var minimizes = false {
+        didSet { shown?.controls?.offerMinimize(minimizes) }
+    }
+
+    /// The minimize button, pressed with no pointer. For the bench.
+    func benchTuck() { controls?.benchMinimize() }
 
     /// Where a flick sends the window, a margin in from the edges of
     /// `area`. A swipe clearly both ways — between about 22° and 68° — takes
@@ -196,12 +209,16 @@ final class Float {
             }
         }
         controls.onSkip = { [weak self] seconds in self?.onSkip?(seconds) }
+        // Brought up to date as the pointer arrives, being asked for only
+        // while it is there.
+        controls.onEnter = { [weak self] in self?.refreshControls() }
         ground.addSubview(controls)
         self.controls = controls
 
         panel.contentView = ground
         panel.orderFrontRegardless()
         self.panel = panel
+        Float.shown = self
 
         // Off once the page has drawn a frame at the window's size with the
         // video alone in it, and never later than the limit: a page that
@@ -228,11 +245,26 @@ final class Float {
                     return
                 }
 
-                self.onProgress? { through, playing in
-                    self.controls?.progress = through
-                    self.controls?.playing = playing
+                // The bar and the pause button are drawn only while the
+                // pointer is over the window: asked then, not every half
+                // second for a page nobody is looking at.
+                if self.controls?.isNear == true { self.refreshControls() }
+
+                // A video that ended or went closes its window, rather than
+                // leave the page's black in it (idea 923).
+                self.onGone? { [weak self] gone in
+                    guard gone, let self, self.panel != nil, self.page?.superview === ground else { return }
+                    self.onClose?()
                 }
             }
+        }
+    }
+
+    /// How far through the video is, and whether it plays, for the controls.
+    private func refreshControls() {
+        onProgress? { [weak self] through, playing in
+            self?.controls?.progress = through
+            self?.controls?.playing = playing
         }
     }
 
@@ -260,6 +292,7 @@ final class Float {
     /// window is kept as it was, not as the sliver it is.
     private var restingFrame: NSRect? {
         guard let panel else { return nil }
+        if let home = controls?.tuckedFrom { return home }
         guard let home = controls?.dockedFrom else { return panel.frame }
         return NSRect(origin: home, size: panel.frame.size)
     }
@@ -275,6 +308,7 @@ final class Float {
         keeping = []
         ticker?.invalidate()
         ticker = nil
+        if Float.shown === self { Float.shown = nil }
         (page as? WKWebView)?.allowsMagnification = true
         page?.removeFromSuperview()
         page = nil
@@ -290,7 +324,7 @@ final class Float {
         guard let cover else { return }
         self.cover = nil
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.12
+            context.duration = Motion.seconds(0.12)
             cover.animator().alphaValue = 0
         }, completionHandler: {
             cover.removeFromSuperview()
@@ -319,7 +353,8 @@ final class Float {
     }
 
     /// What a small window of video needs, and nothing else: a way out, a way
-    /// back, a way to stop it, and a way to step over the bit you missed.
+    /// back, and, when Settings asks, a way to tuck it small. A way to stop
+    /// it, and a way to step over the bit you missed.
     ///
     /// Out of sight until the pointer is over the window — the whole point of
     /// this window is the picture.
@@ -328,6 +363,7 @@ final class Float {
         var onReturn: (() -> Void)?
         var onPlayPause: (() -> Void)?
         var onSkip: ((Double) -> Void)?
+        var onEnter: (() -> Void)?
 
         var playing = true {
             didSet { pause.image = glyph(playing ? "pause.fill" : "play.fill", 17) }
@@ -339,6 +375,7 @@ final class Float {
         }
 
         private let close = NSButton()
+        private let tuck = NSButton()
         private let back = NSButton()
         private let pause = NSButton()
         private let rewind = NSButton()
@@ -346,6 +383,8 @@ final class Float {
         private let scrim = CAGradientLayer()
         private let line = Line()
         private var near = false
+        /// Whether the pointer is over the window, where the controls show.
+        var isNear: Bool { near }
 
         override init(frame: NSRect) {
             super.init(frame: frame)
@@ -364,6 +403,8 @@ final class Float {
             layer?.addSublayer(scrim)
 
             dress(close, "xmark", 11, round: 15, action: #selector(pressedClose))
+            dress(tuck, "minus", 11, round: 15, action: #selector(pressedMinimize))
+            tuck.isHidden = !Float.minimizes
             dress(back, "arrow.up.forward", 12, round: 15, action: #selector(pressedReturn))
             dress(rewind, "gobackward.15", 15, round: 19, action: #selector(pressedRewind))
             dress(pause, "pause.fill", 17, round: 25, action: #selector(pressedPause))
@@ -377,7 +418,7 @@ final class Float {
         @available(*, unavailable)
         required init?(coder: NSCoder) { fatalError() }
 
-        private var buttons: [NSButton] { [close, back, rewind, pause, forward] }
+        private var buttons: [NSButton] { [close, tuck, back, rewind, pause, forward] }
 
         private func dress(
             _ button: NSButton,
@@ -413,6 +454,7 @@ final class Float {
             CATransaction.commit()
 
             close.frame = NSRect(x: 14, y: bounds.height - 44, width: 30, height: 30)
+            tuck.frame = NSRect(x: 52, y: bounds.height - 44, width: 30, height: 30)
             back.frame = NSRect(x: bounds.width - 44, y: bounds.height - 44, width: 30, height: 30)
 
             let middle = bounds.midY - 25
@@ -435,18 +477,21 @@ final class Float {
             )
         }
 
-        override func mouseEntered(with event: NSEvent) { fade(to: 1) }
+        override func mouseEntered(with event: NSEvent) {
+            fade(to: 1)
+            onEnter?()
+        }
         override func mouseExited(with event: NSEvent) { fade(to: 0) }
 
         private func fade(to value: CGFloat) {
             near = value > 0
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.16
+                context.duration = Motion.seconds(0.16)
                 buttons.forEach { $0.animator().alphaValue = value }
                 line.animator().alphaValue = value
             }
             CATransaction.begin()
-            CATransaction.setAnimationDuration(0.16)
+            CATransaction.setAnimationDuration(Motion.seconds(0.16))
             scrim.opacity = Swift.Float(value)
             CATransaction.commit()
         }
@@ -461,7 +506,7 @@ final class Float {
         override func hitTest(_ point: NSPoint) -> NSView? {
             let inside = convert(point, from: superview)
             if near {
-                for button in buttons where button.frame.contains(inside) {
+                for button in buttons where !button.isHidden && button.frame.contains(inside) {
                     return button
                 }
             }
@@ -844,6 +889,70 @@ final class Float {
             )
         }
 
+        /// The frame before it was tucked, so closing remembers that size,
+        /// and a click on the button brings it back.
+        private(set) var tuckedFrom: NSRect?
+        private var tuckedMin: NSSize?
+
+        /// The minimize button, when Settings has it on. Off, and already
+        /// tucked: it comes back out, and the button goes.
+        func offerMinimize(_ on: Bool) {
+            tuck.isHidden = !on
+            if !on, tuckedFrom != nil { untuck() }
+        }
+
+        /// For the bench, which has no pointer: the button's own action.
+        func benchMinimize() {
+            offerMinimize(true)
+            pressedMinimize()
+        }
+
+        private func tuckAway() {
+            guard let window, tuckedFrom == nil, window.frame.width > 230 else { return }
+            tuckedFrom = window.frame
+            tuckedMin = window.minSize
+            let wide: CGFloat = 220
+            let tall = wide * window.frame.height / max(window.frame.width, 1)
+            window.minSize = NSSize(width: wide, height: tall)
+            var target = NSRect(x: window.frame.maxX - wide, y: window.frame.minY, width: wide, height: tall)
+            if let area {
+                target.origin.x = min(max(area.minX, target.minX), area.maxX - wide)
+                target.origin.y = min(max(area.minY, target.minY), area.maxY - tall)
+            }
+            tuck.image = glyph("plus", 11)
+            hideTransport(true)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                window.animator().setFrame(target, display: false)
+            }
+        }
+
+        private func untuck() {
+            guard let window, let home = tuckedFrom else { return }
+            let min = tuckedMin ?? NSSize(width: 260, height: 146)
+            tuckedFrom = nil
+            tuckedMin = nil
+            tuck.image = glyph("minus", 11)
+            hideTransport(false)
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.18
+                window.animator().setFrame(home, display: false)
+            }, completionHandler: {
+                window.minSize = min
+            })
+        }
+
+        private func hideTransport(_ hide: Bool) {
+            rewind.isHidden = hide
+            pause.isHidden = hide
+            forward.isHidden = hide
+            line.isHidden = hide
+        }
+
+        @objc private func pressedMinimize() {
+            if tuckedFrom != nil { untuck() } else { tuckAway() }
+        }
+
         @objc private func pressedClose() { onClose?() }
         @objc private func pressedReturn() { onReturn?() }
         @objc private func pressedRewind() { onSkip?(-15) }
@@ -1068,6 +1177,79 @@ enum Isolate {
         if (document.visibilityState === 'visible') stopped = new WeakSet();
       }, true);
       window.__officeFloatUnseen = function (v) { return v.paused && stopped.has(v); };
+      // The videos heard playing, for `real`: one muted since still counts.
+      var heard = new WeakSet();
+      function listen(e) {
+        var v = e.target;
+        if (v && v.tagName === 'VIDEO' && !v.paused && !v.muted && v.volume > 0) heard.add(v);
+      }
+      ['play', 'playing', 'volumechange'].forEach(function (name) {
+        document.addEventListener(name, listen, true);
+      });
+      window.__officeFloatHeard = function (v) { return heard.has(v) || (!v.muted && v.volume > 0); };
+    })();
+    """
+
+    /// Which videos float out on their own, set just before `on` looks
+    /// (Browser.lift, NativePiP.script): one somebody is watching, and not
+    /// whatever else plays on the page. YouTube's home page plays a muted
+    /// preview of the thumbnail under the pointer, and leaving the tab
+    /// floated that, then a black window once the preview ended (idea 923).
+    /// As Safari (main content: audio, about 400×300 or more) and Chrome or
+    /// Arc (audible in the last two seconds, unmuted) ask: heard, now or
+    /// earlier and muted since by hand; big enough to be watched; longer
+    /// than a loop; and not a preview in a link or a thumbnail. ⇧⌘P sets
+    /// nothing and still lifts any video playing.
+    static let real = """
+    window.__officeFloatOnly = function (v) {
+      var heard = window.__officeFloatHeard ? window.__officeFloatHeard(v) : (!v.muted && v.volume > 0);
+      if (!heard) return false;
+      if (isFinite(v.duration) && v.duration > 0 && v.duration < 10) return false;
+      var b = v.getBoundingClientRect();
+      if (v.videoWidth > 0 && b.width > 0 && b.height > 0 && b.width * b.height < 320 * 180) return false;
+      for (var up = v; up && up !== document.body && up !== document.documentElement; up = up.parentElement) {
+        if (up !== v && up.tagName === 'A' && up.hasAttribute('href')) return false;
+        var name = up.tagName + ' ' + (up.id || '') + ' ' + (typeof up.className === 'string' ? up.className : '');
+        if (/(^|[\\s_-])(preview|thumbnail)(?=$|[\\s_-])/i.test(name) || /(^|[\\s_-])(preview|thumbnail)[A-Z]/.test(name)) return false;
+      }
+      return true;
+    };
+    """
+
+    /// `on`, for a video floating out on its own: only one of the `real`.
+    static let quietly = real + on
+
+    /// Whether the floated video has gone: taken out of the page, emptied
+    /// of its source, hidden with its player, or ended a while ago with
+    /// nothing after it. YouTube's preview ended and went, and the window
+    /// held the page's black (idea 923). A second's grace for a player
+    /// swapping one video for the next (Isolate.on puts the mark back), and
+    /// ten after an end, for a player's "up next" to begin.
+    static let gone = """
+    (function () {
+      if (!document.documentElement.classList.contains('office-floating')) {
+        window.__officeFloatGone = null;
+        return false;
+      }
+      var art = !!window.__officeFloatArt;
+      function shows(v) {
+        return v.isConnected && !v.error && (v.currentSrc || v.srcObject) && v.readyState > 0
+          && (art || v.getClientRects().length > 0);
+      }
+      var v = document.querySelector('video[data-office-float]'), why = null;
+      if (!v || !shows(v)) why = 'gone';
+      else if (v.ended) why = 'ended';
+      if (why) {
+        var all = document.querySelectorAll('video');
+        for (var i = 0; i < all.length; i++) {
+          var one = all[i];
+          if (one !== v && !one.paused && !one.ended && one.readyState >= 2 && shows(one)) { why = null; break; }
+        }
+      }
+      var was = window.__officeFloatGone;
+      if (!why) { window.__officeFloatGone = null; return false; }
+      if (!was || was.why !== why) { window.__officeFloatGone = { why: why, since: Date.now() }; return false; }
+      return Date.now() - was.since >= (why === 'ended' ? 10000 : 1000);
     })();
     """
 
@@ -1079,12 +1261,68 @@ enum Isolate {
     (function () {
       var videos = document.querySelectorAll('video');
       var unseen = window.__officeFloatUnseen || function () { return false; };
-      var best = null, area = 0;
+      // Floating out on its own, only a video somebody watches (see real).
+      var only = window.__officeFloatOnly;
+      window.__officeFloatOnly = null;
+      // A video with a picture to show, before one without: YouTube Music
+      // plays a song through a video that is hidden, or has no picture at
+      // all, and shows the album's cover beside it. Floated as a video, the
+      // window showed whatever of the player was left, its buttons and tabs.
+      function pictured(v) {
+        var b = v.getBoundingClientRect();
+        return v.videoWidth > 0 && v.videoHeight > 0 && b.width > 0 && b.height > 0;
+      }
+      var best = null, area = 0, blind = null, most = 0;
       for (var i = 0; i < videos.length; i++) {
         var v = videos[i];
         if ((v.paused && !unseen(v)) || v.ended || v.readyState < 2) continue;
+        if (only && !only(v)) continue;
         var box = v.getBoundingClientRect();
-        if (box.width * box.height >= area) { area = box.width * box.height; best = v; }
+        if (!pictured(v)) {
+          if (box.width * box.height >= most) { most = box.width * box.height; blind = v; }
+        } else if (box.width * box.height >= area) { area = box.width * box.height; best = v; }
+      }
+      // Such a song floats as its cover: the one the page gives the system
+      // for Now Playing, or else the largest picture in its player. With
+      // neither there is nothing to show, and nothing floats.
+      var art = document.getElementById('office-float-art');
+      if (art) art.remove();
+      window.__officeFloatArt = null;
+      if (!best && blind) {
+        var cover = coverOf(blind);
+        if (!cover) return 'none';
+        best = blind;
+        art = document.createElement('img');
+        art.id = 'office-float-art';
+        art.alt = '';
+        art.src = cover;
+        document.body.appendChild(art);
+        window.__officeFloatArt = function () {
+          var now = coverOf(best);
+          if (now && art.getAttribute('src') !== now) art.src = now;
+        };
+      }
+      function coverOf(v) {
+        try {
+          var meta = navigator.mediaSession && navigator.mediaSession.metadata;
+          var list = meta && meta.artwork ? Array.prototype.slice.call(meta.artwork) : [];
+          var pick = null, side = -1;
+          for (var a = 0; a < list.length; a++) {
+            var n = parseInt(String(list[a].sizes || '0').split('x')[0], 10) || 0;
+            if (list[a].src && n > side) { side = n; pick = list[a].src; }
+          }
+          if (pick) return pick;
+        } catch (e) {}
+        for (var up = v.parentElement; up && up !== document.body && up !== document.documentElement; up = up.parentElement) {
+          var found = null, big = 64 * 64, imgs = up.querySelectorAll('img');
+          for (var k = 0; k < imgs.length; k++) {
+            var r = imgs[k].getBoundingClientRect(), s = getComputedStyle(imgs[k]);
+            if (!imgs[k].currentSrc || s.visibility !== 'visible' || s.opacity === '0') continue;
+            if (r.width * r.height >= big) { big = r.width * r.height; found = imgs[k].currentSrc; }
+          }
+          if (found) return found;
+        }
+        return null;
       }
       if (!best) return 'none';
 
@@ -1129,6 +1367,14 @@ enum Isolate {
         'html.office-floating, html.office-floating body {',
         'background:#000 !important; overflow:hidden !important; margin:0 !important}',
         'html.office-floating body > * { visibility:hidden !important }',
+        // And everything else, ancestors of the video aside: a part that
+        // makes itself visible again comes back whatever its ancestors say.
+        // YouTube Music's do — its top bar, side drawer, the page's content
+        // and the player bar at the foot, fixed and above the player — and
+        // floating a music video from a playlist, the little window showed
+        // them over the video, the player bar's buttons stacked (idea 933).
+        'html.office-floating body *:not([data-office-float]):not(:has([data-office-float])):not(#office-float-art)',
+        ':not(.player-timedtext):not(.player-timedtext *) { visibility:hidden !important }',
         'html.office-floating [data-office-float] {',
         'visibility:visible !important; position:fixed !important;',
         'left:0 !important; top:0 !important; right:0 !important; bottom:0 !important;',
@@ -1183,12 +1429,25 @@ enum Isolate {
         'filter:none !important; backdrop-filter:none !important; -webkit-backdrop-filter:none !important;',
         'perspective:none !important; contain:none !important; container-type:normal !important;',
         'will-change:auto !important; content-visibility:visible !important;',
+        // A transform on its way somewhere wins over all of this until it
+        // gets there: YouTube Music's player slides up over the page, and
+        // left before it had, or out of sight, where it never moves, the
+        // video was a window's height below the little window.
+        'transition:none !important; animation:none !important;',
         'clip-path:none !important; mask:none !important; -webkit-mask:none !important;',
         'opacity:1 !important}',
         // The player's own controls would sit under ours, and two sets of
         // buttons on one small window is one set too many.
         'html.office-floating [data-office-float]::-webkit-media-controls {',
-        'display:none !important}'
+        'display:none !important}',
+        // A song's cover, over the whole window and whatever is under it.
+        'html.office-floating #office-float-art {',
+        'visibility:visible !important; display:block !important; position:fixed !important;',
+        'left:0 !important; top:0 !important; width:100vw !important; height:100vh !important;',
+        'margin:0 !important; padding:0 !important; border:0 !important; background:#000 !important;',
+        'object-fit:contain !important; opacity:1 !important; transform:none !important;',
+        'z-index:2147483647 !important; pointer-events:none !important}',
+        'html:not(.office-floating) #office-float-art { display:none !important}'
       ].join('');
       document.documentElement.classList.add('office-floating');
 
@@ -1200,10 +1459,17 @@ enum Isolate {
       // turns pure black while still holding a perfectly live page. That is the
       // black rectangle, and it is not an orphaned window at all.
       //
-      // So the mark is put back on whatever is playing now, four times a
-      // second, for as long as the page is out.
+      // So the mark is put back on whatever is playing now, for as long as
+      // the page is out: when a video starts to play, within a quarter of a
+      // second of the page's elements changing or the mark being taken off
+      // (a player rebuilding itself does both), and every two seconds for a
+      // page that does neither. It was every quarter of a second whether
+      // anything had changed or not.
+      if (window.__officeFloatUnwatch) window.__officeFloatUnwatch();
       clearInterval(window.__officeFloatWatch);
-      window.__officeFloatWatch = setInterval(function () {
+      var remark = function () {
+        // The next song's cover, once the page has it.
+        if (window.__officeFloatArt) window.__officeFloatArt();
         if (document.querySelector('[data-office-float]')) return;
         var again = null, most = 0;
         var all = document.querySelectorAll('video');
@@ -1217,11 +1483,29 @@ enum Isolate {
           }
         }
         if (again) again.setAttribute('data-office-float', '');
-      }, 250);
+      };
+      var queued = null;
+      var changes = new MutationObserver(function () {
+        if (!queued) queued = setTimeout(function () { queued = null; remark(); }, 250);
+      });
+      changes.observe(document.documentElement, {
+        childList: true, subtree: true, attributes: true, attributeFilter: ['data-office-float']
+      });
+      // Media events don't bubble: caught on the way down.
+      document.addEventListener('playing', remark, true);
+      window.__officeFloatWatch = setInterval(remark, 2000);
+      window.__officeFloatUnwatch = function () {
+        changes.disconnect();
+        clearTimeout(queued);
+        document.removeEventListener('playing', remark, true);
+        window.__officeFloatUnwatch = null;
+      };
 
       // Where the picture is once the rest of the page is out of the way,
       // as large as it goes whole and in the middle, for cutting it out of a
       // picture of the page taken then (Float.still, Browser.lift).
+      // A cover has no frame to cut out yet: the window's black until it is in.
+      if (window.__officeFloatArt) return { floating: true, page: [innerWidth, innerHeight] };
       var whole = shown[0] && shown[1] ? shown : [vw, vh];
       var by = Math.min(innerWidth / whole[0], innerHeight / whole[1]) || 0;
       var alone = [(innerWidth - whole[0] * by) / 2, (innerHeight - whole[1] * by) / 2, whole[0] * by, whole[1] * by];
@@ -1318,6 +1602,7 @@ enum Isolate {
         // Floated again in the meantime: that is the float's now.
         if (window.__officeFloatLanding !== landing) return;
         window.__officeFloatLanding = null;
+        if (window.__officeFloatUnwatch) window.__officeFloatUnwatch();
         clearInterval(window.__officeFloatWatch);
         window.__officeFloatWatch = null;
         root.classList.remove('office-floating');
@@ -1325,8 +1610,36 @@ enum Isolate {
         if (sheet) sheet.textContent = '';
         var video = document.querySelector('[data-office-float]');
         if (video) video.removeAttribute('data-office-float');
+        var art = document.getElementById('office-float-art');
+        if (art) art.remove();
+        window.__officeFloatArt = null;
         settle(video);
         reopen();
+        redraw(video);
+      }
+      // Put back while its tab wasn't in front (the little window closed
+      // from another tab), the video was sized to the tab again only as the
+      // tab came back, and WebKit went on drawing its picture at the little
+      // window's size, in the corner of the player, until something built
+      // it anew: full screen, or a reload. Taken out of the layout for a
+      // frame once its tab is in front, it is drawn at its own size.
+      function redraw(video) {
+        if (document.visibilityState !== 'hidden') return;
+        document.addEventListener('visibilitychange', function seen() {
+          if (document.visibilityState !== 'visible') return;
+          document.removeEventListener('visibilitychange', seen);
+          // Laid out at the tab's size first.
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              if (root.classList.contains('office-floating')) return;
+              var v = video && video.isConnected ? video : document.querySelector('video');
+              if (!v) return;
+              var shown = v.style.display;
+              v.style.display = 'none';
+              requestAnimationFrame(function () { v.style.display = shown; });
+            });
+          });
+        });
       }
       // Twitch, in its Studio mode, folds its chat away in a page as narrow as
       // the little window, and opens it again only when asked: back in its

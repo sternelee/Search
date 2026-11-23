@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// A pair's one place in the row. In the column its pages are two lines, one
-/// under the other, joined by a hairline: halves side by side in 232 points
-/// would cut most titles to a dozen letters. Across the top they sit side by
+/// A split's one place in the row. In the column its pages are lines, one
+/// under the other — two, three or four — joined by hairlines: halves side
+/// by side in 232 points would cut most titles to a dozen letters. Across the top they sit side by
 /// side, with a single cross at the end for the half under the pointer — two
 /// crosses next to each other are two chances to close the wrong page.
 ///
@@ -17,8 +17,8 @@ import SwiftUI
 struct SplitTabItem: View {
     @ObservedObject var browser: Browser
     @ObservedObject var prefs: Preferences
-    @ObservedObject var left: Tab
-    @ObservedObject var right: Tab
+    /// Its pages, in order: two to four. Each half watches its own.
+    let pages: [Tab]
     /// Across the top: the item's width. Nil in the column, which is as wide
     /// as the column.
     let width: CGFloat?
@@ -44,25 +44,35 @@ struct SplitTabItem: View {
         Group {
             if stacked {
                 VStack(spacing: 0) {
-                    half(left, first: true)
-                    half(right, first: false)
+                    ForEach(pages.indices, id: \.self) { index in
+                        half(at: index)
+                    }
                 }
-                .overlay {
-                    Rectangle()
-                        .fill(Palette.hairline)
-                        .frame(height: 1)
-                        .padding(.horizontal, 10)
-                        .opacity(lit(left) || lit(right) ? 0 : 1)
-                        .allowsHitTesting(false)
+                .overlay(alignment: .top) {
+                    // A line between each two, gone while either is lit.
+                    ZStack(alignment: .top) {
+                        ForEach(1..<max(1, pages.count), id: \.self) { index in
+                            Rectangle()
+                                .fill(Palette.hairline)
+                                .frame(height: 1)
+                                .padding(.horizontal, 10)
+                                .offset(y: CGFloat(index) * height - 0.5)
+                                .opacity(lit(pages[index - 1]) || lit(pages[index]) ? 0 : 1)
+                        }
+                    }
+                    .allowsHitTesting(false)
                 }
             } else {
                 HStack(spacing: 0) {
-                    half(left, first: true)
-                    Rectangle()
-                        .fill(Palette.hairline)
-                        .frame(width: 1)
-                        .padding(.vertical, inset + 6)
-                    half(right, first: false)
+                    ForEach(pages.indices, id: \.self) { index in
+                        if index > 0 {
+                            Rectangle()
+                                .fill(Palette.hairline)
+                                .frame(width: 1)
+                                .padding(.vertical, inset + 6)
+                        }
+                        half(at: index)
+                    }
                 }
                 .frame(width: width, height: height)
                 .overlay(alignment: .trailing) { cross }
@@ -96,17 +106,21 @@ struct SplitTabItem: View {
         focused == tab.id || hovered == tab.id || browser.selectedTabIDs.contains(tab.id)
     }
 
-    private func half(_ tab: Tab, first: Bool) -> some View {
-        SplitTabHalf(
+    private func half(at index: Int) -> some View {
+        let tab = pages[index]
+        let count = CGFloat(pages.count)
+        return SplitTabHalf(
             browser: browser,
             prefs: prefs,
             tab: tab,
             focused: focused == tab.id,
             stacked: stacked,
-            first: first,
-            joined: lit(first ? right : left),
+            first: index == 0,
+            last: index == pages.count - 1,
+            joinedBefore: index > 0 && lit(pages[index - 1]),
+            joinedAfter: index < pages.count - 1 && lit(pages[index + 1]),
             height: height,
-            narrow: width.map { ($0 - 1) / 2 < 64 } ?? false,
+            titleRoom: width.map { ($0 - (count - 1)) / count - SplitTabHalf.fixed },
             interactive: interactive,
             pill: pill,
             hovered: $hovered
@@ -116,17 +130,17 @@ struct SplitTabItem: View {
         .animation(Motion.quick, value: separation.leaving)
     }
 
-    /// The other half of the one a carried pair is letting go of.
+    /// The other pages of the one a carried split is letting go of.
     private func staying(_ tab: Tab) -> Bool {
         guard let leaving = separation.leaving, leaving != tab.id else { return false }
-        return leaving == left.id || leaving == right.id
+        return pages.contains { $0.id == leaving }
     }
 
     /// Across the top: one cross, at the end of the item, for whichever half
     /// the pointer is over.
     @ViewBuilder
     private var cross: some View {
-        if interactive, let id = hovered, let tab = [left, right].first(where: { $0.id == id }),
+        if interactive, let id = hovered, let tab = pages.first(where: { $0.id == id }),
            browser.editingTab == nil {
             Image(systemName: "xmark")
                 .font(.system(size: 8, weight: .semibold))
@@ -139,7 +153,8 @@ struct SplitTabItem: View {
                 }
                 .padding(.trailing, 7)
                 .transition(.opacity)
-                .help(tab.id == left.id ? "Close the left page" : "Close the right page")
+                .help(tab.id == pages.first?.id ? "Close the left page"
+                      : tab.id == pages.last?.id ? "Close the right page" : "Close this page")
         }
     }
 }
@@ -148,6 +163,10 @@ private struct SplitTabHalf: View {
     /// A half's grey across the top: a tab's pill, 15 points of mark and 6
     /// above and below.
     static let pillHeight: CGFloat = 28
+    /// A half's own parts across the top, end to end: its air at the left,
+    /// the mark, the gap after it, its air at the right. Everything but the
+    /// title.
+    static let fixed: CGFloat = 9 + 13 + 5 + 4
 
     @Environment(\.greys) private var greys
     @Environment(\.tabShortcutNumbers) private var shortcutNumbers
@@ -158,12 +177,20 @@ private struct SplitTabHalf: View {
     let stacked: Bool
     /// The top half in the column, the left one across the top.
     let first: Bool
-    /// The other half is lit too: the corners where the two touch are square,
-    /// so the greys meet without a notch.
-    let joined: Bool
+    /// The bottom one in the column, the right one across the top.
+    let last: Bool
+    /// The half before (above, left of) this one is lit too: the corners
+    /// where the two touch are square, so the greys meet without a notch.
+    let joinedBefore: Bool
+    /// The half after it is lit too.
+    let joinedAfter: Bool
+    private var joined: Bool { joinedBefore || joinedAfter }
     let height: CGFloat
-    /// Too narrow for a title: the mark alone, as a narrow tab has.
-    let narrow: Bool
+    /// Across the top, what the title gets; nil in the column.
+    let titleRoom: CGFloat?
+    /// Too narrow for three letters or so of a title (Metrics.tabTitleRoom):
+    /// the mark alone, as a narrow tab has, never the mark and a lone "…".
+    private var narrow: Bool { titleRoom.map { $0 < Metrics.tabTitleRoom } ?? false }
     let interactive: Bool
     let pill: Namespace.ID
     @Binding var hovered: Tab.ID?
@@ -172,11 +199,20 @@ private struct SplitTabHalf: View {
     private var hovering: Bool { hovered == tab.id }
     private var title: String { tab.label.isEmpty ? "New Tab" : tab.label }
     private var playing: Bool { !tab.loading && (tab.noisy || tab.muted) }
-    private var editing: Bool { browser.editingTab == tab.id }
+    /// Never in a copy that takes no clicks (the map of every space's rows):
+    /// a second field there takes the keys and ends the edit (see SideRow).
+    private var editing: Bool { interactive && browser.editingTab == tab.id }
     /// Where the page is, said on the half you're on (Settings › Tabs › Show
     /// the address on the tab you're on).
-    private var rest: AtRest? { focused && !editing && !narrow ? AtRest.said(tab.restAddress, always: prefs.showsAddress) : nil }
+    /// With room for the site's name beside its lock and port; else the
+    /// title stands in for it. A warning is said however little room.
+    private var rest: AtRest? {
+        guard focused && !editing && !narrow, let said = AtRest.said(tab.restAddress, always: prefs.showsAddress) else { return nil }
+        guard let titleRoom, !said.warns else { return said }
+        return titleRoom - AtRestLine.besideName(said, size: 12) >= Metrics.tabTitleRoom ? said : nil
+    }
     private var atRest: Bool { rest != nil }
+    private var dim: Bool { prefs.dimsSleepingTabs && tab.asleep && !focused && !hovering }
 
     private var laidOut: some View {
         row
@@ -242,14 +278,13 @@ private struct SplitTabHalf: View {
     /// other half while that one is lit too.
     private var shape: UnevenRoundedRectangle {
         let round: CGFloat = 9
-        let seam: CGFloat = joined ? 0 : round
-        let radii: RectangleCornerRadii
-        switch (stacked, first) {
-        case (true, true): radii = .init(topLeading: round, bottomLeading: seam, bottomTrailing: seam, topTrailing: round)
-        case (true, false): radii = .init(topLeading: seam, bottomLeading: round, bottomTrailing: round, topTrailing: seam)
-        case (false, true): radii = .init(topLeading: round, bottomLeading: round, bottomTrailing: seam, topTrailing: seam)
-        case (false, false): radii = .init(topLeading: seam, bottomLeading: seam, bottomTrailing: round, topTrailing: round)
-        }
+        // Square where it meets a lit neighbour; round at the ends and
+        // beside one that isn't.
+        let before: CGFloat = !first && joinedBefore ? 0 : round
+        let after: CGFloat = !last && joinedAfter ? 0 : round
+        let radii: RectangleCornerRadii = stacked
+            ? .init(topLeading: before, bottomLeading: after, bottomTrailing: after, topTrailing: before)
+            : .init(topLeading: before, bottomLeading: before, bottomTrailing: after, topTrailing: after)
         return UnevenRoundedRectangle(cornerRadii: radii, style: .continuous)
     }
 
@@ -257,7 +292,7 @@ private struct SplitTabHalf: View {
     private var ground: some View {
         if focused {
             ZStack(alignment: .leading) {
-                Rectangle().fill(greys.wash)
+                Rectangle().fill(greys.washOnTile)
                 if prefs.showsReading, !narrow {
                     GeometryReader { geo in
                         ReadingFill(meter: tab.meter, width: geo.size.width)
@@ -267,9 +302,9 @@ private struct SplitTabHalf: View {
             .clipShape(shape)
             .matchedGeometryEffect(id: "live", in: pill)
         } else if browser.selectedTabIDs.contains(tab.id) {
-            shape.fill(greys.wash)
+            shape.fill(greys.washOnTile)
         } else if hovering {
-            shape.fill(greys.hover)
+            shape.fill(greys.hoverOnTile)
         }
     }
 
@@ -327,7 +362,7 @@ private struct SplitTabHalf: View {
                     TitleAtRest(label: title, rest: rest, shown: atRest, hovering: hovering,
                                 size: stacked ? prefs.sideTitle : 12,
                                 colour: focused ? Palette.ink : hovering ? Palette.ink.opacity(0.7) : Palette.muted,
-                                roomy: stacked)
+                                roomy: stacked, dim: dim, record: stacked ? nil : tab.id)
                 }
             }
         }

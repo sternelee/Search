@@ -5,7 +5,7 @@ import XCTest
 @MainActor
 final class TabSelectionTests: XCTestCase {
     override class func setUp() {
-        setenv("SEARCH_PROBE", "tab-selection-\(getpid())", 1)
+        TestWorld.enter()
         super.setUp()
     }
 
@@ -85,6 +85,24 @@ final class TabSelectionTests: XCTestCase {
 
         browser.moveDisplayedTab(tabs[0], to: 2)
         XCTAssertEqual(browser.shownTabs.map(\.title), ["two", "three", "one", "four"])
+    }
+
+    func testCloseOtherTabsKeepsEveryPickedTabAndItsPair() {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.prohibited)
+        let browser = makeBrowser()
+        let tabs = browser.shownTabs
+        browser.prefs.splitView = true
+        browser.pair(tabs[1], with: tabs[0], onLeft: false)
+        browser.select(tabs[2])
+        browser.extendTabSelection(to: tabs[0], modifiers: .command)
+        browser.extendTabSelection(to: tabs[2], modifiers: .command)
+        browser.extendTabSelection(to: tabs[3], modifiers: .command)
+        XCTAssertEqual(browser.pickedTabs.map(\.title), ["one", "four"])
+
+        browser.closeOthers(but: browser.pickedTabs)
+        XCTAssertEqual(browser.tabs.map(\.title), ["one", "two", "four"])
+        XCTAssertEqual(browser.activeID, tabs[0].id)
     }
 
     private func makeBrowser() -> Browser {

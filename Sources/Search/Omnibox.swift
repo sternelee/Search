@@ -9,6 +9,9 @@ final class FieldState: ObservableObject {
     @Published var offers: [Suggestion] = []
     @Published var ending: String?
     @Published var picked: Int?
+    /// The row was picked by what was typed (Arc-style tab popup), not by
+    /// the arrow keys: Return takes it, and the field keeps what was typed.
+    @Published var pickedByTyping = false
     @Published var siteOffer: SearchSite?
 }
 
@@ -34,20 +37,37 @@ struct Omnibox: View {
     var fitted = false
     /// The page whose pane this field stands on, with Split View on.
     var tab: Tab.ID?
+    /// Only the list, as wide as this, for the address line's field
+    /// (AddressLine.swift), which stands where the line is.
+    var listOnly: CGFloat?
 
-    init(browser: Browser, over: Bool, fitted: Bool = false, tab: Tab.ID? = nil) {
+    /// Centred on the window and nearer its top, as Spotlight's, for
+    /// Settings › The field in the middle of the window (idea 753).
+    var high = false
+
+    init(browser: Browser, over: Bool, fitted: Bool = false, tab: Tab.ID? = nil, listOnly: CGFloat? = nil, high: Bool = false) {
+        self.high = high
         self.browser = browser
         self.typing = browser.typing
         self.over = over
         self.fitted = fitted
         self.tab = tab
+        self.listOnly = listOnly
     }
 
     var body: some View {
         Group {
-            if fitted {
+            if let width = listOnly {
+                if browser.fieldShowing, !browser.offers.isEmpty || browser.siteOffer != nil || browser.switcherNote != nil {
+                    list.frame(width: width)
+                }
+            } else if fitted {
                 GeometryReader { geometry in
                     content(width: min(Metrics.fieldWidth, max(0, geometry.size.width - 28)))
+                }
+            } else if high {
+                GeometryReader { geometry in
+                    content(width: min(Metrics.fieldWidth, max(0, geometry.size.width - 28)), top: geometry.size.height * 0.24)
                 }
             } else {
                 content(width: Metrics.fieldWidth)
@@ -56,11 +76,14 @@ struct Omnibox: View {
         .allowsHitTesting(browser.fieldShowing)
     }
 
-    private func content(width: CGFloat) -> some View {
-        ZStack {
+    /// `top`: the field that far down from the top, rather than a little
+    /// above the middle.
+    private func content(width: CGFloat, top: CGFloat? = nil) -> some View {
+        ZStack(alignment: top == nil ? .center : .top) {
             // Keep the container mounted: only the field scales, while the
-            // page's cover fades without pulling its edges into view.
-            if browser.fieldShowing {
+            // page's cover fades without pulling its edges into view. Not
+            // while the address line has the field (AddressLine.swift).
+            if browser.fieldShowing, !browser.editingInline {
                 if over {
                     // The page is still there, just out of the way.
                     Rectangle()
@@ -88,7 +111,8 @@ struct Omnibox: View {
                 // Lifted a little above centre: dead centre reads as low,
                 // because the strip at the top isn't part of what the eye is
                 // measuring.
-                .padding(.bottom, 60)
+                .padding(.bottom, top == nil ? 60 : 0)
+                .padding(.top, top ?? 0)
                 .transition(.scale(scale: 0.97).combined(with: .opacity))
                 // The list's arrival and its leaving are animated from here,
                 // briefly: nothing that changes the suggestions does it inside
@@ -119,8 +143,10 @@ struct Omnibox: View {
                     // A slow, almost invisible breath under the field. It is
                     // the only thing on an empty tab, and a thing that never
                     // moves at all reads as a picture of an app rather than
-                    // an app.
-                    Breath()
+                    // an app. Not over a theme (Settings › Themes): the wall
+                    // moves the eye already, and the ink's haze lay over a
+                    // picture as a white or dark smudge (idea 952).
+                    UnlessThemed(over: over) { Breath() }
 
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(Palette.ground)
@@ -245,10 +271,21 @@ struct Omnibox: View {
                         .truncationMode(.tail)
                 }
                 Spacer(minLength: 0)
+                // A command's key, as Arc's Command Bar shows it.
+                if case .command(let command) = offer.kind, let key = command.key {
+                    Text(key)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.muted)
+                }
                 if offer.kind == .bookmark {
                     // Kept by you, not only visited: the bookmark's mark,
                     // at the end now that the site's icon leads the row.
                     symbol("bookmark")
+                } else if offer.kind == .elsewhere {
+                    // Open on another device: iCloud Tabs' mark.
+                    symbol("laptopcomputer.and.iphone")
+                } else if offer.pinned {
+                    symbol("pin")
                 }
             }
             .padding(.horizontal, 12)
@@ -356,6 +393,27 @@ private struct SiteOfferRow: View {
     }
 }
 
+/// Its content only where no theme is behind the field: over a page (⌘L) or
+/// on a plain blank tab. A view of its own, so only it watches the settings.
+private struct UnlessThemed<Content: View>: View {
+    let over: Bool
+    @ViewBuilder let content: () -> Content
+    @ObservedObject private var prefs = Shared.prefs
+
+    var body: some View {
+        if over || !themed { content() }
+    }
+
+    /// A chosen picture that can't be read shows as Off (HomeBackground).
+    private var themed: Bool {
+        switch prefs.homeTheme {
+        case .off: return false
+        case .custom: return HomeBackground.load(prefs.homeThemeImage) != nil
+        default: return true
+        }
+    }
+}
+
 /// The breath under the field: a soft shape of ink, blurred, moved by Core
 /// Animation. Animated by SwiftUI, it was drawn again on the main thread
 /// every frame for as long as an empty tab was showing — 18% of a core with
@@ -449,11 +507,14 @@ struct AddressField: NSViewRepresentable {
     @ObservedObject private var typing: FieldState
     /// The pane's page, for a field standing on one (see Coordinator.focus).
     var tab: Tab.ID?
+    /// Its type, smaller in the address line (AddressLine.swift).
+    var size: CGFloat = 15.5
 
-    init(browser: Browser, tab: Tab.ID? = nil) {
+    init(browser: Browser, tab: Tab.ID? = nil, size: CGFloat = 15.5) {
         self.browser = browser
         self.typing = browser.typing
         self.tab = tab
+        self.size = size
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(browser: browser) }
@@ -472,7 +533,7 @@ struct AddressField: NSViewRepresentable {
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 15.5)
+        field.font = .systemFont(ofSize: size)
         field.textColor = Palette.NS.ink
         field.lineBreakMode = .byClipping
         field.cell?.usesSingleLineMode = true
@@ -483,7 +544,7 @@ struct AddressField: NSViewRepresentable {
         // SwiftUI picks its own colour for a placeholder, and on a pale ground
         // that colour was near-white.
         let words = Self.placeholderWords(for: browser)
-        field.placeholderAttributedString = Self.placeholder(words)
+        field.placeholderAttributedString = Self.placeholder(words, size: size)
         field.setAccessibilityLabel(Self.accessibilityName(for: browser))
         context.coordinator.placeheld = words
         return field
@@ -492,8 +553,10 @@ struct AddressField: NSViewRepresentable {
     /// What the empty field asks for: with a site put in it with Tab, the
     /// words to search that site for; otherwise an address, and where it
     /// will open, since the field looks the same whichever key raised it.
+    /// In the address bar there is no doubt where: it is the tab's own.
     private static func placeholderWords(for browser: Browser) -> String {
         if let site = browser.siteChip { return "Search \(site.name)" }
+        if browser.editingInline { return "Enter a web address" }
         switch browser.fieldMode {
         case .blank: return "Enter a web address"
         case .newTab: return "New tab: enter a web address"
@@ -513,11 +576,11 @@ struct AddressField: NSViewRepresentable {
         }
     }
 
-    private static func placeholder(_ words: String) -> NSAttributedString {
+    private static func placeholder(_ words: String, size: CGFloat) -> NSAttributedString {
         NSAttributedString(
             string: words,
             attributes: [
-                .font: NSFont.systemFont(ofSize: 15.5),
+                .font: NSFont.systemFont(ofSize: size),
                 .foregroundColor: NSColor(Palette.ink.opacity(0.3)),
             ]
         )
@@ -546,7 +609,7 @@ struct AddressField: NSViewRepresentable {
         let words = Self.placeholderWords(for: browser)
         if coordinator.placeheld != words {
             coordinator.placeheld = words
-            field.placeholderAttributedString = Self.placeholder(words)
+            field.placeholderAttributedString = Self.placeholder(words, size: size)
             field.setAccessibilityLabel(Self.accessibilityName(for: browser))
             DispatchQueue.main.async { coordinator.showPlaceholder(in: field) }
         }
@@ -557,6 +620,29 @@ struct AddressField: NSViewRepresentable {
         }
     }
 
+    /// Whether the field on show had the keys a moment ago and is still up,
+    /// with what was typed: if so they go back to it, in the next turn of
+    /// the run loop, with the caret where it was. For a page that asked for
+    /// them by itself (PageView.becomeFirstResponder, idea 495), in the
+    /// field's own window.
+    @MainActor static func keepsKeys(for browser: Browser, in pageWindow: NSWindow) -> Bool {
+        // Only the page beside the field: one gone to WebKit's own full
+        // screen window takes the keys there.
+        guard browser.fieldShowing, let field = shown.object(forKey: browser), let window = field.window, window === pageWindow,
+              let leftAt = field.leftAt, field.currentEditor() == nil else { return false }
+        DispatchQueue.main.async { [weak field] in
+            guard let field, browser.editing, field.window === window, field.currentEditor() == nil else { return }
+            let attributes = (window.fieldEditor(false, for: field) as? NSTextView)?.selectedTextAttributes
+            window.makeFirstResponder(field)
+            guard let editor = field.currentEditor() as? NSTextView else { return }
+            if let attributes { editor.selectedTextAttributes = attributes }
+            let length = (editor.string as NSString).length
+            let start = min(leftAt.location, length)
+            editor.selectedRange = NSRange(location: start, length: min(leftAt.length, length - start))
+        }
+        return true
+    }
+
     /// The field, told when it lands in a window.
     ///
     /// SwiftUI makes the view and updates it before it is in one, and with
@@ -565,8 +651,15 @@ struct AddressField: NSViewRepresentable {
     /// field had no window to ask: the request went nowhere and nothing asked
     /// again, so ⌘T left a field with no caret and typing that went nowhere
     /// until it was clicked. Now the request waits for the window.
-    final class Field: NSTextField {
+    final class Field: RoomyField {
         var arrived: (() -> Void)?
+        /// Where the caret was as the field last let go of the keys.
+        var leftAt: NSRange?
+
+        override func textDidEndEditing(_ note: Notification) {
+            if let editor = note.object as? NSTextView { leftAt = editor.selectedRange() }
+            super.textDidEndEditing(note)
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -679,6 +772,11 @@ struct AddressField: NSViewRepresentable {
             let length = field.stringValue.count
             guard start <= length else { return }
             editor.selectedRange = NSRange(location: start, length: length - start)
+            // The start in view, not the end: selecting a long completion
+            // scrolled the field to its last characters, hiding what was
+            // typed and the site it goes to (#1055). The ending stays
+            // selected, so the next key still replaces it.
+            editor.scrollRangeToVisible(NSRange(location: 0, length: 0))
         }
 
         func control(
@@ -722,5 +820,48 @@ struct AddressField: NSViewRepresentable {
                 return false
             }
         }
+    }
+}
+
+/// A one-line field whose text stops a little short of its trailing edge.
+///
+/// Scrolled to the end of a long query, the field editor put the caret and
+/// the last letter right against the field's edge, a fraction of a point in
+/// (0.2 to 1 measured), where anything that clips the field there — the row
+/// or the pill around it, a wider caret — hid the caret and part of the last
+/// letter (idea 736). The text is now laid out, drawn and edited in a rect
+/// `margin` short of that edge, so the editor scrolls the caret that far in.
+class RoomyField: NSTextField {
+    override class var cellClass: AnyClass? {
+        get { RoomyFieldCell.self }
+        set {}
+    }
+}
+
+final class RoomyFieldCell: NSTextFieldCell {
+    /// What is kept clear past the caret at the end of the text.
+    static let margin: CGFloat = 4
+
+    private static func short(_ rect: NSRect) -> NSRect {
+        var inner = rect
+        inner.size.width = max(0, inner.width - margin)
+        return inner
+    }
+
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        Self.short(super.drawingRect(forBounds: rect))
+    }
+
+    // The field editor is laid in the frame it is handed here, not in the
+    // drawing rect above.
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText,
+                       delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: Self.short(rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText,
+                         delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: Self.short(rect), in: controlView, editor: textObj, delegate: delegate,
+                     start: selStart, length: selLength)
     }
 }

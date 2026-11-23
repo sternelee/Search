@@ -16,9 +16,14 @@ final class Links: NSObject, NSApplicationDelegate {
     @MainActor static var window: NSWindow? { Browsers.front?.window ?? Browsers.primary?.window }
     /// Whether the window has been asked for on a link's behalf (summon).
     private static var summoned = false
-    /// Whether the app has finished launching: a small window's link that
-    /// comes before then is what launched it (see little).
-    private static var launched = false
+    /// Whether the app has finished launching: a link that comes before
+    /// then is what launched it (see keepWindowsAway).
+    private(set) static var launched = false
+    /// When the app was last shown after ⌘H, and last brought in front
+    /// (see watchShowing).
+    private static var shownAt: Date?
+    private static var activatedAt: Date?
+    private static var watching: [Any] = []
     /// A first quit waits for an import worker to remove its temporary files.
     /// AppKit calls us again when that cleanup has finished.
     private var terminationPending = false
@@ -121,6 +126,7 @@ final class Links: NSObject, NSApplicationDelegate {
             self, andSelector: #selector(handle(getURL:reply:)),
             forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL)
         )
+        Links.watchShowing()
         // A test run takes no links from outside (see handle), so it is
         // handed one this way to launch with, taken where the Apple Event
         // would be (Tests/little_window.py).
@@ -138,7 +144,8 @@ final class Links: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // SwiftUI opens its window at launch, a link's launch included, and
         // asks nobody first (applicationShouldOpenUntitledFile isn't
-        // consulted). A launch made for a small window came to read it alone
+        // consulted). A launch made for a small window came to read it alone,
+        // and one made for the panel that asks which space, to choose one
         // (see little), so the browser's windows are put away as they come:
         // here, before the first is drawn, once more a turn later, and as
         // each is dressed. Open, with their tabs, and written down as they
@@ -148,6 +155,7 @@ final class Links: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 Browsers.putAway()
                 Links.launched = true
+                LinkChooserPanel.shared.launched()
             }
         }
         // What an import left in the temporary folder when Search stopped
@@ -155,7 +163,13 @@ final class Links: NSObject, NSApplicationDelegate {
         // among it — goes (Security).
         DispatchQueue.global(qos: .utility).async { ImportFile.sweepScratch() }
         Trim.start()
-        MainActor.assumeIsolated { Shared.prefs.followFile() }
+        MainActor.assumeIsolated {
+            Shared.prefs.followFile()
+            // The address field from any app, once asked for (Launcher.swift).
+            Launcher.shared.start()
+            // Live folders fetched, and kept fresh (LiveFolders.swift).
+            LiveFolders.start()
+        }
         let plain = notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool ?? true
         guard !plain else { return }
         DispatchQueue.main.async {
@@ -169,9 +183,55 @@ final class Links: NSObject, NSApplicationDelegate {
         // app would bring a window forward. The bench hands links in itself.
         guard !Store.testing else { return }
         guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
-              let url = URL(string: text), url.scheme?.lowercased().hasPrefix("http") == true
+              let url = URL(string: text), Links.takes(url)
         else { return }
-        Links.take(url)
+        let sender = Self.sender(of: event)
+        Links.take(url, sender: sender?.localizedName, pid: sender?.processIdentifier)
+    }
+
+    /// The app a link was clicked in, for the panel that asks which space it
+    /// opens in: its name, and where Esc goes back to. Nil when the event
+    /// doesn't say.
+    private static func sender(of event: NSAppleEventDescriptor) -> NSRunningApplication? {
+        guard let pid = event.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))?.int32Value, pid > 0
+        else { return nil }
+        return NSRunningApplication(processIdentifier: pid)
+    }
+
+    /// macOS shows a hidden app (⌘H), and brings it in front, about 40 ms
+    /// before it hands it a link: by the time the link comes the app is
+    /// neither hidden nor behind, so when it last was is kept here.
+    private static func watchShowing() {
+        let center = NotificationCenter.default
+        watching = [
+            center.addObserver(forName: NSApplication.didUnhideNotification, object: nil, queue: .main) { _ in
+                shownAt = Date()
+            },
+            center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                activatedAt = Date()
+            },
+        ]
+    }
+
+    /// Whether a link came while the app was hidden, or behind another app:
+    /// it is so now, or stopped being so less than a second ago.
+    static func cameWhile(_ now: Bool, endedAgo seconds: TimeInterval?) -> Bool {
+        now || (seconds ?? .infinity) < 1
+    }
+
+    /// A link that came while the app was hidden (⌘H).
+    @MainActor static var cameWhileHidden: Bool {
+        cameWhile(NSApp.isHidden, endedAgo: since(shownAt))
+    }
+
+    /// A link that brought the app in front: one that launched it, or came
+    /// while another app was in front.
+    @MainActor static var broughtForward: Bool {
+        !launched || cameWhile(!NSApp.isActive, endedAgo: since(activatedAt))
+    }
+
+    private static func since(_ date: Date?) -> TimeInterval? {
+        date.map { Date().timeIntervalSince($0) }
     }
 
     /// Files and anything else the system opens with the app: an address, or
@@ -180,9 +240,19 @@ final class Links: NSObject, NSApplicationDelegate {
     /// build.sh), which this used to drop without a word.
     func application(_ application: NSApplication, open urls: [URL]) {
         guard !Store.testing else { return }
-        for url in urls where url.isFileURL || url.scheme?.lowercased().hasPrefix("http") == true {
+        for url in urls where url.isFileURL || Links.takes(url) {
             Links.take(url)
         }
+    }
+
+    /// A page handed off from your iPhone or another Mac, Search being the
+    /// default browser: opened as a link from another app is, and only an
+    /// http or https address (see Handoff.incoming). A test run takes none.
+    func application(_ application: NSApplication, continue userActivity: NSUserActivity,
+                     restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void) -> Bool {
+        guard !Store.testing, let url = Handoff.incoming(userActivity) else { return false }
+        Links.take(url)
+        return true
     }
 
     /// The Dock icon clicked with the window closed: bring the window back
@@ -231,18 +301,7 @@ final class Links: NSObject, NSApplicationDelegate {
         // find it running.
         guard deliver == nil else { return }
         deliver = { url in
-            // The window in front's browser, or a window brought back for it:
-            // the link lands where you are, not in the first window.
-            // Or the window, in its space, a rule of Settings › Spaces & Pins
-            // › Send links to a space sends it to (see SpaceRoutes.swift).
-            let front = Browsers.ensureWindow()
-            let browser = front.routed(url) ?? front
-            browser.arrive(url)
-            // Put away in the Dock, it stayed there: bringing a window to the
-            // front doesn't take it out (#95).
-            if let window = browser.window, window.isMiniaturized { window.deminiaturize(nil) }
-            // A hidden probe's window stays out of sight.
-            if !(Store.testing && NSApp.isHidden) { browser.window?.makeKeyAndOrderFront(nil) }
+            land(url)
             comeForward()
         }
         let early = waiting
@@ -264,6 +323,52 @@ final class Links: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// An address from outside the window — a link from another app, or what
+    /// was typed into the address field raised from one (Launcher.swift) —
+    /// into the window in front, or one brought back for it: it lands where
+    /// you are, not in the first window. Or the window, in its space, a rule
+    /// of Settings › Spaces & Pins › Send links to a space sends it to (see
+    /// SpaceRoutes.swift). The window it went to, which is left for the
+    /// caller to bring the app forward to.
+    @MainActor
+    @discardableResult
+    static func land(_ url: URL) -> Browser {
+        let front = Browsers.ensureWindow()
+        let browser = front.routed(url) ?? front
+        arrive(url, in: browser)
+        return browser
+    }
+
+    /// A link in the space chosen for it (see LinkChooser), with that
+    /// space's sign-ins from its first request: in a small window, or a tab
+    /// of a window showing that space. False when the space is gone or no
+    /// window can show it: it opens nowhere else.
+    @MainActor
+    static func open(_ url: URL, in space: UUID, little: Bool) -> Bool {
+        if little {
+            guard let profile = Spaces.known[space]?.profileID else { return false }
+            let front = Browsers.frontBrowser
+            let browser = front.profileID == profile ? front : Browsers.outOfSight(profile: profile)
+            LittleWindow.show(url, for: browser, space: space)
+            return true
+        }
+        guard let browser = Browsers.window(showing: space) else { return false }
+        arrive(url, in: browser)
+        comeForward()
+        return true
+    }
+
+    /// In a tab of `browser`, with its window in front.
+    @MainActor
+    private static func arrive(_ url: URL, in browser: Browser) {
+        browser.arrive(url)
+        // Put away in the Dock, it stayed there: bringing a window to the
+        // front doesn't take it out (#95).
+        if let window = browser.window, window.isMiniaturized { window.deminiaturize(nil) }
+        // A hidden probe's window stays out of sight.
+        if !(Store.testing && NSApp.isHidden) { browser.window?.makeKeyAndOrderFront(nil) }
     }
 
     /// Runs once a window is actually showing, and one turn of the run loop
@@ -289,10 +394,14 @@ final class Links: NSObject, NSApplicationDelegate {
     /// apps built on Electron, left Search behind them. So if Search still
     /// isn't in front a moment later, it asks again the way it did before
     /// macOS 14.
+    ///
+    /// `lookedAt`: a test world opened to be looked at (./fresh.sh, with no
+    /// script driving it) comes forward too — the launcher's Return there is
+    /// how the launcher is tried by hand. Never one the bench drives.
     @MainActor
-    private static func comeForward() {
+    static func comeForward(lookedAt: Bool = false) {
         // Never a test run's: a probe started hidden stays off every screen.
-        guard !Store.testing else { return }
+        guard !Store.testing || (lookedAt && !Launcher.benchDriven) else { return }
         guard #available(macOS 14, *) else {
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -305,10 +414,37 @@ final class Links: NSObject, NSApplicationDelegate {
     }
 
     /// A link as another app hands one over, for the bench.
-    static func arrived(_ url: URL) { take(url) }
+    static func arrived(_ url: URL, sender: String? = nil) { take(url, sender: sender) }
 
-    private static func take(_ url: URL) {
-        if MainActor.assumeIsolated({ little(url) }) { return }
+    /// What another app may hand over: a web address, an email link once
+    /// Search is the Mac's email app (build.sh declares mailto), or a page on
+    /// this Mac as an address. Python's webbrowser, and the apps built on it
+    /// that open their local page through a file that sends you on to
+    /// localhost (Jupyter's way), hands a file:// address to the default
+    /// browser with "open location", not as a file to open: dropped here,
+    /// nothing opened (#775), where Safari and Firefox open it.
+    private static func takes(_ url: URL) -> Bool {
+        let scheme = url.scheme?.lowercased() ?? ""
+        return scheme.hasPrefix("http") || scheme == "mailto" || url.isFileURL
+    }
+
+    private static func take(_ url: URL, sender: String? = nil, pid: pid_t? = nil) {
+        // An email link: the webmail's compose page, which then goes where
+        // any link from another app goes — a tab, or a small window for
+        // whoever chose that. With no webmail chosen, the next app that
+        // takes email links, never Search again (see Mail.handToSystem).
+        if url.scheme?.lowercased() == "mailto" {
+            MainActor.assumeIsolated {
+                if let compose = Mail.compose(for: url) {
+                    if Store.testing { Mail.seen.append("app: " + compose.absoluteString) }
+                    take(compose, sender: sender, pid: pid)
+                } else {
+                    Mail.handToSystem(url)
+                }
+            }
+            return
+        }
+        if MainActor.assumeIsolated({ little(url, sender: sender, pid: pid) }) { return }
         if let deliver {
             deliver(url)
         } else {
@@ -323,18 +459,58 @@ final class Links: NSObject, NSApplicationDelegate {
     /// launch this link made. It went through `deliver`, which brings a
     /// window back first, so the browser came up behind the small window
     /// every time. Open in Search is what brings it now.
+    ///
+    /// Or, for whoever turned on asking which space (see
+    /// LinkChooserPanel.swift), nowhere yet: the panel asks first, and the
+    /// window stays where it is unless a tab is chosen there.
     @MainActor
-    private static func little(_ url: URL) -> Bool {
-        guard Shared.prefs.littleLinks else { return false }
+    private static func little(_ url: URL, sender: String?, pid: pid_t?) -> Bool {
+        let prefs = Shared.prefs
         // A site sent to a space opens there, with that space's sign-ins.
         if SpaceRoutes.space(for: url) != nil { return false }
-        if Shared.prefs.littleFindsTabs, goToOpen(url) { return true }
-        if !launched { Browsers.keepAway() }
-        // The space and sign-ins of the window in front, on screen or not.
-        let browser = Browsers.front.flatMap { !$0.isPopup ? $0 : nil }
-            ?? Browsers.primary ?? SceneSlot.shared.browser
-        LittleWindow.show(url, for: browser)
+        if prefs.littleLinks, prefs.littleFindsTabs, goToOpen(url) { return true }
+        if asksSpace(for: url) {
+            keepWindowsAway()
+            LinkChooserPanel.shared.ask(url, sender: sender, pid: pid)
+            return true
+        }
+        guard prefs.littleLinks else { return false }
+        openLittle(url)
         return true
+    }
+
+    /// Which space a web address opens in, asked before anything loads, for
+    /// whoever turned that on: while there is more than one space, in all
+    /// the profiles, to choose from. With one, the link goes as it always did.
+    @MainActor
+    private static func asksSpace(for url: URL) -> Bool {
+        let prefs = Shared.prefs
+        // The count last: it reads every profile's spaces from disk.
+        return prefs.asksSpaceForLinks && prefs.usesSpaces && ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+            && LinkChooserPanel.allRows.count > 1
+    }
+
+    /// A small window for `url`, and the browser's windows left where they
+    /// are: for a link from another app, and for the address field from
+    /// any app with its small window asked for (Launcher.submit).
+    @MainActor
+    static func openLittle(_ url: URL, for asked: Browser? = nil) {
+        keepWindowsAway()
+        // The space and sign-ins of the window in front, on screen or not.
+        let browser = asked.flatMap { !$0.isPopup ? $0 : nil } ?? Browsers.frontBrowser
+        LittleWindow.show(url, for: browser)
+    }
+
+    /// The browser's windows kept away for a link that launched the app, as
+    /// a launch's are, or one that came while it was hidden (⌘H): the app is
+    /// shown again with every window it had (see watchShowing), and the
+    /// browser's came up beside the small window or the panel, as if the
+    /// link had opened twice.
+    @MainActor
+    private static func keepWindowsAway() {
+        guard !launched || cameWhileHidden else { return }
+        Browsers.keepAway()
+        Browsers.putAway()
     }
 
     /// The page already open, for whoever asked for that in Settings: a
@@ -381,12 +557,26 @@ final class Links: NSObject, NSApplicationDelegate {
     static func writeFeedback() {
         var text = URLComponents()
         text.scheme = "mailto"
-        text.path = "hello@officecommun.com"
+        text.path = "hello@searchbrowser.app"
         text.queryItems = [
             URLQueryItem(name: "subject", value: "Search feedback — \(Updater.version) (\(Updater.build))"),
             URLQueryItem(name: "body", value: "\n\n—\nSearch \(Updater.version), build \(Updater.build), macOS \(ProcessInfo.processInfo.operatingSystemVersionString)"),
         ]
         guard let url = text.url else { return }
+        // With a webmail chosen, its compose page, in a tab of the window in
+        // front: no round trip through macOS, which may not send email
+        // links here at all.
+        let compose = MainActor.assumeIsolated { Mail.compose(for: url) }
+        if let compose {
+            MainActor.assumeIsolated {
+                if Store.testing { Mail.seen.append("feedback: " + compose.absoluteString) }
+                land(compose)
+                comeForward()
+            }
+            return
+        }
+        // A test run opens no other app (Tests/webmail.py).
+        if Store.testing { MainActor.assumeIsolated { Mail.seen.append("feedback: system") }; return }
         NSWorkspace.shared.open(url)
     }
 

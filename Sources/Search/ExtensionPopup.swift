@@ -69,6 +69,7 @@ final class ExtensionPopup: NSObject, WKUIDelegate, WKNavigationDelegate, NSPopo
     func show(_ url: URL, for context: WKWebExtensionContext, from anchor: NSView?, in browser: Browser? = nil) {
         close()
         guard let configuration = context.webViewConfiguration else { return }
+        ExtensionSandbox.attach(configuration, for: context)
         // Sized the way Chrome sizes a popup (see preferred), unseen, while
         // the popover already stands at the size this popup had last time;
         // then shown. It has to be in the window meanwhile: WebKit suspends
@@ -94,7 +95,7 @@ final class ExtensionPopup: NSObject, WKUIDelegate, WKNavigationDelegate, NSPopo
         popover.contentViewController = host
         popover.contentSize = stage.frame.size
         popover.behavior = .transient
-        popover.animates = true
+        popover.animates = !Motion.instant
         popover.delegate = self
 
         self.web = web
@@ -107,20 +108,28 @@ final class ExtensionPopup: NSObject, WKUIDelegate, WKNavigationDelegate, NSPopo
         Extensions.shared.controller.didOpenTab(page)
 
         shown = false
+        placement = anchor.map(ExtensionPopup.describe) ?? ["from": "window"]
         if let anchor, anchor.window != nil {
-            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+            // Above or under the button, its arrow kept clear of the
+            // popover's corners near the screen's sides, and left out when
+            // that would take it off the button (PopoverSide).
+            PopoverSide.show(popover, relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY, pointed: true)
         } else if let content = (targetBrowser?.window ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain && $0.frame.minX > -10_000 }))?.contentView {
             // No button to hang from — the column or the strip folded away:
             // where the buttons would be, the column's foot or the strip's
             // far end. The window's content is SwiftUI's, a flipped view,
             // whose top is at minY: measured from maxY, "the top right" was
             // the bottom right, across the window from the column's buttons.
+            // The column's foot is on the side the column is on, and the
+            // popup hangs inward from it.
             let bounds = content.bounds, flipped = content.isFlipped
-            let column = (targetBrowser ?? Extensions.shared.browser)?.prefs.sidebar == true
+            let prefs = (targetBrowser ?? Extensions.shared.browser)?.prefs
+            let column = prefs?.sidebar == true, right = prefs?.sidePosition == .right
             let spot = column
-                ? NSRect(x: bounds.minX + 24, y: flipped ? bounds.maxY - 24 : bounds.minY + 24, width: 1, height: 1)
+                ? NSRect(x: right ? bounds.maxX - 24 : bounds.minX + 24, y: flipped ? bounds.maxY - 24 : bounds.minY + 24, width: 1, height: 1)
                 : NSRect(x: bounds.maxX - 60, y: flipped ? bounds.minY + 40 : bounds.maxY - 40, width: 1, height: 1)
-            popover.show(relativeTo: spot, of: content, preferredEdge: column ? .maxX : (flipped ? .maxY : .minY))
+            let edge: NSRectEdge = column ? (right ? .minX : .maxX) : (flipped ? .maxY : .minY)
+            PopoverSide.show(popover, relativeTo: spot, of: content, preferredEdge: edge)
         }
         // Sized once loaded — or after a moment regardless, for a page that
         // never finishes loading.
@@ -138,6 +147,21 @@ final class ExtensionPopup: NSObject, WKUIDelegate, WKNavigationDelegate, NSPopo
         }
     }
 
+    /// Where the last popup was hung from, for the bench.
+    private(set) var placement: [String: Any] = [:]
+
+    static func describe(_ view: NSView) -> [String: Any] {
+        guard let window = view.window, let content = window.contentView else { return ["from": "view", "inWindow": false] }
+        let r = view.convert(view.bounds, to: nil)
+        var alpha = view.alphaValue
+        var up = view.superview
+        while let v = up { alpha *= v.alphaValue; up = v.superview }
+        return ["from": "view", "inWindow": true, "hidden": view.isHiddenOrHasHiddenAncestor, "alpha": Double(alpha),
+                "rect": [Int(r.minX), Int(r.minY), Int(r.width), Int(r.height)],
+                "content": [Int(content.bounds.width), Int(content.bounds.height)],
+                "onWindow": content.convert(content.bounds, to: nil).intersects(r)]
+    }
+
     /// Each extension's popup size, so the next opening starts there.
     private static var lastSize: [String: NSSize] = [:]
     private var shown = false
@@ -149,7 +173,7 @@ final class ExtensionPopup: NSObject, WKUIDelegate, WKNavigationDelegate, NSPopo
         web.frame = NSRect(origin: .zero, size: popover?.contentSize ?? stage.bounds.size)
         web.autoresizingMask = [.width, .height]
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
+            context.duration = Motion.seconds(0.12)
             web.animator().alphaValue = 1
         }
     }
@@ -205,6 +229,13 @@ final class ExtensionPopup: NSObject, WKUIDelegate, WKNavigationDelegate, NSPopo
     /// to the side doesn't count), else, for a page with next to no width
     /// of its own, what its content spans; then, laid out at that width,
     /// the height it names or spans. Nothing of it is left on the page.
+    ///
+    /// A scroll bar counts only when the page asks for one (overflow:
+    /// scroll), or when it is taller than the popup can be and will scroll.
+    /// With System Settings › Appearance › Show scroll bars set to Always,
+    /// the content overflowing the little square (or the popup's size before
+    /// it grew) put classic scroll bars up while it was measured, and their
+    /// room was added each way: popups came out 17 points too large (#1311).
     static let preferred = """
     () => {
       const d = document.documentElement, v = document.compatMode === "BackCompat" ? document.body : d;
@@ -212,6 +243,12 @@ final class ExtensionPopup: NSObject, WKUIDelegate, WKNavigationDelegate, NSPopo
       const m = window.__searchSizing || (window.__searchSizing = {});
       const saved = d.getAttribute("style");
       const back = () => saved === null ? d.removeAttribute("style") : d.setAttribute("style", saved);
+      // The overflow the view takes: the root's, or the body's handed up.
+      const root = getComputedStyle(d), body = document.body && getComputedStyle(document.body);
+      const view = root.overflowX === "visible" && root.overflowY === "visible" && body ? body : root;
+      const bar = innerWidth - v.clientWidth, barAcross = innerHeight - v.clientHeight;
+      const across = view.overflowX === "scroll" ? barAcross : 0;
+      let gutter = view.overflowY === "scroll" ? bar : 0;
       const box = d.getBoundingClientRect();
       // A width the page sets for itself shows as one the view doesn't
       // have, excluding its scrollbar; one equal to the view is either
@@ -225,19 +262,27 @@ final class ExtensionPopup: NSObject, WKUIDelegate, WKNavigationDelegate, NSPopo
         back();
         w = narrowest >= 100 ? narrowest : Math.max(narrowest, d.scrollWidth);
       }
-      const gutter = innerWidth - v.clientWidth;
-      w = Math.min(800, Math.max(25, Math.ceil(w + gutter)));
-      d.style.setProperty("width", (w - gutter) + "px", "important");
-      let h = d.getBoundingClientRect().height;
-      if (Math.abs(h - innerHeight) > 1) m.h = h;
-      else if (m.h && Math.abs(m.h - innerHeight) <= 1) h = m.h;
-      else {
-        d.style.setProperty("height", "auto", "important");
-        d.style.setProperty("min-height", "0", "important");
-        h = d.getBoundingClientRect().height;
-      }
+      let width;
+      const lay = () => {
+        back();
+        width = Math.min(800, Math.max(25, Math.ceil(w + gutter)));
+        d.style.setProperty("width", (width - gutter) + "px", "important");
+        let h = d.getBoundingClientRect().height;
+        if (Math.abs(h - innerHeight) > 1) m.h = h;
+        else if (m.h && Math.abs(m.h - innerHeight) <= 1) h = m.h;
+        else {
+          d.style.setProperty("height", "auto", "important");
+          d.style.setProperty("min-height", "0", "important");
+          h = d.getBoundingClientRect().height;
+        }
+        return h;
+      };
+      let h = lay();
+      // Taller than the popup: it scrolls, and a scroll bar shown always
+      // takes its room across.
+      if (gutter !== bar && h + across > 600) { gutter = bar; h = lay(); }
       back();
-      return [w, Math.min(600, Math.max(25, Math.ceil(h + innerHeight - v.clientHeight)))];
+      return [width, Math.min(600, Math.max(25, Math.ceil(h + across)))];
     }
     """
 

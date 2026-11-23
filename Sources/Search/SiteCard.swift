@@ -23,6 +23,20 @@ enum SiteCardPanel {
 
     static var isShown: Bool { panel != nil }
 
+    /// Where the card is and the field with the caret it should hang from,
+    /// on the screen, for the bench: [x, y, width, height] each.
+    static func geometry(_ browser: Browser) -> [String: [Double]] {
+        var out: [String: [Double]] = [:]
+        let rect = { (r: NSRect) in [r.minX, r.minY, r.width, r.height].map { Double($0) } }
+        if let panel { out["card"] = rect(panel.frame) }
+        if let window = browser.window ?? Links.window { out["window"] = rect(window.frame) }
+        if let window = browser.window ?? Links.window,
+           let field = (window.firstResponder as? NSTextView)?.delegate as? NSTextField ?? anchor, field.window != nil {
+            out["field"] = rect(window.convertToScreen(field.convert(field.bounds, to: nil)))
+        }
+        return out
+    }
+
     // MARK: - when
 
     /// The field the address is being edited in. SwiftUI can make it and
@@ -50,7 +64,7 @@ enum SiteCardPanel {
                         // The edit began: the card comes up under the field once it
                         // is in its window.
                         original = draft
-                        place(tab, browser, tries: 0)
+                        if browser.tabEditCard { place(tab, browser, tries: 0) }
                     } else if draft != original {
                         // Typing somewhere else: the card was about the page you are on.
                         hide()
@@ -59,19 +73,91 @@ enum SiteCardPanel {
             }
     }
 
-    private static func place(_ tab: Tab, _ browser: Browser, tries: Int) {
+    /// Shown once the field it hangs from is on the window and has stopped
+    /// moving: the same place at two looks a moment apart. A double-click
+    /// on a tab you aren't on picks it with the first click and opens its
+    /// address with the second, while the row is still settling around the
+    /// tab now in front, and the field may not be where it ends up yet: the
+    /// card came up near the middle of the screen (#1310).
+    private static func place(_ tab: Tab, _ browser: Browser, tries: Int, last: NSRect? = nil) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
             guard original != nil, browser.editingTab == tab.id, browser.tabDraft == original else { return }
-            // The field with the caret in it is the one on screen; failing
-            // that, the latest one made.
-            let focused = ((browser.window ?? Links.window)?.firstResponder as? NSTextView)?.delegate as? NSTextField
-            guard let field = focused ?? anchor, field.window != nil else {
+            guard let field = field(in: browser), let spot = spot(of: field) else {
                 if tries < 15 { place(tab, browser, tries: tries + 1) }
                 return
             }
+            if spot != last, tries < 15 { return place(tab, browser, tries: tries + 1, last: spot) }
             show(for: tab, in: browser, under: field)
+            keepUnder(browser)
         }
     }
+
+    /// The field with the caret in it, the one on screen; failing that, the
+    /// latest one made.
+    private static func field(in browser: Browser) -> NSView? {
+        let focused = ((browser.window ?? Links.window)?.firstResponder as? NSTextView)?.delegate as? NSTextField
+        return focused ?? anchor
+    }
+
+    /// Where `field` is on the screen, when it is somewhere the card can hang
+    /// from: in a window, shown, with a size, and inside the window's content.
+    private static func spot(of field: NSView) -> NSRect? {
+        guard let window = field.window, !field.isHiddenOrHasHiddenAncestor, !field.bounds.isEmpty,
+              let content = window.contentView else { return nil }
+        let inWindow = field.convert(field.bounds, to: nil)
+        guard content.frame.intersects(inWindow), !field.visibleRect.isEmpty else { return nil }
+        return window.convertToScreen(inWindow)
+    }
+
+    /// While the card is up, it goes where the field goes: the row moving on
+    /// as a tab opens, closes or settles beside it.
+    private static var follower: Timer?
+    private static func keepUnder(_ browser: Browser) {
+        follower?.invalidate()
+        follower = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak browser] _ in
+            MainActor.assumeIsolated {
+                guard let browser, let panel, let field = field(in: browser), let spot = spot(of: field) else { return }
+                let (origin, _) = placement(panel.frame.size, under: spot, on: field.window?.screen)
+                if panel.frame.origin != origin { panel.setFrameOrigin(origin) }
+            }
+        }
+    }
+
+    /// Under the address, lined up with the tab's own edge — or over it,
+    /// for a tab too near the bottom of the screen to have the room. Only
+    /// ever beside the field: pushed up onto it, the card covered the
+    /// address being edited, and what was typed there with it. True when
+    /// it is over the field.
+    private static func placement(_ size: NSSize, under spot: NSRect, on screen: NSScreen?) -> (NSPoint, Bool) {
+        var origin = NSPoint(x: spot.minX - 12, y: spot.minY - 12 - size.height)
+        var above = false
+        if let screen = screen?.visibleFrame {
+            origin.x = min(max(origin.x, screen.minX + 8), screen.maxX - size.width - 8)
+            if origin.y < screen.minY + 8 {
+                above = true
+                origin.y = min(spot.maxY + 12, screen.maxY - size.height - 8)
+            }
+        }
+        return (origin, above)
+    }
+
+    /// From a button of its own, the address bar's (AddressLine.swift): the
+    /// card under `line`, or put away if it is up. There is no edit to end
+    /// it there, so a click anywhere but the card, or the button again,
+    /// puts it away.
+    static func toggle(for tab: Tab, in browser: Browser, under line: NSView, button: NSView) {
+        guard !isShown else { return hide() }
+        show(for: tab, in: browser, under: line)
+        clicks = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak button] event in
+            MainActor.assumeIsolated {
+                // The button's own click toggles it; the card's is the card's.
+                let onButton = button.map { $0.window === event.window && $0.bounds.contains($0.convert(event.locationInWindow, from: nil)) } ?? false
+                if event.window !== panel, !onButton { hide() }
+            }
+            return event
+        }
+    }
+    private static var clicks: Any?
 
     /// Under `field`, the tab's address, in `browser`'s window.
     private static func show(for tab: Tab, in browser: Browser, under field: NSView) {
@@ -107,20 +193,7 @@ enum SiteCardPanel {
         panel.hasShadow = true
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = true
-        // Under the address, lined up with the tab's own edge — or over it,
-        // for a tab too near the bottom of the screen to have the room. Only
-        // ever beside the field: pushed up onto it, the card covered the
-        // address being edited, and what was typed there with it.
-        let spot = window.convertToScreen(field.convert(field.bounds, to: nil))
-        var origin = NSPoint(x: spot.minX - 12, y: spot.minY - 12 - size.height)
-        var above = false
-        if let screen = window.screen?.visibleFrame {
-            origin.x = min(max(origin.x, screen.minX + 8), screen.maxX - size.width - 8)
-            if origin.y < screen.minY + 8 {
-                above = true
-                origin.y = min(spot.maxY + 12, screen.maxY - size.height - 8)
-            }
-        }
+        let (origin, above) = placement(size, under: window.convertToScreen(field.convert(field.bounds, to: nil)), on: window.screen)
         panel.setFrameOrigin(origin)
         window.addChildWindow(panel, ordered: .above)
         // Its size follows the card, keeping the edge nearest the address
@@ -153,8 +226,12 @@ enum SiteCardPanel {
     }
 
     static func hide() {
+        follower?.invalidate()
+        follower = nil
         if let resign { NotificationCenter.default.removeObserver(resign) }
         resign = nil
+        if let clicks { NSEvent.removeMonitor(clicks) }
+        clicks = nil
         guard let panel else { return }
         panel.parent?.removeChildWindow(panel)
         panel.orderOut(nil)
@@ -246,9 +323,9 @@ struct SiteCard: View {
             if let safety {
                 Row(safety.title, submenu: true) { deeper = true }
             }
-            Row("Copy Address", keys: "⇧⌘C") { after { browser.copyAddress() } }
+            Row("Copy Address", keys: ShortcutStore.shared.key(for: "tabs.copyAddress")?.display ?? "") { after { browser.copyAddress() } }
             Separator()
-            Row("Print…", keys: "⌘P") { after { browser.printPage() } }
+            Row("Print…", keys: ShortcutStore.shared.key(for: "file.print")?.display ?? "") { after { browser.printPage() } }
             zoom
             blocker
             if let url = tab.pageAddress, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
@@ -374,7 +451,7 @@ struct SiteCard: View {
                 .font(MenuMetrics.font)
                 .foregroundStyle(Color(nsColor: .labelColor))
             Spacer(minLength: 24)
-            Step(symbol: "minus", help: "Zoom Out   ⌘-") { browser.zoom(by: 1 / 1.1) }
+            Step(symbol: "minus", help: "Zoom Out", shortcut: "view.zoomOut") { browser.zoom(by: 1 / 1.1) }
             Button { browser.resetZoom() } label: {
                 Text("\(Int((tab.zoom * 100).rounded()))%")
                     .font(MenuMetrics.font)
@@ -384,8 +461,8 @@ struct SiteCard: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Actual Size   ⌘0")
-            Step(symbol: "plus", help: "Zoom In   ⌘+") { browser.zoom(by: 1.1) }
+            .shortcutHelp("Actual Size", "view.actualSize")
+            Step(symbol: "plus", help: "Zoom In", shortcut: "view.zoomIn") { browser.zoom(by: 1.1) }
         }
         .padding(.leading, MenuMetrics.text)
         .padding(.trailing, MenuMetrics.inset + 4)
@@ -703,6 +780,7 @@ struct SiteCard: View {
     private struct Step: View {
         let symbol: String
         let help: String
+        var shortcut: String? = nil
         let act: () -> Void
 
         @State private var hovering = false
@@ -721,7 +799,7 @@ struct SiteCard: View {
             }
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
-            .help(help)
+            .shortcutHelp(help, shortcut)
         }
     }
 }

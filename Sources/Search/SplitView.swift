@@ -20,8 +20,11 @@ struct SplitStage: View {
     @State private var hovered: Tab.ID?
 
     var body: some View {
-        let split = browser.activeSplit
-        let shown: [Tab] = split.map { pair in pair.tabs.compactMap { id in browser.tabs.first { $0.id == id } } }
+        // The page of a space on its way in, already (Browser.pageAhead).
+        let ahead = browser.pageAhead
+        let split = ahead == nil ? browser.activeSplit : nil
+        let shown: [Tab] = ahead.map { [$0] }
+            ?? split.map { pair in pair.tabs.compactMap { id in browser.tabs.first { $0.id == id } } }
             ?? browser.active.map { [$0] } ?? []
         // The stage alone says how big it is; what is drawn over each page
         // follows the frames it reports and has no say. Laid out beside the
@@ -31,8 +34,8 @@ struct SplitStage: View {
         // content, too wide, was centred in it — the column cut off at the
         // left and the pages past the right edge, for good.
         PaneStageView(
-            tabs: shown, split: split, focused: browser.activeID,
-            commit: { id, sizes in browser.setSplitFraction(id, fraction: sizes[0]) },
+            tabs: shown, split: split, focused: ahead?.id ?? browser.activeID,
+            commit: { id, sizes in browser.setSplitSizes(id, sizes) },
             focus: { tab in browser.focusPane(tab) },
             frames: { frames = $0 },
             action: { action in
@@ -73,7 +76,8 @@ struct SplitStage: View {
                         .accessibilityHidden(true)
                 }
                 if let preview = drag.preview, preview.browserID == ObjectIdentifier(browser) {
-                    SplitDropPreview(preview: preview, tabs: browser.tabs)
+                    SplitDropPreview(preview: preview, tabs: browser.tabs,
+                                     split: browser.tabs.first { $0.id == preview.targetID }.flatMap(browser.split(for:)))
                         .transition(.opacity)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
@@ -158,7 +162,11 @@ private struct PaneLayers: View {
             Page(tab: tab, holdsPage: false, corner: corner, browser: browser)
 
             if focused {
-                Omnibox(browser: browser, over: !tab.isBlank, fitted: true, tab: tab.id)
+                if tab.isBlank { HomeGrid(browser: browser) }
+                // Over a page with the field on the window, the window's.
+                if !(browser.fieldOnWindow && !tab.isBlank) {
+                    Omnibox(browser: browser, over: !tab.isBlank, fitted: true, tab: tab.id)
+                }
             }
 
             // An empty page of a pair: the field, and the tabs already open,
@@ -227,17 +235,31 @@ private struct PaneLayers: View {
 private struct SplitDropPreview: View {
     let preview: TabDrag.Preview
     let tabs: [Tab]
+    /// The split the page under the hand is in, which the carried tab
+    /// joins: its pages are shown with the carried one among them.
+    var split: TabSplit? = nil
 
-    private var target: Tab? { tabs.first { $0.id == preview.targetID } }
     private var carried: String {
         let label = tabs.first { $0.id == preview.sourceID }?.label ?? ""
         return label.isEmpty ? "New Tab" : label
     }
 
+    /// Each page as it would stand, the carried one marked: of a page
+    /// alone, the two halves there always were.
+    private var places: [(id: String, title: String, proposed: Bool)] {
+        let label: (Tab.ID) -> String = { id in tabs.first { $0.id == id }?.label ?? "Page" }
+        var row = (split?.tabs ?? [preview.targetID]).filter { $0 != preview.sourceID }
+            .map { (id: $0.uuidString, title: label($0), proposed: false) }
+        let at = row.firstIndex { $0.id == preview.targetID.uuidString }.map { preview.side == .left ? $0 : $0 + 1 } ?? row.count
+        row.insert((id: "carried", title: carried, proposed: true), at: min(at, row.count))
+        return row
+    }
+
     var body: some View {
         HStack(spacing: 2) {
-            half(title: preview.side == .left ? carried : target?.label ?? "Page", proposed: preview.side == .left)
-            half(title: preview.side == .right ? carried : target?.label ?? "Page", proposed: preview.side == .right)
+            ForEach(places, id: \.id) { place in
+                half(title: place.title, proposed: place.proposed)
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -293,6 +315,14 @@ private struct OpenTabs: View {
             .map { $0 }
     }
 
+    /// The Home grid's height and a gap, when this side shows it (HomeGrid,
+    /// drawn only on the side you're on).
+    private var below: CGFloat {
+        guard browser.activeID == blank.id else { return 0 }
+        let grid = HomeGrid.height(browser)
+        return grid > 0 ? grid + 20 : 0
+    }
+
     var body: some View {
         let list = candidates
         GeometryReader { geo in
@@ -311,8 +341,9 @@ private struct OpenTabs: View {
                 .padding(.horizontal, 12)
                 .frame(width: min(Metrics.fieldWidth, max(0, geo.size.width - 28)), alignment: .leading)
                 .frame(maxWidth: .infinity)
-                // Under the field, which stands 60 points above the middle.
-                .offset(y: geo.size.height / 2 + 10)
+                // Under the field, which stands 60 points above the middle,
+                // and under the Home grid when it stands there (#1381).
+                .offset(y: geo.size.height / 2 + 10 + below)
             }
         }
     }

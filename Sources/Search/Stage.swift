@@ -9,6 +9,21 @@ import WebKit
 /// hands down — SwiftUI sees the same reference, re-runs nothing, and the page
 /// arrives in WebKit without ever being put on screen. Watching it here is
 /// what turns that into a redraw.
+/// The wall behind a blank tab, Settings › Themes. A view of its own so
+/// that only a blank tab watches the settings: every page doing it drew
+/// itself again at each change of any setting, the column's width dragged
+/// through included.
+private struct BlankWall: View {
+    @ObservedObject private var prefs = Shared.prefs
+
+    var body: some View {
+        if prefs.homeTheme != .off {
+            HomeBackground(theme: prefs.homeTheme, tuning: prefs.homeTuning, image: prefs.homeThemeImage,
+                           shuffle: prefs.homeShuffle)
+        }
+    }
+}
+
 struct Page: View {
     @ObservedObject var tab: Tab
     /// False where the page itself is held elsewhere (see PaneStage.swift)
@@ -22,6 +37,10 @@ struct Page: View {
 
     var body: some View {
         ZStack {
+            // A blank tab owns no page to paint over this, and a tab that
+            // gets one is no longer blank, so the wall goes with the load.
+            // Split panes draw their layers through here too.
+            if tab.isBlank { BlankWall() }
             // A tab put down with ⌘W has no view, and asking for one here
             // would build an empty one a frame before the stage moves on.
             //
@@ -94,7 +113,7 @@ struct Page: View {
         .animation(Motion.quick, value: tab.failure)
         .animation(Motion.quick, value: tab.floating)
         .animation(Motion.quick, value: tab.reader)
-        .animation(.easeOut(duration: 0.2), value: tab.cover == nil)
+        .animation(Motion.timed(.easeOut(duration: 0.2)), value: tab.cover == nil)
     }
 }
 
@@ -128,7 +147,7 @@ struct Swiping: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
             }
         }
-        .animation(.easeOut(duration: 0.16), value: pull == nil)
+        .animation(Motion.timed(.easeOut(duration: 0.16)), value: pull == nil)
     }
 }
 
@@ -177,7 +196,7 @@ private struct Disc: View {
         .offset(x: (pull.back ? 1 : -1) * (10 + reach * 0.2 + (pull.going ? 12 : 0)))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: pull.back ? .leading : .trailing)
         .allowsHitTesting(false)
-        .animation(.easeOut(duration: 0.22), value: pull.going)
+        .animation(Motion.timed(.easeOut(duration: 0.22)), value: pull.going)
     }
 }
 
@@ -226,8 +245,8 @@ private struct HistoryList: View {
         .offset(x: (pull.back ? 1 : -1) * (10 + reach * 0.2), y: slide)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: pull.back ? .leading : .trailing)
         .allowsHitTesting(false)
-        .animation(.spring(response: 0.22, dampingFraction: 0.9), value: pull.picked)
-        .animation(.easeOut(duration: 0.26), value: pull.going)
+        .animation(Motion.timed(.spring(response: 0.22, dampingFraction: 0.9)), value: pull.picked)
+        .animation(Motion.timed(.easeOut(duration: 0.26)), value: pull.going)
     }
 
     @ViewBuilder
@@ -290,6 +309,12 @@ final class StageView: NSView {
 
     /// A page on its way back from full screen, once chosen (see `bringHome`).
     private var homecoming: NSKeyValueObservation?
+
+    /// The page whose video was full screen, its placeholder here, when
+    /// another tab was shown in front of it (idea 936). Chosen again while
+    /// still full screen, it has only that placeholder here, which WebKit
+    /// draws white: the stage was a white screen, the video gone from it.
+    private weak var leftFullScreen: WKWebView?
 
     /// How a page is asked to end its full screen: as its own button does.
     /// Its own property for the tests, which can't go full screen.
@@ -393,17 +418,23 @@ final class StageView: NSView {
             dock.removeFromSuperview()
         }
         let chosen = page !== wanted
+        if chosen, let leaving = wanted as? WKWebView, leaving.fullscreenState != .notInFullscreen,
+           subviews.contains(where: Self.isPlaceholder) {
+            leftFullScreen = leaving
+        }
+        if leftFullScreen?.fullscreenState == .notInFullscreen { leftFullScreen = nil }
         wanted = page
         if chosen { bringHome() }
         settle()
     }
 
-    /// The page wanted here, if WebKit's full-screen window has it and no
-    /// place is kept for it here: another tab was shown in the meantime, and
-    /// the placeholder went with the rest of what wasn't wanted.
+    /// The page wanted here, if WebKit's full-screen window has it and
+    /// another tab was shown here in the meantime: its placeholder, kept
+    /// under that tab, is all there is of it here. Or none is left at all.
     private var stranded: WKWebView? {
         guard let web = wanted as? WKWebView, web.fullscreenState != .notInFullscreen,
-              web.superview !== self, !subviews.contains(where: Self.isPlaceholder) else { return nil }
+              web.superview !== self else { return nil }
+        guard web === leftFullScreen || !subviews.contains(where: Self.isPlaceholder) else { return nil }
         return web
     }
 
@@ -422,6 +453,7 @@ final class StageView: NSView {
                 switch web.fullscreenState {
                 case .notInFullscreen:
                     self.homecoming = nil
+                    if self.leftFullScreen === web { self.leftFullScreen = nil }
                     self.settle()
                     // WebKit gave the keys back to a page in no window.
                     if let window = self.window, web.superview === self, window.firstResponder === window {
@@ -486,11 +518,14 @@ final class StageView: NSView {
         for view in subviews where view !== wanted && !(docked && Self.isInspector(view)) {
             // Another tab in front while this page fills the screen: WebKit
             // brings the page home to its placeholder, so that stays, under
-            // the tab in front, and so does the page on its way back.
-            if Shared.prefs.keepsWindow {
-                if Self.isPlaceholder(view) { continue }
-                if let page = view as? WKWebView, page.fullscreenState != .notInFullscreen { continue }
-            }
+            // the tab in front, and so does the page on its way back. Taken
+            // away, it left WebKit nowhere to put the page as it came out of
+            // full screen — ⌃Tab and ⌘1–⌘9 end it as they leave (#1042) —
+            // and the tab came back white, the video out of it (idea 936).
+            // Once home it is put away as any tab behind is (see the
+            // fullscreenState watch in Tab.build).
+            if Self.isPlaceholder(view) { continue }
+            if let page = view as? WKWebView, page.fullscreenState != .notInFullscreen { continue }
             // Unseen, and still drawn: WebKit asks whether its view is in a
             // window and not hidden, not whether anything shows of it.
             if view === parting {
@@ -716,26 +751,91 @@ struct DragStrip: NSViewRepresentable {
     var below: CGFloat = 0
     /// The run at the trailing end that belongs to a button.
     var trailing: CGFloat = 0
+    /// How tall the things in the reserved runs are, centred in the strip:
+    /// above and below them the strip is title bar again, where a press
+    /// moves the window and a double-click does what a title bar's does.
+    /// Nil, the runs are theirs all the way up and down. The tabs are 28
+    /// points in a 52-point strip, and the 12 above and below each were the
+    /// one stretch of the top of the window nothing could take hold of.
+    var band: CGFloat? = nil
     /// Stands in for the title bar's own double-click, in a strip that is
     /// empty tab-row rather than title bar: the empty space below or after
     /// the tabs, where a double-click opens a new tab instead of zooming the
     /// window.
     var onDoubleClick: (() -> Void)? = nil
+    /// What a right-click on the strip brings up, if anything: the
+    /// column's own menu (ColumnMenu), made when it is asked for.
+    var menu: (() -> NSMenu?)? = nil
+    /// The strip lies over a page (Fold's band along the top): what the page
+    /// has to press there, a field, a button, a link, text, takes the press
+    /// itself, and the strip moves the window only over the rest (idea 928).
+    var overPage = false
+    /// A right-click asked about by the bench (`columnmenu`), where there
+    /// is no event: the strips answer the hit test as they would for one.
+    @MainActor static var probingRightClick = false
 
-    func makeNSView(context: Context) -> NSView { Strip() }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        (view as? Strip)?.reserved = reserved
-        (view as? Strip)?.below = below
-        (view as? Strip)?.trailing = trailing
-        (view as? Strip)?.onDoubleClick = onDoubleClick
+    /// Whether the pointer at `point` (in the window's coordinates) is over
+    /// something in the title bar a press would pick up rather than the
+    /// window: what a press there would land on is neither a strip, which
+    /// moves the window itself, nor the title bar's own (the lights).
+    /// Below the title bar macOS never drags the window, so nothing there.
+    @MainActor static func holdsWindow(at point: NSPoint, in window: NSWindow) -> Bool {
+        guard !window.styleMask.contains(.fullScreen), let frame = window.contentView?.superview else { return false }
+        let bar = window.standardWindowButton(.closeButton)?.superview?.superview
+        let band = bar.map(\.frame.height) ?? (window.frame.height - window.contentLayoutRect.height)
+        guard point.y >= window.frame.height - band else { return false }
+        guard let hit = frame.hitTest(frame.convert(point, from: nil)) else { return false }
+        if hit is Strip { return false }
+        if let bar, hit.isDescendant(of: bar) { return false }
+        return true
     }
 
-    private final class Strip: NSView {
-        var reserved: CGFloat = 0
-        var below: CGFloat = 0
-        var trailing: CGFloat = 0
+    /// See Strip.hover: for the bench.
+    @MainActor static func hover(_ window: NSWindow, at point: NSPoint) -> Bool { Strip.hover(window, at: point) }
+
+    func makeNSView(context: Context) -> Strip { Strip() }
+
+    func updateNSView(_ view: Strip, context: Context) {
+        view.reserved = reserved
+        view.below = below
+        view.trailing = trailing
+        view.band = band
+        view.onDoubleClick = onDoubleClick
+        view.rightMenu = menu
+        view.overPage = overPage
+    }
+
+    final class Strip: NSView {
+        var reserved: CGFloat = 0 { didSet { if reserved != oldValue { aimCursor() } } }
+        var below: CGFloat = 0 { didSet { if below != oldValue { aimCursor() } } }
+        var trailing: CGFloat = 0 { didSet { if trailing != oldValue { aimCursor() } } }
+        var band: CGFloat? { didSet { if band != oldValue { aimCursor() } } }
+
+        /// Whether `inside` (the strip's own, from the bottom) is in a
+        /// reserved run's band: theirs, not the strip's.
+        private func reservedAt(_ inside: NSPoint) -> Bool {
+            guard inside.x < reserved || inside.x > bounds.width - trailing else { return false }
+            guard let band else { return true }
+            return abs(inside.y - bounds.height / 2) <= band / 2
+        }
         var onDoubleClick: (() -> Void)?
+        var rightMenu: (() -> NSMenu?)?
+        var overPage = false { didSet { if !overPage { passing = [] } } }
+
+        /// Where, in the window's coordinates, the page under the band has
+        /// something of its own to press: the field, button, link or text the
+        /// pointer was last over, as the page said (see PageUnder). The
+        /// strip leaves those to the page. Amazon's search box lies flush
+        /// with the top of its page, and a press-drag to select its text
+        /// moved the window instead (idea 928); Arc selects the text.
+        var passing: [NSRect] = [] { didSet { if passing != oldValue { aimCursor() } } }
+        /// The point a question to the page is out for, and the one asked
+        /// for while it was, to ask next: one at a time, however fast the
+        /// pointer moves.
+        private var asking = false
+        private var askNext: NSPoint?
+        /// The page `passing` belongs to, which the press is handed to.
+        weak var page: WKWebView?
 
         private var pressed: NSEvent?
         private var moved = false
@@ -745,50 +845,316 @@ struct DragStrip: NSViewRepresentable {
         private static var hovered: [ObjectIdentifier: Int] = [:]
 
         /// The strip moves the window and answers the double-click itself.
-        /// Left to say yes, AppKit takes both on too in the title bar the
-        /// strip sits in, and a double-click answered twice — by AppKit on
-        /// the press, here on the release — ends where it started.
+        /// Left to say yes, AppKit takes drags on too in the title bar the
+        /// strip sits in. Double-clicks are claimed with our own click
+        /// recognizer below: since idea 744 kept the window movable over the
+        /// strip, AppKit's title bar double-click recognizer on NSThemeFrame
+        /// fired alongside mouseUp, zooming twice (back to where it started)
+        /// or zooming the window when double-clicking empty tab space for a
+        /// new tab.
         override var mouseDownCanMoveWindow: Bool { false }
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            installDoubleClick()
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            installDoubleClick()
+        }
+
+        private func installDoubleClick() {
+            let recognizer = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
+            recognizer.numberOfClicksRequired = 2
+            recognizer.delaysPrimaryMouseButtonEvents = false
+            addGestureRecognizer(recognizer)
+        }
 
         override func hitTest(_ point: NSPoint) -> NSView? {
             let inside = convert(point, from: superview)
-            guard inside.x >= reserved, inside.x <= bounds.width - trailing else { return nil }
+            guard !reservedAt(inside) else { return nil }
+            if !passing.isEmpty, let page, let holder = page.superview, page.window === window, !page.isHiddenOrHasHiddenAncestor {
+                let at = convert(inside, to: nil)
+                // Handed to the page itself: let through, SwiftUI's window
+                // answers for itself rather than for the page lying lower
+                // than the band.
+                if passing.contains(where: { $0.contains(at) }) { return page.hitTest(holder.convert(at, from: nil)) }
+            }
+            // A right-click over the rows, with a menu to give: the strip
+            // lies behind them, so it is asked only where no row, heading
+            // or button took it first — the gaps between them.
+            let right = NSApp.currentEvent?.type == .rightMouseDown || DragStrip.probingRightClick
             // AppKit measures up from the bottom; the reservation is from the top.
-            guard bounds.height - inside.y >= below else { return nil }
+            guard bounds.height - inside.y >= below || (right && rightMenu != nil) else { return nil }
             return super.hitTest(point)
         }
 
-        /// The window is not movable while the pointer is over a strip: macOS
-        /// starts a title bar's drag before the app sees the press, so a tab
-        /// picked up in the row carried the window off unless the window was
-        /// unmovable already. Elsewhere it is movable, for Window › Move &
-        /// Resize, tiling and window managers (#286).
+        override func menu(for event: NSEvent) -> NSMenu? {
+            rightMenu?() ?? super.menu(for: event)
+        }
+
+        /// The window is not movable while the pointer is over something in
+        /// the title bar a press would pick up — a tab, a button in the row:
+        /// macOS starts a title bar's drag before the app sees the press, so
+        /// a tab picked up in the row carried the window off unless the
+        /// window was unmovable already (#668). Everywhere else it is
+        /// movable, the strip's own empty run, the lights and everything
+        /// under the title bar included, for Window › Move & Resize, tiling
+        /// and window managers (#286). It was unmovable over the whole of
+        /// every strip, the column of tabs included, and a window manager
+        /// worked from the title bar — Swish's swipes are made there — found
+        /// a window that said it couldn't be moved (idea 744).
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             for area in trackingAreas { removeTrackingArea(area) }
-            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
         }
 
-        override func mouseEntered(with event: NSEvent) { hover(true) }
-        override func mouseExited(with event: NSEvent) { hover(false) }
+        override func mouseEntered(with event: NSEvent) { aim(event.locationInWindow) }
+        override func mouseMoved(with event: NSEvent) { aim(event.locationInWindow) }
+        override func mouseExited(with event: NSEvent) { hold(false); passing = []; aimed = nil }
 
         override func viewWillMove(toWindow newWindow: NSWindow?) {
-            hover(false)
+            hold(false)
             super.viewWillMove(toWindow: newWindow)
         }
 
-        private func hover(_ on: Bool) {
+        private func aim(_ point: NSPoint) {
+            guard let window else { return }
+            if overPage { ask(point) }
+            aimed = point
+            hold(DragStrip.holdsWindow(at: point, in: window))
+        }
+
+        /// Where the pointer was last over the band: the page's answer comes
+        /// after the move that asked for it, and the window is held or let
+        /// go again by it there, for a press that comes before any next move.
+        private var aimed: NSPoint?
+
+        /// Asks the page under `point` (the window's) whether it has
+        /// something to press there, and keeps the answer in `passing`.
+        /// Asked as the pointer moves over the band, so the answer is there
+        /// before the press; a page that has nothing there, or no page, and
+        /// the band is title bar.
+        private func ask(_ point: NSPoint) {
+            guard !asking else { askNext = point; return }
+            guard let window, PageUnder.web(in: window, at: point) != nil else { passing = []; page = nil; return }
+            asking = true
+            PageUnder.ask(in: window, at: point) { [weak self] web, rect in
+                guard let self else { return }
+                self.asking = false
+                if let web, let rect {
+                    self.page = web
+                    self.passing = [rect]
+                } else {
+                    self.passing = []
+                }
+                if let aimed = self.aimed, let window = self.window, self.askNext == nil {
+                    self.hold(DragStrip.holdsWindow(at: aimed, in: window))
+                }
+                if let next = self.askNext {
+                    self.askNext = nil
+                    self.ask(next)
+                }
+            }
+        }
+
+        private func hold(_ on: Bool) {
             guard let window, on != over else { return }
             over = on
             let id = ObjectIdentifier(window)
             let count = max(0, (Strip.hovered[id] ?? 0) + (on ? 1 : -1))
             Strip.hovered[id] = count == 0 ? nil : count
-            window.isMovable = count == 0
+            window.isMovable = Strip.movable(window)
         }
+
+        /// What AppKit itself said, in the last hover, of a single press
+        /// there: that it would move the window (for the bench).
+        static var titleDrag: Bool?
+
+        /// AppKit's own word on whether a single press at `point` starts the
+        /// window's drag, where it gives one (a private method: the bench
+        /// only).
+        static func appKitDrags(_ window: NSWindow, at point: NSPoint) -> Bool? {
+            let sel = NSSelectorFromString("_shouldStartWindowDragForEvent:")
+            guard window.responds(to: sel),
+                  let press = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
+                                                 timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                                 clickCount: 1, pressure: 1)
+            else { return nil }
+            typealias Ask = @convention(c) (AnyObject, Selector, NSEvent) -> Bool
+            return unsafeBitCast(window.method(for: sel), to: Ask.self)(window, sel, press)
+        }
+
+        /// Windows whose page has something to press under the pointer in
+        /// AppKit's title bar, below every strip (see holdForPage).
+        private static var pageHeld: Set<ObjectIdentifier> = []
+
+        /// The page in a window's title bar: where the pointer is there (nil
+        /// once it has left), whether a question to the page is out and for
+        /// where, and the page's last answer, in the window's coordinates,
+        /// and where it was asked for.
+        private struct Zone {
+            var at: NSPoint?
+            var asking = false
+            var asked: NSPoint?
+            var box: NSRect?
+            var answered: NSPoint?
+
+            /// Held where the last answer says the page has something, and
+            /// wherever the page has not answered yet: Amazon's page, busy,
+            /// took longer than a moving pointer to answer (bench, hidden,
+            /// over 0.4 s), and a press in that time is the page's rather
+            /// than the window's. Let go only where the page said it has
+            /// nothing.
+            func holds(_ point: NSPoint) -> Bool {
+                box?.contains(point) == true || answered != point
+            }
+        }
+        private static var zones: [ObjectIdentifier: Zone] = [:]
+
+        private static func setHeld(_ on: Bool, _ window: NSWindow) {
+            let id = ObjectIdentifier(window)
+            guard on != pageHeld.contains(id) else { return }
+            if on { pageHeld.insert(id) } else { pageHeld.remove(id) }
+            window.isMovable = movable(window)
+        }
+
+        /// Movable unless the pointer is over a strip's held part or over the
+        /// page in the title bar.
+        static func movable(_ window: NSWindow) -> Bool {
+            let id = ObjectIdentifier(window)
+            return hovered[id] == nil && !pageHeld.contains(id)
+        }
+
+        /// The page in the title bar. With the tabs in the column the page
+        /// goes up to the window's top, and AppKit takes the top 32 points of
+        /// a window with a see-through title bar as title bar: a single press
+        /// anywhere there, on whatever view, starts the window's drag, before
+        /// the view under it hears of the press, while the window is movable
+        /// (NSWindow _shouldStartWindowDragForEvent:: movable, see-through,
+        /// not full screen, in the title bar's frame). Amazon's search box
+        /// starts 11 points down its page, under the band (Fold.top, 12
+        /// points), and most of it lay in those 32: a press-drag to select its
+        /// text moved the window though the band handed its own part to the
+        /// page (idea 935). So, as for a tab in the row (#668), the window is
+        /// unmovable while the pointer is over what the page has to press
+        /// there, asked of the page as the band asks it (PageUnder), at each
+        /// move the page hears (PointerGate), and until the page has
+        /// answered (Zone.holds). The last answer holds the window at once
+        /// while the pointer stays over the same thing; over empty page,
+        /// once the page has said so, the window is movable, for window
+        /// managers (idea 744), as over the band.
+        static func holdForPage(_ page: NSView, at point: NSPoint) {
+            guard let window = page.window else { return }
+            let id = ObjectIdentifier(window)
+            var inside = false
+            if point.y >= window.contentLayoutRect.maxY, !window.styleMask.contains(.fullScreen),
+               let frame = window.contentView?.superview,
+               let hit = frame.hitTest(frame.convert(point, from: nil)) {
+                inside = hit === page || hit.isDescendant(of: page)
+            }
+            var zone = zones[id] ?? Zone()
+            guard inside else {
+                if zone.at != nil { zone.at = nil; zones[id] = zone }
+                setHeld(false, window)
+                return
+            }
+            zone.at = point
+            zones[id] = zone
+            setHeld(zone.holds(point), window)
+            askZone(window)
+        }
+
+        /// Asks the page about where the pointer is in its title bar, one
+        /// question at a time, and holds or lets go the window by the answer.
+        private static func askZone(_ window: NSWindow) {
+            let id = ObjectIdentifier(window)
+            guard var zone = zones[id], !zone.asking, let at = zone.at else { return }
+            zone.asking = true
+            zone.asked = at
+            zones[id] = zone
+            PageUnder.ask(in: window, at: at) { [weak window] _, box in
+                guard var zone = zones[id] else { return }
+                zone.asking = false
+                zone.box = box
+                zone.answered = zone.asked
+                zones[id] = zone
+                guard let window else { zones[id] = nil; return }
+                guard let now = zone.at else { return }
+                setHeld(zone.holds(now), window)
+                if now != zone.asked { askZone(window) }
+            }
+        }
+
+        /// The pointer has left the page: nothing of it holds the window.
+        static func releaseForPage(_ window: NSWindow?) {
+            guard let window else { return }
+            let id = ObjectIdentifier(window)
+            zones[id]?.at = nil
+            setHeld(false, window)
+        }
+
+        /// The bench's hover (`hit … hover`): the pointer put at `point` over
+        /// every strip under it, whether the window is movable then, and the
+        /// pointer taken away again. A hidden probe's window has no pointer.
+        static func hover(_ window: NSWindow, at point: NSPoint) -> Bool {
+            var under: [Strip] = []
+            func walk(_ view: NSView) {
+                if let strip = view as? Strip, !strip.isHiddenOrHasHiddenAncestor,
+                   strip.bounds.contains(strip.convert(point, from: nil)) { under.append(strip) }
+                for sub in view.subviews { walk(sub) }
+            }
+            var pages: [NSView] = []
+            func pagesUnder(_ view: NSView) {
+                if view is PageView, !view.isHiddenOrHasHiddenAncestor,
+                   view.bounds.contains(view.convert(point, from: nil)) { pages.append(view) }
+                for sub in view.subviews { pagesUnder(sub) }
+            }
+            if let frame = window.contentView?.superview { walk(frame); pagesUnder(frame) }
+            for strip in under { strip.aim(point) }
+            for page in pages { holdForPage(page, at: point) }
+            let movable = window.isMovable
+            titleDrag = appKitDrags(window, at: point)
+            for strip in under { strip.hold(false); strip.aimed = nil }
+            releaseForPage(window)
+            return movable
+        }
+
+        /// A title bar's pointer is the arrow. The strip had no say in it,
+        /// so the I-beam a page or a field last set came along onto the
+        /// title bar and stayed through the whole drag of the window (#1094).
+        /// Only over the run the strip takes clicks in (see hitTest).
+        override func resetCursorRects() {
+            let room = NSRect(x: reserved, y: 0,
+                              width: max(0, bounds.width - trailing - reserved),
+                              height: max(0, bounds.height - below))
+            // Not over what the page takes (see passing): its own pointer there.
+            var runs = [room]
+            for pass in passing.map({ convert($0, from: nil) }) {
+                runs = runs.flatMap { run -> [NSRect] in
+                    guard run.intersects(pass) else { return [run] }
+                    return [NSRect(x: run.minX, y: run.minY, width: max(0, pass.minX - run.minX), height: run.height),
+                            NSRect(x: pass.maxX, y: run.minY, width: max(0, run.maxX - pass.maxX), height: run.height)]
+                }
+            }
+            for run in runs where run.width > 0 && run.height > 0 { addCursorRect(run, cursor: .arrow) }
+            // Above and below the reserved runs' band, the whole width.
+            guard let band, below == 0 else { return }
+            let edge = max(0, (bounds.height - band) / 2)
+            guard edge > 0 else { return }
+            addCursorRect(NSRect(x: 0, y: 0, width: bounds.width, height: edge), cursor: .arrow)
+            addCursorRect(NSRect(x: 0, y: bounds.height - edge, width: bounds.width, height: edge), cursor: .arrow)
+        }
+
+        private func aimCursor() { window?.invalidateCursorRects(for: self) }
 
         override func mouseDown(with event: NSEvent) {
             pressed = event
             moved = false
+            NSCursor.arrow.set()
         }
 
         /// Here the window is let go for the one drag, handed to the system's
@@ -802,18 +1168,26 @@ struct DragStrip: NSViewRepresentable {
             moved = true
             window.isMovable = true
             window.performDrag(with: pressed)
-            window.isMovable = Strip.hovered[ObjectIdentifier(window)] == nil
+            window.isMovable = Strip.movable(window)
         }
 
         /// A double-click does what a title bar's does, unless this strip
         /// stands for empty tab row instead, in which case it opens a new
-        /// tab, the same as the button it is standing in for. It answered
-        /// every click before, so a double-click filled the screen on the
-        /// first click and put the window back on the second, and looked
-        /// like nothing at all.
-        override func mouseUp(with event: NSEvent) {
-            guard let window, !moved, event.clickCount == 2 else { return }
-            if let onDoubleClick {
+        /// tab, the same as the button it is standing in for. Claimed via
+        /// NSClickGestureRecognizer rather than mouseUp so AppKit's own
+        /// NSThemeFrame title bar recognizer does not fire on the same click
+        /// while the window stays movable for window managers (idea 744).
+        @objc private func handleDoubleClick(_ recognizer: NSClickGestureRecognizer) {
+            guard !moved else { return }
+            performDoubleClick(at: recognizer.location(in: self))
+        }
+
+        /// Runs the strip's double-click action at a point in the strip's own
+        /// coordinates. Also called by `bench hit … double` on a hidden probe.
+        func performDoubleClick(at inside: NSPoint) {
+            guard let window else { return }
+            // Above or below the tabs is title bar, not empty tab row.
+            if let onDoubleClick, inside.x >= reserved, inside.x <= bounds.width - trailing {
                 onDoubleClick()
                 return
             }
@@ -828,6 +1202,96 @@ struct DragStrip: NSViewRepresentable {
     }
 }
 
+
+/// What a page has under a point of the band along the top of the window
+/// (see DragStrip.overPage): whether a press there is the page's.
+enum PageUnder {
+    /// The page shown under `point` (the window's), the topmost where
+    /// pages lie over each other. Looked for among the window's views: a
+    /// hit test through the band ends at SwiftUI's own view, which answers
+    /// for everything drawn in it rather than for a page lying lower.
+    @MainActor static func web(in window: NSWindow, at point: NSPoint) -> WKWebView? {
+        guard let root = window.contentView?.superview ?? window.contentView else { return nil }
+        var found: WKWebView?
+        func walk(_ view: NSView) {
+            guard !view.isHidden, view.alphaValue > 0.01 else { return }
+            if let web = view as? WKWebView {
+                if web.convert(web.bounds, to: nil).contains(point) { found = web }
+                return
+            }
+            for sub in view.subviews { walk(sub) }
+        }
+        walk(root)
+        return found
+    }
+
+    /// Asks the page under `point` (the window's) what a press there is
+    /// for, and hands back that page and the box of it, in the window's
+    /// coordinates, or nil where the page has nothing (or there is no page).
+    @MainActor static func ask(in window: NSWindow, at point: NSPoint,
+                               _ done: @escaping @MainActor (WKWebView?, NSRect?) -> Void) {
+        guard let web = web(in: window, at: point) else { done(nil, nil); return }
+        let scale = max(0.01, web.magnification * web.pageZoom)
+        let at = web.convert(point, from: nil)
+        web.evaluateJavaScript(script(x: at.x / scale, y: at.y / scale), in: nil, in: Web.world) { [weak web] result in
+            MainActor.assumeIsolated {
+                guard let web, let box = try? result.get() as? [Double], box.count == 4 else { done(nil, nil); return }
+                let rect = NSRect(x: box[0] * scale, y: box[1] * scale,
+                                  width: max(0, box[2] - box[0]) * scale, height: max(0, box[3] - box[1]) * scale)
+                done(web, web.convert(rect, to: nil))
+            }
+        }
+    }
+
+    /// The page's own answer, in its isolated world: the box, in CSS pixels
+    /// of the viewport, of what at (x, y) a press is for — a field, a button,
+    /// a link, something marked as one or with a hand for a pointer, a frame
+    /// or a player, text that can be selected — or null for empty page,
+    /// where the band may move the window.
+    static func script(x: CGFloat, y: CGFloat) -> String {
+        """
+        (function (x, y) {
+          var el = document.elementFromPoint(x, y);
+          while (el && el.shadowRoot) {
+            var deeper = el.shadowRoot.elementFromPoint(x, y);
+            if (!deeper || deeper === el) break;
+            el = deeper;
+          }
+          if (!el || el === document.documentElement || el === document.body) el = null;
+          function box(e) { var r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; }
+          var takes = 'input,textarea,select,button,a[href],label,summary,iframe,embed,object,video,audio,canvas,' +
+            '[contenteditable]:not([contenteditable="false"]),[role="button"],[role="link"],[role="textbox"],' +
+            '[role="searchbox"],[role="combobox"],[role="tab"],[role="menuitem"],[role="checkbox"],[role="switch"],' +
+            '[role="slider"],[draggable="true"],[onclick]';
+          if (el) {
+            var hit = el.closest(takes);
+            if (hit) return box(hit);
+            if (el.isContentEditable) return box(el);
+            for (var e = el; e && e !== document.body; e = e.parentElement) {
+              var c = getComputedStyle(e).cursor;
+              if (c && c !== 'auto' && c !== 'default') return box(e);
+            }
+          }
+          // Text: the character under the point, where it can be selected.
+          var caret = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+          var node = caret && caret.startContainer;
+          if (node && node.nodeType === 3 && /\\S/.test(node.data)) {
+            var holder = node.parentElement;
+            if (holder && getComputedStyle(holder).userSelect !== 'none' && getComputedStyle(holder).webkitUserSelect !== 'none') {
+              var span = document.createRange();
+              span.selectNodeContents(node);
+              var rects = span.getClientRects();
+              for (var i = 0; i < rects.length; i++) {
+                var r = rects[i];
+                if (x >= r.left - 1 && x <= r.right + 1 && y >= r.top - 1 && y <= r.bottom + 1) return [r.left, r.top, r.right, r.bottom];
+              }
+            }
+          }
+          return null;
+        })(\(x), \(y))
+        """
+    }
+}
 
 /// The three buttons as they look when the app is not the one you are using.
 ///

@@ -935,6 +935,30 @@ final class TerminalSplits: NSView, ObservableObject {
 
 /// The gutter between two terminals: a hairline that grows a little under
 /// the pointer, dragged it moves the split's share, double-clicked the
+/// The hairline round the pane the keys are in, drawn as a view's own
+/// layer's border, so a picture of the window has it too. It takes no clicks.
+///
+/// Two points of the grey itself: at one point and 55% it stood about 2:1
+/// from a white page, and in dark mode about 1.6:1, little more than the
+/// other card's own edge, so which pane Back, ⌘L and ⌘F would act on was
+/// hard to tell. Now about 3:1 from a white page in either look.
+final class FocusCue: NSView {
+    /// Round, when the panes are cards.
+    var corner: CGFloat = 0 { didSet { if corner != oldValue { needsDisplay = true } } }
+    static let width: CGFloat = 2
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        Palette.NS.muted.setStroke()
+        let half = FocusCue.width / 2
+        let inner = bounds.insetBy(dx: half, dy: half)
+        let line = corner > 0
+            ? NSBezierPath(roundedRect: inner, xRadius: max(0, corner - half), yRadius: max(0, corner - half))
+            : NSBezierPath(rect: inner)
+        line.lineWidth = FocusCue.width
+        line.stroke()
+    }
+}
+
 /// sides are made even. It never takes the keys — the panes keep them.
 ///
 /// Its mechanism is PaneDivider's (which divides pages, and stays the

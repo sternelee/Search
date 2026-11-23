@@ -12,7 +12,8 @@ The stand-in page does what YouTube's does: its player data arrives as an
 inline `var ytInitialPlayerResponse = {…}`, then from /youtubei/v1/player
 through fetch, read with json() and with text() + JSON.parse. Each carries
 adPlacements, playerAds, adSlots and adBreakHeartbeatParams beside the
-video's own data.
+video's own data. Its #movie_player stand-in records each loadVideoById,
+the restart a held first video gets once its pre-roll is taken out.
 """
 import json
 import subprocess
@@ -50,8 +51,37 @@ fetch('/youtubei/v1/player', { method: 'POST', body: '{}' }).then(function (r) {
   .then(function (t) { window.__yt.text = keys(JSON.parse(t)); });
 // Somebody else's JSON with the same key names stays as it is.
 window.__yt.own = keys(JSON.parse('{"adSlots":[1],"mine":true}'));
+// The player's own way to open a video, recorded.
+var player = document.createElement('div'); player.id = 'movie_player';
+player.loadVideoById = function (id, at) { (window.__yt.loads = window.__yt.loads || []).push([id, at]); };
+document.documentElement.appendChild(player);
 if (parent !== window) setTimeout(function () { parent.postMessage(window.__yt, '*'); }, 800);
 </script>"""
+
+
+# An answer YouTube sends an account it enforces on: OK, with the wall
+# dormant beside it. The page then writes the wall over it, as YouTube's
+# own code does once one of its blocker tests fails.
+WALLED = dict(PLAYER, auxiliaryUi={"messageRenderers": {"bkaEnforcementMessageViewModel": {"signed": "x"}}})
+WALL_REPORT = """
+<script>
+var p = window.ytInitialPlayerResponse;
+p.playabilityStatus = { status: 'ERROR', errorScreen: { enforcementMessageViewModel: {} } };
+p.videoDetails = undefined;
+window.__wall = { status: p.playabilityStatus.status, video: p.videoDetails && p.videoDetails.videoId };
+// Another status is still taken as written.
+var q = JSON.parse(JSON.stringify(window.ytInitialPlayerResponse === p ? %s : {}));
+q.playabilityStatus = { status: 'LOGIN_REQUIRED' };
+window.__wall.other = q.playabilityStatus.status;
+// YouTube's blocker tests: the ad id and an ad report, answered in the page.
+fetch('https://www.youtube.com/ptracking?cpn=fixture').then(function (r) { return r.text().then(function (t) { window.__wall.fetch = r.status + ':' + t.length; }); },
+  function () { window.__wall.fetch = 'failed'; });
+var x = new XMLHttpRequest();
+x.onload = function () { window.__wall.xhr = x.status + ':' + x.responseText.length; };
+x.onerror = function () { window.__wall.xhr = 'failed'; };
+x.open('GET', 'https://googleads.g.doubleclick.net/pagead/id'); x.send();
+window.__wall.beacon = navigator.sendBeacon('https://www.youtube.com/api/stats/ads?ad=1', '');
+</script>""" % json.dumps(WALLED)
 
 
 class H(BaseHTTPRequestHandler):
@@ -62,8 +92,12 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         port = self.server.server_port
-        if self.path == "/watch":
-            self.reply(f"<!doctype html><title>watch</title><script>var ytInitialPlayerResponse = {json.dumps(PLAYER)};</script>{REPORT}")
+        if self.path.split("?")[0] == "/watch":
+            # ?noads: a first answer with no ad schedule in it.
+            first = {k: v for k, v in PLAYER.items() if k not in ADS} if "noads" in self.path else PLAYER
+            self.reply(f"<!doctype html><title>watch</title><script>var ytInitialPlayerResponse = {json.dumps(first)};</script>{REPORT}")
+        elif self.path == "/walled":
+            self.reply(f"<!doctype html><title>walled</title><script>var ytInitialPlayerResponse = {json.dumps(WALLED)};</script>{WALL_REPORT}")
         elif self.path == "/embedder":
             # Another site framing YouTube's player, as an embed does.
             self.reply(f"""<!doctype html><title>embedder</title>
@@ -104,6 +138,14 @@ def visit(url, read="window.__yt", ready=lambda v: v and "json" in v and "text" 
     return got or {}
 
 
+def settled(url):
+    """What the page reports two seconds after it loaded: long enough for
+    a restart, which waits for the player, to have happened."""
+    id = sv.cmd({"do": "open", "url": url})["id"]
+    time.sleep(2.5)
+    return sv.ev(id, "window.__yt") or {}
+
+
 def visible_windows():
     """How many of this probe's windows are on a screen: there must never be
     one. Read from the window server, not from the app."""
@@ -127,12 +169,27 @@ try:
     t.ok("/youtubei/v1/player read with text() + JSON.parse: ads out", yt.get("text") == CLEAN, yt)
     t.ok("the player's formats are intact", yt.get("itag") == 18, yt)
     t.ok("another shape with the same key names is left alone", yt.get("own") == "adSlots,mine", yt)
+    t.ok("no video id: no restart", not yt.get("loads"), yt)
+    held = settled(f"http://127.0.0.1:{PORT}/watch?v=fixture&t=1m5s")
+    t.ok("pre-roll taken out: the video started again once, at its t", held.get("loads") == [["fixture", 65]], held)
+    clean = settled(f"http://127.0.0.1:{PORT}/watch?v=fixture&noads=1")
+    t.ok("no ads in the first answer: no restart", not clean.get("loads"), clean)
+    listed = settled(f"http://127.0.0.1:{PORT}/watch?v=fixture&list=PL1")
+    t.ok("a playlist: no restart", not listed.get("loads"), listed)
     other = visit(f"http://localhost:{PORT}/watch")
     t.ok("another site: untouched", other.get("inline") == FULL and other.get("json") == FULL, other)
     framed = visit(f"http://localhost:{PORT}/embedder", read="window.__frame",
                    ready=lambda v: v and "json" in v and "text" in v)
     t.ok("YouTube's player framed in another site: ads out in the frame", framed.get("json") == CLEAN
          and framed.get("inline") == CLEAN, framed)
+    wall = visit(f"http://127.0.0.1:{PORT}/walled", read="window.__wall",
+                 ready=lambda v: v and "fetch" in v and "xhr" in v)
+    t.ok("the wall written over an OK answer: the answer stays OK", wall.get("status") == "OK", wall)
+    t.ok("…and keeps its video", wall.get("video") == "fixture", wall)
+    t.ok("…any other status is taken as written", wall.get("other") == "LOGIN_REQUIRED", wall)
+    t.ok("YouTube's ad report through fetch: answered in the page, empty", wall.get("fetch") == "200:0", wall)
+    t.ok("Google's ad id through XMLHttpRequest: answered in the page, empty", wall.get("xhr") == "200:0", wall)
+    t.ok("an ad beacon: taken, nothing sent", wall.get("beacon") is True, wall)
     t.ok("no window on a screen", visible_windows() == 0)
     sv.quit()
 

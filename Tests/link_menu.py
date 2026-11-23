@@ -93,6 +93,19 @@ def main():
         t.ok("with ⌥, Open Link in New Tab and Go to It: the new tab is in front",
              len(new) == 1 and r["active"] == new[0], r)
         t.ok("b is untouched", b in r["tabs"], r["tabs"])
+        # Open Link in Private Tab (#902): a private tab for the link, in front.
+        sv.sp("select", id=a); time.sleep(0.4)
+        menu(a, ("Open Link in Private Tab", "shy")); time.sleep(0.5)
+        st = sv.sp("state")
+        shy = [x for x in st["tabs"] if x["url"].endswith("/shy")]
+        t.ok("Open Link in Private Tab: one private tab for the link",
+             len(shy) == 1 and shy[0]["shy"], shy)
+        t.ok("…and it is in front", bool(shy) and st["activeID"] == shy[0]["id"], st["activeID"])
+        # On a private page Open Link in New Tab is private already: no item.
+        sv.sp("select", id=shy[0]["id"] if shy else a); time.sleep(0.4)
+        r = menu(shy[0]["id"] if shy else a, ("Open Link in Private Tab", "again"))
+        t.ok("on a private page: no Open Link in Private Tab",
+             not any(u.endswith("/again") for u in r["urls"]), r["urls"])
         # No Open Link: a click does that. Picking it chooses nothing, so the
         # page stays where it is.
         sv.sp("select", id=a); time.sleep(0.4)
@@ -126,17 +139,17 @@ def main():
         front = [x for x, u in zip(r["tabs"], r["urls"]) if u.endswith("/front")]
         t.ok("Split View on: Open Link in New Tab and Go to It still goes to it",
              len(front) == 1 and r["active"] == front[0], r)
-        # From a page already in a pair: the link takes the other page's
-        # place, and that page stays open, a tab of its own.
+        # From a page already in a pair: a split holds up to four pages
+        # (since 1.0.13), so the link joins it, right of the page it came
+        # from, and the page that was there stays in it.
         sv.sp("select", id=a); time.sleep(0.4)
         menu(a, ("Open Link in Split View", "again")); time.sleep(0.5)
         st = sv.sp("state")
         again = [x["id"] for x in st["tabs"] if x["url"].endswith("/again")]
-        t.ok("from a pair: the link takes the other page's place",
-             bool(again) and any(s["tabs"] == [a, again[0]] for s in st["splits"]), st["splits"])
-        t.ok("from a pair: the page it replaced stays open, in no pair",
-             bool(new) and new[0] in [x["id"] for x in st["tabs"]]
-             and not any(new[0] in s["tabs"] for s in st["splits"]), (st["tabs"], st["splits"]))
+        t.ok("from a pair: the link joins the split, right of its page",
+             bool(again) and bool(new) and any(s["tabs"] == [a, again[0], new[0]] for s in st["splits"]), st["splits"])
+        t.ok("from a pair: the pages are made even",
+             any(len(s["tabs"]) == 3 and all(abs(x - 1 / 3) < 0.01 for x in s["sizes"]) for s in st["splits"]), st["splits"])
         # From a pin: the pin keeps its place, its page goes into the pair.
         p = sv.page("pinned"); sv.cmd({"do": "pin", "id": p}); sv.sp("select", id=p); time.sleep(0.4)
         menu(p, ("Open Link in Split View", "frompin")); time.sleep(0.8)

@@ -43,6 +43,45 @@ struct GroupDropFrames: PreferenceKey {
     }
 }
 
+/// Where each tab in no group is drawn, in the row's space, for where a tab
+/// carried out of its group lands among them (#1009). Written as the rows
+/// are laid out and read once, when the tab is let go: a box rather than a
+/// preference, so a row that moves redraws nothing (see ColumnFrames).
+final class LooseFrames {
+    var rects: [UUID: CGRect] = [:]
+}
+
+/// A tab of a group let go outside every group: in front of the tab in no
+/// group it lands before, or after them all.
+struct LooseDrop: Equatable {
+    var before: UUID? = nil
+}
+
+extension GroupDropFrames {
+    /// Where a tab carried out of its group lands, or nil when it stays:
+    /// let go anywhere along its own group's run, its own place included
+    /// (a hand that barely moved leaves nothing), level with another
+    /// group's, or off to the side of the row. `loose` is the tabs in no
+    /// group, by where they are drawn.
+    static func leaving(_ point: CGPoint, frames: [UUID: GroupDropFrame], loose: [UUID: CGRect],
+                        groups: [TabGroup], source: UUID, vertical: Bool) -> LooseDrop? {
+        guard frames[source]?.tab == source else { return nil }
+        let drawn = frames.values.map(\.rect) + Array(loose.values)
+        let row = drawn.reduce(CGRect.null) { $0.union($1) }
+        guard !row.isNull,
+              vertical ? (row.minX...row.maxX).contains(point.x) : (row.minY...row.maxY).contains(point.y)
+        else { return nil }
+        let position = vertical ? point.y : point.x
+        for group in groups {
+            let run = frames.values.filter { $0.group == group.id }.reduce(CGRect.null) { $0.union($1.rect) }
+            if !run.isNull, (vertical ? run.minY...run.maxY : run.minX...run.maxX).contains(position) { return nil }
+        }
+        let next = loose.filter { position < (vertical ? $0.value.midY : $0.value.midX) }
+            .min { vertical ? $0.value.minY < $1.value.minY : $0.value.minX < $1.value.minX }
+        return LooseDrop(before: next?.key)
+    }
+}
+
 /// A quiet name above the tabs it contains, in either layout.
 struct GroupHeading: View {
     @Environment(\.greys) private var greys
@@ -59,13 +98,27 @@ struct GroupHeading: View {
     @State private var hovering = false
     @State private var dropping = false
     @FocusState private var focused: Bool
+    /// Drawn in the map of every space's rows, not the column: renamed only
+    /// in the column, or a second field takes the keys (see SideRow's editing).
+    @Environment(\.inSpaceMap) private var inMap
 
-    private var editing: Bool { browser.editingGroupID == group.id }
+    private var editing: Bool { !inMap && browser.editingGroupID == group.id }
+
+    /// Soft grey by default; full ink with Settings › Appearance › Tabs ›
+    /// High contrast text, as a tab's title is.
+    private func titleColour(hovering: Bool) -> Color {
+        if browser.prefs.highContrastText { return Palette.ink }
+        return hovering ? Palette.ink.opacity(0.7) : Palette.muted
+    }
 
     /// Its height in the column, a little under a tab's.
     static let height: CGFloat = 24
     /// And in the column of icons.
     static let compactHeight: CGFloat = 18
+
+    /// A test run's stand-in for a name drawn wider than measured here, as on
+    /// another macOS (TabBar.measures): taken off every heading's width.
+    static var testShortfall: CGFloat = 0
 
     /// Measured once a name: the row asks for every heading's on every redraw.
     private static var measured: [String: CGFloat] = [:]
@@ -79,7 +132,7 @@ struct GroupHeading: View {
             if measured.count > 500 { measured.removeAll() }
             measured[name] = text
         }
-        return text + 20 + (numbered ? 23 : 0)
+        return text + 20 + (numbered ? 23 : 0) - testShortfall
     }
 
     var body: some View {
@@ -95,7 +148,7 @@ struct GroupHeading: View {
                 .font(.system(size: 6.5, weight: .bold))
                 .rotationEffect(.degrees(group.collapsed ? -90 : 0))
         }
-        .foregroundStyle(hovering ? Palette.ink.opacity(0.7) : Palette.muted)
+        .foregroundStyle(titleColour(hovering: hovering))
         .frame(maxWidth: .infinity)
         .frame(height: Self.compactHeight)
         .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -108,7 +161,7 @@ struct GroupHeading: View {
         .accessibilityLabel(group.name)
         // Rename Group: no room for the name here, so it is typed beside.
         .popover(isPresented: Binding(get: { editing }, set: { if !$0 { browser.editingGroupID = nil } }),
-                 arrowEdge: browser.prefs.sidePosition == .right ? .leading : .trailing) {
+                 hangingFrom: browser.prefs.sidePosition == .right ? .leading : .trailing) {
             TextField("Group name", text: $draft)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12.5, weight: .medium))
@@ -155,7 +208,7 @@ struct GroupHeading: View {
                     .opacity(hovering ? 1 : 0)
             }
         }
-        .foregroundStyle(Palette.muted)
+        .foregroundStyle(titleColour(hovering: false))
         .padding(.horizontal, 10)
         .frame(height: horizontal ? 28 : Self.height)
         .frame(maxWidth: horizontal ? nil : .infinity, alignment: .leading)
@@ -164,7 +217,8 @@ struct GroupHeading: View {
             .fill(dropping ? greys.wash : (hovering ? greys.hover : .clear)))
         .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .onTapGesture { if !editing { browser.toggleTabGroup(group.id) } }
-        .modifier(GroupHeadingShared(browser: browser, group: group, dragSpace: dragSpace, dropping: $dropping))
+        .modifier(GroupHeadingShared(browser: browser, group: group, dragSpace: dragSpace, dropping: $dropping,
+                                     horizontal: horizontal))
         .onHover { hovering = $0 }
         .onChange(of: editing) { _, now in
             if now {
@@ -193,6 +247,10 @@ private struct GroupHeadingShared: ViewModifier {
     let group: TabGroup
     let dragSpace: String?
     @Binding var dropping: Bool
+    /// Across the top, where its colour is the group's band (GroupBand):
+    /// the swatches hang below the name.
+    var horizontal = false
+    @State private var choosingColour = false
 
     func body(content: Content) -> some View {
         content
@@ -220,8 +278,12 @@ private struct GroupHeadingShared: ViewModifier {
             }
             .onDrag { NSItemProvider(object: "search-group:\(group.id.uuidString)" as NSString) }
             .contextMenu {
+                // First, as Chrome has it: a tab at the group's end, in front.
+                Button("New Tab in Group") { browser.newTab(inGroup: group.id) }
+                Divider()
                 Button("Rename Group") { browser.editingGroupID = group.id }
                 Button(group.collapsed ? "Expand Group" : "Collapse Group") { browser.toggleTabGroup(group.id) }
+                Button("Colour…") { choosingColour = true }
                 // The whole group into another space, still a group there: Arc's
                 // folders came in wherever Arc had them.
                 if browser.prefs.usesSpaces, browser.spaces.count > 1 {
@@ -239,5 +301,113 @@ private struct GroupHeadingShared: ViewModifier {
                 Button("Ungroup Tabs") { browser.removeTabGroup(group.id) }
                 Button("Close Group") { browser.closeTabGroup(group.id) }
             }
+            .popover(isPresented: $choosingColour,
+                     hangingFrom: horizontal ? .bottom : (browser.prefs.sidePosition == .right ? .leading : .trailing)) {
+                let index = group.colour ?? 0
+                ColourSwatches(selected: Spaces.colours.indices.contains(index) ? index : 0) {
+                    browser.setTabGroupColour(group.id, to: $0)
+                }
+                .padding(16)
+            }
+    }
+}
+
+/// An open group across the top, shown as one quiet band from its name to
+/// its last tab, as the column shows a coloured group (#921). Each piece is
+/// drawn behind its own heading or tab, under the place it is laid out at:
+/// nothing extra in the row, nothing that moves as it scrolls, and a tab
+/// carried by hand leaves its piece where its place is. Every piece but the
+/// last reaches over the gap after it, so the band has no seams; only its
+/// ends are round. The group's colour at the column's strength, or without
+/// one the faint grey a pinned tab wears.
+struct GroupBand: View {
+    @Environment(\.greys) private var greys
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.recordsBands) private var records
+    let group: TabGroup
+    /// The heading or tab it is drawn behind, for the bench.
+    let piece: UUID
+    var first = false
+    var last = false
+
+    static let radius: CGFloat = 9
+    /// A tab's height and a heading's: a pair in Split View is laid out as
+    /// tall as the strip, and its piece would stand out above and below.
+    static let height: CGFloat = 28
+
+    private var fill: Color {
+        if let colour = group.colour, let opacity = Spaces.wash(colour, dark: scheme == .dark) {
+            return Spaces.colours[colour].opacity(opacity)
+        }
+        return greys.tile
+    }
+
+    var body: some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: first ? Self.radius : 0,
+                                           bottomLeadingRadius: first ? Self.radius : 0,
+                                           bottomTrailingRadius: last ? Self.radius : 0,
+                                           topTrailingRadius: last ? Self.radius : 0,
+                                           style: .continuous)
+        if records {
+            shape.fill(fill)
+                .frame(height: Self.height)
+                // Inside the padding the piece itself, reaching over the
+                // gap; outside it, what it is drawn behind.
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("strip")) }) { rect in
+                    TabBar.drawnBands[piece, default: .init(group: group.id)].band = rect
+                }
+                .padding(.trailing, last ? 0 : -Metrics.tabGap)
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("strip")) }) { rect in
+                    TabBar.drawnBands[piece, default: .init(group: group.id)].item = rect
+                }
+                .allowsHitTesting(false)
+        } else {
+            shape.fill(fill)
+                .frame(height: Self.height)
+                .padding(.trailing, last ? 0 : -Metrics.tabGap)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// The open groups in `groups` that something follows in the row:
+    /// another group, or with `looseAfter` the tabs in none. Their bands end
+    /// with more air than a tab's gap (Air), so a tab after one, ⌘T's
+    /// (#1151), plainly isn't in it. A folded group, or one last in the row,
+    /// is spaced as before.
+    static func spaced(_ groups: [TabGroup], looseAfter: Bool) -> Set<UUID> {
+        Set(groups.enumerated().filter { index, group in
+            !group.collapsed && (looseAfter || index < groups.count - 1)
+        }.map(\.element.id))
+    }
+
+    /// The air after a band: with the row's gap on either side, `space`
+    /// more than between two tabs, 10 points in all.
+    struct Air: View {
+        static let space: CGFloat = 8
+        var body: some View {
+            Color.clear
+                .frame(width: Self.space - Metrics.tabGap, height: 1)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// What one piece was drawn over, and the piece itself, in the row's space.
+    struct Drawn {
+        var group: UUID
+        var item: CGRect = .zero
+        var band: CGRect = .zero
+    }
+}
+
+/// Set on a row drawn off screen for the bench: its band pieces say where
+/// they were drawn (TabBar.drawnBands). Never on the window's own row.
+private struct RecordsBandsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var recordsBands: Bool {
+        get { self[RecordsBandsKey.self] }
+        set { self[RecordsBandsKey.self] = newValue }
     }
 }
