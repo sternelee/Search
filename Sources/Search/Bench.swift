@@ -2666,7 +2666,7 @@ final class Bench {
                 }
             }
             answer(["menus": menus, "fullScreenItems": fullScreen, "ai": browser.prefs.ai, "bot": browser.prefs.bot, "shipped": AI.shipped,
-                    "settingsPages": SettingsPanel.Page.allCases.filter { $0 != .ai || AI.shipped }.map(\.rawValue),
+                    "settingsPages": SettingsPanel.Page.allCases.map(\.rawValue),
                     "settingsPage": browser.settingsPage.rawValue])
 
         case "textcheck":

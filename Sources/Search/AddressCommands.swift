@@ -85,7 +85,7 @@ enum AddressCommand: Equatable {
         switch self {
         case .newSpace: return browser.prefs.usesSpaces
         case .menu(let id): return Self.offers(id, in: browser)
-        case .page(let page): return page != .ai || AI.shipped
+        case .page: return true
         default: return true
         }
     }

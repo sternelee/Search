@@ -100,7 +100,7 @@ struct SettingsPanel: View {
         /// ships with the app, so it is always there to open.
         static var blocks: [[Page]] {
             [[.general, .appearance, .themes, .tabs, .browsing, .spaces],
-             [.passwords, .privacy] + (AI.shipped ? [.ai] : []) + [.extensions, .browserUse, .terminal, .keyboard],
+             [.passwords, .privacy, .extensions, .ai, .browserUse, .terminal, .keyboard],
              [.about]]
         }
     }
